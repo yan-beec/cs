@@ -1,0 +1,570 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no"
+  >
+  <meta name="referrer" content="origin">
+  <title>在线客服</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f7fb;
+      --text: #202635;
+      --muted: #697386;
+      --line: #d9e0ea;
+      --primary: #1f73ff;
+      --danger: #c93535;
+      --surface: #ffffff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--bg);
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+      color: var(--text);
+    }
+
+    body {
+      padding:
+        env(safe-area-inset-top)
+        env(safe-area-inset-right)
+        env(safe-area-inset-bottom)
+        env(safe-area-inset-left);
+    }
+
+    #app-shell {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: var(--bg);
+      text-align: center;
+      z-index: 1;
+    }
+
+    .panel {
+      width: min(100%, 360px);
+      padding: 22px 18px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .title {
+      margin: 0 0 8px;
+      font-size: 17px;
+      font-weight: 600;
+      line-height: 1.4;
+    }
+
+    .desc {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.7;
+    }
+
+    .spinner {
+      width: 28px;
+      height: 28px;
+      margin: 0 auto 14px;
+      border: 3px solid #dce5f2;
+      border-top-color: var(--primary);
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+    }
+
+    .error {
+      color: var(--danger);
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+      margin-top: 16px;
+    }
+
+    button {
+      min-width: 92px;
+      height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+      font-size: 14px;
+    }
+
+    button.primary {
+      border-color: var(--primary);
+      background: var(--primary);
+      color: #fff;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    .woot-widget-bubble {
+      display: none !important;
+      visibility: hidden !important;
+      pointer-events: none !important;
+    }
+
+    .woot-widget-holder,
+    .woot-widget-holder.woot-elements--right,
+    .woot-widget-holder.woot-elements--left {
+      position: fixed !important;
+      inset: 0 !important;
+      width: 100vw !important;
+      height: 100vh !important;
+      max-width: 100vw !important;
+      max-height: 100vh !important;
+      min-width: 100vw !important;
+      min-height: 100vh !important;
+      margin: 0 !important;
+      padding:
+        env(safe-area-inset-top)
+        env(safe-area-inset-right)
+        env(safe-area-inset-bottom)
+        env(safe-area-inset-left) !important;
+      border: 0 !important;
+      border-radius: 0 !important;
+      box-shadow: none !important;
+      transform: none !important;
+      z-index: 2147483647 !important;
+    }
+
+    .woot-widget-holder iframe {
+      width: 100% !important;
+      height: 100% !important;
+      min-width: 100% !important;
+      min-height: 100% !important;
+      border: 0 !important;
+      border-radius: 0 !important;
+    }
+  </style>
+</head>
+<body>
+  <main id="app-shell" aria-live="polite">
+    <section class="panel">
+      <div class="spinner" aria-hidden="true"></div>
+      <h1 class="title">正在接入客服</h1>
+      <p class="desc">请稍候，正在为你打开在线客服。</p>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      "use strict";
+
+      /*
+       * 部署前需要确认：
+       * 1. CHATWOOT_BASE_URL 改成你的 Chatwoot 访问地址。
+       * 2. WEBSITE_TOKEN 改成 Chatwoot Website Inbox 的 website token。
+       * 3. PROFILE_ENDPOINT 由你的业务后端提供，返回当前登录用户资料和 identifier_hash。
+       *    当前为空，表示先不校验登录身份，直接打开 Chatwoot。后续 APP 登录接入后再启用。
+       * 4. PROFILE_ENDPOINT 为空时，会尝试从 URL 参数读取用户资料，方便 APP 先联调：
+       *    ?userId=123&name=张三&phone=13800000000&email=user@example.com
+       *    正式上线仍建议使用 PROFILE_ENDPOINT + identifier_hash。
+       *
+       * PROFILE_ENDPOINT 建议返回：
+       * {
+       *   "identifier": "app_user_12345",
+       *   "identifier_hash": "hmac_from_backend",
+       *   "name": "张三",
+       *   "email": "user@example.com",
+       *   "phone_number": "+8613800000000",
+       *   "avatar_url": "https://example.com/avatar.png",
+       *   "custom_attributes": {
+       *     "app_user_id": "12345",
+       *     "member_level": "gold",
+       *     "app_version": "1.0.0",
+       *     "platform": "ios"
+       *   }
+       * }
+       */
+      var CONFIG = {
+        CHATWOOT_BASE_URL: "http://localhost:3000",
+        WEBSITE_TOKEN: "EEuW9UJz2w55BfWAshYxh1TY",
+        PROFILE_ENDPOINT: "",
+        DEFAULT_LOCALE: "zh_CN",
+        PROFILE_TIMEOUT_MS: 10000,
+        WIDGET_READY_TIMEOUT_MS: 15000
+      };
+
+      var shell = document.getElementById("app-shell");
+      var search = new URLSearchParams(window.location.search);
+      var runtime = {
+        chatwootBaseUrl: search.get("chatwootBaseUrl") || CONFIG.CHATWOOT_BASE_URL,
+        websiteToken: search.get("websiteToken") || CONFIG.WEBSITE_TOKEN,
+        locale: search.get("locale") || CONFIG.DEFAULT_LOCALE,
+        authToken: search.get("appToken") || search.get("token") || search.get("authToken") || ""
+      };
+
+      function renderLoading(text) {
+        shell.innerHTML =
+          '<section class="panel">' +
+            '<div class="spinner" aria-hidden="true"></div>' +
+            '<h1 class="title">正在接入客服</h1>' +
+            '<p class="desc">' + escapeHtml(text || "请稍候，正在为你打开在线客服。") + '</p>' +
+          '</section>';
+      }
+
+      function renderError(message) {
+        shell.innerHTML =
+          '<section class="panel">' +
+            '<h1 class="title error">客服暂时无法打开</h1>' +
+            '<p class="desc">' + escapeHtml(message) + '</p>' +
+            '<div class="actions">' +
+              '<button type="button" id="retry-btn" class="primary">重试</button>' +
+            '</div>' +
+          '</section>';
+        document.getElementById("retry-btn").addEventListener("click", function () {
+          window.location.reload();
+        });
+      }
+
+      function hideShell() {
+        shell.style.display = "none";
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function getAppTokenFromBridge() {
+        try {
+          if (window.AppBridge && typeof window.AppBridge.getToken === "function") {
+            return window.AppBridge.getToken();
+          }
+          if (window.webkit &&
+              window.webkit.messageHandlers &&
+              window.webkit.messageHandlers.getToken) {
+            return "";
+          }
+        } catch (error) {
+          return "";
+        }
+        return "";
+      }
+
+      function firstParam(names) {
+        for (var i = 0; i < names.length; i++) {
+          var value = search.get(names[i]);
+          if (value) {
+            return value;
+          }
+        }
+        return "";
+      }
+
+      function getProfileFromQuery() {
+        var identifier = firstParam(["identifier", "userId", "user_id", "uid", "id"]);
+
+        if (!identifier) {
+          return null;
+        }
+
+        var profile = {
+          identifier: identifier,
+          identifier_hash: firstParam(["identifierHash", "identifier_hash"]),
+          name: firstParam(["name", "nickname", "nick"]),
+          email: firstParam(["email"]),
+          phone_number: firstParam(["phone", "phoneNumber", "phone_number", "mobile"]),
+          avatar_url: firstParam(["avatar", "avatarUrl", "avatar_url"]),
+          custom_attributes: {
+            app_user_id: identifier,
+            member_level: firstParam(["memberLevel", "member_level", "level"]),
+            app_version: firstParam(["appVersion", "app_version"]),
+            platform: firstParam(["platform", "os"]),
+            channel: firstParam(["channel"])
+          }
+        };
+
+        Object.keys(profile.custom_attributes).forEach(function (key) {
+          if (!profile.custom_attributes[key]) {
+            delete profile.custom_attributes[key];
+          }
+        });
+
+        return profile;
+      }
+
+      function fetchWithTimeout(url, options, timeoutMs) {
+        var controller = new AbortController();
+        var timer = window.setTimeout(function () {
+          controller.abort();
+        }, timeoutMs);
+        options = options || {};
+        options.signal = controller.signal;
+
+        return fetch(url, options).finally(function () {
+          window.clearTimeout(timer);
+        });
+      }
+
+      function getProfile() {
+        if (!CONFIG.PROFILE_ENDPOINT) {
+          return Promise.resolve(getProfileFromQuery());
+        }
+
+        var token = runtime.authToken || getAppTokenFromBridge();
+        var headers = {
+          "Accept": "application/json"
+        };
+
+        if (token) {
+          headers.Authorization = "Bearer " + token;
+        }
+
+        return fetchWithTimeout(CONFIG.PROFILE_ENDPOINT, {
+          method: "GET",
+          credentials: "include",
+          headers: headers
+        }, CONFIG.PROFILE_TIMEOUT_MS).then(function (response) {
+          if (!response.ok) {
+            if (response.status === 404) {
+              return getProfileFromQuery();
+            }
+            throw new Error("用户身份校验失败：" + response.status);
+          }
+          return response.json();
+        });
+      }
+
+      function validateConfig() {
+        if (!runtime.chatwootBaseUrl) {
+          throw new Error("缺少 Chatwoot 地址。");
+        }
+        if (!runtime.websiteToken || runtime.websiteToken === "REPLACE_WITH_CHATWOOT_WEBSITE_TOKEN") {
+          throw new Error("缺少 Chatwoot Website Token。");
+        }
+      }
+
+      function loadChatwootSdk() {
+        return new Promise(function (resolve, reject) {
+          var script = document.createElement("script");
+          script.async = true;
+          script.defer = true;
+          script.src = runtime.chatwootBaseUrl.replace(/\/$/, "") + "/packs/js/sdk.js";
+          script.onload = resolve;
+          script.onerror = function () {
+            reject(new Error("Chatwoot SDK 加载失败。"));
+          };
+          document.head.appendChild(script);
+        });
+      }
+
+      function waitForChatwootReady() {
+        return new Promise(function (resolve, reject) {
+          var done = false;
+          var timer = window.setTimeout(function () {
+            if (done) return;
+            done = true;
+            reject(new Error("Chatwoot 初始化超时。"));
+          }, CONFIG.WIDGET_READY_TIMEOUT_MS);
+
+          window.addEventListener("chatwoot:ready", function onReady() {
+            if (done) return;
+            done = true;
+            window.clearTimeout(timer);
+            resolve();
+          }, { once: true });
+        });
+      }
+
+      function runChatwoot() {
+        window.chatwootSDK.run({
+          websiteToken: runtime.websiteToken,
+          baseUrl: runtime.chatwootBaseUrl
+        });
+      }
+
+      function applyUser(profile) {
+        if (!profile || !profile.identifier) {
+          return;
+        }
+
+        var user = {
+          name: profile.name,
+          email: profile.email,
+          phone_number: profile.phone_number,
+          avatar_url: profile.avatar_url,
+          identifier_hash: profile.identifier_hash
+        };
+
+        Object.keys(user).forEach(function (key) {
+          if (user[key] === undefined || user[key] === null || user[key] === "") {
+            delete user[key];
+          }
+        });
+
+        window.$chatwoot.setUser(String(profile.identifier), user);
+
+        if (profile.custom_attributes) {
+          window.$chatwoot.setCustomAttributes(profile.custom_attributes);
+        }
+      }
+
+      function applyFullScreenChatStyles() {
+        var bubble = document.querySelector(".woot-widget-bubble");
+        var holder = document.querySelector(".woot-widget-holder");
+        var iframe = holder ? holder.querySelector("iframe") : null;
+
+        if (bubble) {
+          bubble.style.setProperty("display", "none", "important");
+          bubble.style.setProperty("visibility", "hidden", "important");
+          bubble.style.setProperty("pointer-events", "none", "important");
+        }
+
+        if (holder) {
+          holder.style.setProperty("position", "fixed", "important");
+          holder.style.setProperty("inset", "0", "important");
+          holder.style.setProperty("width", "100vw", "important");
+          holder.style.setProperty("height", "100vh", "important");
+          holder.style.setProperty("max-width", "100vw", "important");
+          holder.style.setProperty("max-height", "100vh", "important");
+          holder.style.setProperty("min-width", "100vw", "important");
+          holder.style.setProperty("min-height", "100vh", "important");
+          holder.style.setProperty("margin", "0", "important");
+          holder.style.setProperty("padding", "0", "important");
+          holder.style.setProperty("border", "0", "important");
+          holder.style.setProperty("border-radius", "0", "important");
+          holder.style.setProperty("box-shadow", "none", "important");
+          holder.style.setProperty("transform", "none", "important");
+          holder.style.setProperty("z-index", "2147483647", "important");
+        }
+
+        if (iframe) {
+          iframe.style.setProperty("width", "100%", "important");
+          iframe.style.setProperty("height", "100%", "important");
+          iframe.style.setProperty("min-width", "100%", "important");
+          iframe.style.setProperty("min-height", "100%", "important");
+          iframe.style.setProperty("border", "0", "important");
+          iframe.style.setProperty("border-radius", "0", "important");
+        }
+      }
+
+      function forceMessagesView() {
+        var holder = document.querySelector(".woot-widget-holder");
+        var iframe = holder ? holder.querySelector("iframe") : null;
+
+        if (!iframe || !iframe.src) {
+          return;
+        }
+
+        if (iframe.src.indexOf("/widget") === -1 || iframe.src.indexOf("#/messages") !== -1) {
+          return;
+        }
+
+        iframe.src = iframe.src.split("#")[0] + "#/messages";
+      }
+
+      function openMessagesView() {
+        applyFullScreenChatStyles();
+        forceMessagesView();
+      }
+
+      function openChat() {
+        if (runtime.locale && window.$chatwoot.setLocale) {
+          window.$chatwoot.setLocale(runtime.locale);
+        }
+        if (window.$chatwoot.toggleBubbleVisibility) {
+          window.$chatwoot.toggleBubbleVisibility("hide");
+        }
+        window.$chatwoot.toggle("open");
+        openMessagesView();
+        window.setTimeout(openMessagesView, 300);
+        window.setTimeout(openMessagesView, 1000);
+        window.setTimeout(openMessagesView, 1800);
+        hideShell();
+      }
+
+      function notifyApp(eventName, payload) {
+        var message = JSON.stringify({
+          source: "support-chat",
+          event: eventName,
+          payload: payload || {}
+        });
+
+        try {
+          if (window.AppBridge && typeof window.AppBridge.postMessage === "function") {
+            window.AppBridge.postMessage(message);
+          }
+          if (window.webkit &&
+              window.webkit.messageHandlers &&
+              window.webkit.messageHandlers.supportChat) {
+            window.webkit.messageHandlers.supportChat.postMessage(message);
+          }
+        } catch (error) {
+          // Native bridge is optional.
+        }
+      }
+
+      function bindChatwootEvents() {
+        window.addEventListener("chatwoot:on-message", function (event) {
+          notifyApp("message", event.detail);
+        });
+        window.addEventListener("chatwoot:on-unread-message-count-changed", function (event) {
+          notifyApp("unread_count_changed", event.detail);
+        });
+      }
+
+      function boot() {
+        try {
+          validateConfig();
+        } catch (error) {
+          renderError(error.message);
+          return;
+        }
+
+        renderLoading("正在校验用户身份。");
+
+        Promise.all([
+          getProfile(),
+          loadChatwootSdk()
+        ])
+          .then(function (results) {
+            var profile = results[0];
+            bindChatwootEvents();
+            var ready = waitForChatwootReady();
+            runChatwoot();
+            return ready.then(function () {
+              applyUser(profile);
+              openChat();
+              notifyApp("ready");
+            });
+          })
+          .catch(function (error) {
+            renderError(error.message || "客服接入失败，请稍后重试。");
+            notifyApp("error", { message: error.message });
+          });
+      }
+
+      boot();
+    })();
+  </script>
+</body>
+</html>
