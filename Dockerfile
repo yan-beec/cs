@@ -8,8 +8,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY ics_agent/app ./app
+COPY ics_agent ./ics_agent
 
 EXPOSE 3001
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3001"]
+CMD ["sh", "-c", "uvicorn ics_agent.app.main:app --host ${HOST:-0.0.0.0} --port ${PORT:-3001}"]

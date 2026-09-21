@@ -143,3 +143,9 @@ Thumbs.db
 # Local scratch files
 tmp/
 temp/
+
+# Model files and training artifacts
+models/
+artifacts/
+checkpoints/
+runs/

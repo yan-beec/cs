@@ -1,3 +1,5 @@
+# 模块职责：校验 Chatwoot Webhook 签名并解析事件载荷。
+
 import hashlib
 import hmac
 import json

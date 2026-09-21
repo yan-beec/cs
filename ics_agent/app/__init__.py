@@ -1,1 +1,1 @@
-"""Intelligent customer-service agent."""
+# 模块职责：声明 ics_agent 应用包，并提供应用级包入口。

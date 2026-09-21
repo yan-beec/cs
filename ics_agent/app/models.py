@@ -1,3 +1,5 @@
+# 模块职责：定义 Chatwoot Webhook 事件的数据模型。
+
 from typing import Any
 
 from pydantic import BaseModel, Field
