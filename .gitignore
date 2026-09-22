@@ -143,6 +143,7 @@ Thumbs.db
 # Local scratch files
 tmp/
 temp/
+knowledge_base_in/vector_store/
 
 # Model files and training artifacts
 models/

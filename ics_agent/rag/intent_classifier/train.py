@@ -22,8 +22,9 @@ else:
     from .data import load_intent_csv, split_intent_examples
     from .trainer import IntentClassifierTrainer
 
-from ics_agent.app.config import PROJECT_ROOT, get_settings
+from ics_agent.app.config import PROJECT_ROOT
 from ics_agent.app.logging_config import configure_logging, log_event
+from ics_agent.rag.config import get_rag_settings
 
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ DEFAULT_DATASET = PROJECT_ROOT / "database" / "intent_dataset_4000.csv"
 
 
 def main() -> None:
-    settings = get_settings()
+    settings = get_rag_settings()
     parser = argparse.ArgumentParser(
         description="Fine-tune the local BERT model for intent classification.",
     )

@@ -14,3 +14,22 @@ class ChatwootWebhookEvent(BaseModel):
     content: str | None = None
     sender: dict[str, Any] | None = None
     raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class RAGQueryRequest(BaseModel):
+    """本地 RAG 测试接口的请求体。"""
+
+    query: str = Field(min_length=1, max_length=4096)
+
+
+class AdminLoginRequest(BaseModel):
+    """系统管理员登录请求。"""
+
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class AdminFileDeleteRequest(BaseModel):
+    """后台文件删除请求。"""
+
+    relative_path: str = Field(min_length=1, max_length=1024)

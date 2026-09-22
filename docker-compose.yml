@@ -1,23 +1,19 @@
 services:
-  mysql:
-    image: mysql:8.0
-    container_name: cs-mysql
+  postgres:
+    image: postgres:16.15-alpine3.23
+    container_name: cs-postgres
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-cs}
-      MYSQL_USER: ${MYSQL_USER:-cs}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-cs_password}
+      POSTGRES_DB: ${POSTGRES_DB:-cs}
+      POSTGRES_USER: ${POSTGRES_USER:-cs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cs_password}
       TZ: Asia/Shanghai
     ports:
-      - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
-      - mysql_data:/var/lib/mysql
-    command:
-      - --character-set-server=utf8mb4
-      - --collation-server=utf8mb4_unicode_ci
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-root}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cs} -d ${POSTGRES_DB:-cs}"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -29,13 +25,13 @@ services:
         max-file: "3"
 
   redis:
-    image: redis:alpine
+    image: redis:7.4.11-alpine3.21
     container_name: cs-redis
     restart: unless-stopped
     ports:
       - "127.0.0.1:${REDIS_HOST_PORT:-6380}:6379"
     volumes:
-      - redis_data:/data
+      - redis_data_v1:/data
     command: ["redis-server", "--appendonly", "yes"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -50,7 +46,7 @@ services:
         max-file: "3"
 
   redisinsight:
-    image: redis/redisinsight:latest
+    image: redis/redisinsight:3.8.0
     container_name: cs-redisinsight
     restart: unless-stopped
     ports:
@@ -66,7 +62,34 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  ics-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ics-agent:py310
+    container_name: ics-agent
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: ${ADMIN_WEB_PORT:-3001}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "${ADMIN_WEB_HOST:-127.0.0.1}:${ADMIN_WEB_PORT:-3001}:${ADMIN_WEB_PORT:-3001}"
+    volumes:
+      - ./models:/app/models:ro
+      - ./database:/app/database
+      - ./knowledge_base_in/vector_store:/app/knowledge_base_in/vector_store
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
-  mysql_data:
-  redis_data:
+  postgres_data:
+  redis_data_v1:
   redisinsight_data:

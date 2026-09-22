@@ -11,8 +11,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from ics_agent.app.config import PROJECT_ROOT, Settings, get_settings
+from ics_agent.app.config import PROJECT_ROOT
 from ics_agent.app.logging_config import log_event
+from ics_agent.rag.config import RAGSettings, get_rag_settings
 
 from .data import (
     IntentClassificationDataset,
@@ -99,8 +100,8 @@ def _compute_classification_metrics(eval_prediction: Any) -> dict[str, float]:
 class IntentClassifierTrainer:
     """Build and run a BERT sequence classifier with ``transformers.Trainer``."""
 
-    def __init__(self, settings: Settings | None = None) -> None:
-        self.settings = settings or get_settings()
+    def __init__(self, settings: RAGSettings | None = None) -> None:
+        self.settings = settings or get_rag_settings()
 
     @staticmethod
     def _resolve_project_path(path_value: str) -> Path:

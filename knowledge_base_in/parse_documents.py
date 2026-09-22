@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
 import logging
@@ -18,8 +19,14 @@ if __package__ in {None, ""}:
     if str(_project_root) not in sys.path:
         sys.path.insert(0, str(_project_root))
 
-from ics_agent.app.config import PROJECT_ROOT, Settings, get_settings
+from ics_agent.app.config import PROJECT_ROOT
 from ics_agent.app.logging_config import configure_logging, log_event
+from ics_agent.rag.config import RAGSettings, get_rag_settings
+
+try:
+    from .build_chromadb import build_chromadb
+except ImportError:
+    from build_chromadb import build_chromadb
 
 
 logger = logging.getLogger(__name__)
@@ -33,6 +40,9 @@ MARKDOWN_EXTENSIONS = frozenset({".md", ".markdown"})
 MARKDOWN_HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})[ \t]+(.+?)\s*$")
 MARKDOWN_FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 MARKDOWN_SEPARATOR_RE = re.compile(r"^\s*([-*_])(?:\s*\1){2,}\s*$")
+MARKDOWN_TABLE_CELL_SEPARATOR_RE = re.compile(
+    r"^\s*:?-{3,}:?\s*$"
+)
 
 
 def _resolve_project_path(path_value: str | Path) -> Path:
@@ -149,6 +159,15 @@ class _MarkdownSection:
     heading_path: tuple[tuple[int, str], ...]
 
 
+@dataclass(frozen=True)
+class _MarkdownBlock:
+    """A section block that can be split independently."""
+
+    kind: str
+    text: str
+    start_index: int
+
+
 def _parse_markdown_sections(text: str) -> list[_MarkdownSection]:
     """Split Markdown into non-empty body sections without losing heading paths."""
     sections: list[_MarkdownSection] = []
@@ -216,6 +235,181 @@ def _parse_markdown_sections(text: str) -> list[_MarkdownSection]:
 
     flush_body()
     return sections
+
+
+def _is_markdown_table_separator(line: str) -> bool:
+    """Return whether a line is the separator row of a Markdown table."""
+    stripped = line.strip()
+    if "|" not in stripped:
+        return False
+    cells = stripped.strip("|").split("|")
+    return bool(cells) and all(
+        MARKDOWN_TABLE_CELL_SEPARATOR_RE.fullmatch(cell) is not None
+        for cell in cells
+    )
+
+
+def _is_markdown_table_header(line: str) -> bool:
+    """Return whether a line can be the header row of a Markdown table."""
+    stripped = line.strip()
+    return "|" in stripped and len(
+        [cell for cell in stripped.strip("|").split("|") if cell.strip()]
+    ) >= 1
+
+
+def _parse_markdown_blocks(text: str) -> list[_MarkdownBlock]:
+    """Parse a section into ordinary, table, and fenced-code blocks.
+
+    Tables are recognized from a header row followed by a Markdown separator
+    row. Their physical rows remain atomic so a semantic row cannot be split.
+    """
+    blocks: list[_MarkdownBlock] = []
+    lines = text.splitlines(keepends=True)
+    ordinary_lines: list[str] = []
+    ordinary_start: int | None = None
+    offset = 0
+    index = 0
+
+    def flush_ordinary() -> None:
+        nonlocal ordinary_lines, ordinary_start
+        if ordinary_lines and ordinary_start is not None:
+            ordinary_text = "".join(ordinary_lines)
+            if ordinary_text.strip():
+                blocks.append(
+                    _MarkdownBlock(
+                        kind="text",
+                        text=ordinary_text,
+                        start_index=ordinary_start,
+                    )
+                )
+        ordinary_lines = []
+        ordinary_start = None
+
+    while index < len(lines):
+        current_line = lines[index]
+        current_plain_line = current_line.rstrip("\r\n")
+
+        if (
+            index + 1 < len(lines)
+            and _is_markdown_table_header(current_plain_line)
+            and _is_markdown_table_separator(
+                lines[index + 1].rstrip("\r\n")
+            )
+        ):
+            flush_ordinary()
+            table_start = offset
+            table_lines = [current_line, lines[index + 1]]
+            offset += len(current_line) + len(lines[index + 1])
+            index += 2
+
+            while index < len(lines):
+                row = lines[index]
+                row_plain = row.rstrip("\r\n")
+                if (
+                    not row_plain.strip()
+                    or MARKDOWN_HEADING_RE.match(row_plain) is not None
+                    or MARKDOWN_FENCE_RE.match(row_plain) is not None
+                    or "|" not in row_plain
+                ):
+                    break
+                table_lines.append(row)
+                offset += len(row)
+                index += 1
+
+            blocks.append(
+                _MarkdownBlock(
+                    kind="table",
+                    text="".join(table_lines),
+                    start_index=table_start,
+                )
+            )
+            continue
+
+        fence_match = MARKDOWN_FENCE_RE.match(current_plain_line)
+        if fence_match is not None:
+            flush_ordinary()
+            code_start = offset
+            code_lines = [current_line]
+            fence_marker = fence_match.group(1)
+            offset += len(current_line)
+            index += 1
+            while index < len(lines):
+                code_line = lines[index]
+                code_lines.append(code_line)
+                offset += len(code_line)
+                index += 1
+                closing_match = MARKDOWN_FENCE_RE.match(
+                    code_line.rstrip("\r\n")
+                )
+                if (
+                    closing_match is not None
+                    and closing_match.group(1)[0] == fence_marker[0]
+                    and len(closing_match.group(1)) >= len(fence_marker)
+                ):
+                    break
+            blocks.append(
+                _MarkdownBlock(
+                    kind="code",
+                    text="".join(code_lines),
+                    start_index=code_start,
+                )
+            )
+            continue
+
+        if ordinary_start is None:
+            ordinary_start = offset
+        ordinary_lines.append(current_line)
+        offset += len(current_line)
+        index += 1
+
+    flush_ordinary()
+    return blocks
+
+
+def _split_markdown_table(
+    table_text: str,
+    tokenizer: Any,
+    max_tokens: int,
+) -> list[tuple[str, int]]:
+    """Keep Markdown tables intact, splitting only between complete rows."""
+    lines = table_text.splitlines(keepends=True)
+    if len(lines) < 2:
+        return [(table_text, 0)]
+
+    header = "".join(lines[:2])
+    data_rows = lines[2:]
+    chunks: list[tuple[str, int]] = []
+    current_rows: list[str] = []
+    current_start_row = 0
+
+    def flush_rows() -> None:
+        nonlocal current_rows, current_start_row
+        if not current_rows:
+            return
+        chunks.append(
+            (
+                f"{header}{''.join(current_rows)}".strip(),
+                current_start_row,
+            )
+        )
+        current_rows = []
+
+    for row_index, row in enumerate(data_rows):
+        candidate = f"{header}{''.join(current_rows)}{row}".strip()
+        if current_rows and _token_count(tokenizer, candidate) > max_tokens:
+            flush_rows()
+            current_start_row = row_index
+            current_rows = [row]
+            continue
+
+        if not current_rows:
+            current_start_row = row_index
+        current_rows.append(row)
+
+    flush_rows()
+    if not chunks:
+        chunks.append((header.strip(), 0))
+    return chunks
 
 
 def _has_substantive_content(text: str) -> bool:
@@ -295,8 +489,9 @@ def _split_markdown_document(
     chunk_size_tokens: int,
     chunk_overlap_tokens: int,
     include_heading_context: bool,
+    preserve_markdown_tables: bool,
 ) -> list[Any]:
-    """Split Markdown sections while repeating their heading context per chunk."""
+    """Split Markdown sections while protecting tables and code blocks."""
     split_documents: list[Any] = []
     for section in _parse_markdown_sections(document.page_content):
         body = section.body.strip()
@@ -323,20 +518,81 @@ def _split_markdown_document(
             content_overlap,
         )
         body_leading_offset = len(section.body) - len(section.body.lstrip())
-        body = body.strip()
         section_metadata = {
             **document.metadata,
             "heading_path": [title for _, title in section.heading_path],
             "heading_levels": [level for level, _ in section.heading_path],
             "heading_context": context,
-            "section_start_index": section.body_start_index + body_leading_offset,
+            "section_start_index": (
+                section.body_start_index + body_leading_offset
+            ),
         }
-        split_documents.extend(
-            section_splitter.create_documents(
-                [body],
-                metadatas=[section_metadata],
+        if not preserve_markdown_tables:
+            split_documents.extend(
+                section_splitter.create_documents(
+                    [body],
+                    metadatas=[section_metadata],
+                )
             )
-        )
+            continue
+
+        for block in _parse_markdown_blocks(body):
+            block_text = block.text.strip()
+            if not block_text:
+                continue
+
+            block_leading_offset = len(block.text) - len(block.text.lstrip())
+            block_metadata = {
+                **section_metadata,
+                "block_type": block.kind,
+                "start_index": block.start_index + block_leading_offset,
+            }
+            if block.kind == "table":
+                table_chunks = _split_markdown_table(
+                    block_text,
+                    tokenizer,
+                    content_budget,
+                )
+                for table_chunk, row_offset in table_chunks:
+                    table_metadata = {
+                        **block_metadata,
+                        "protected_block": True,
+                        "table_row_offset": row_offset,
+                        "table_row_count": max(
+                            0,
+                            len(table_chunk.splitlines()) - 2,
+                        ),
+                    }
+                    split_documents.append(
+                        document.__class__(
+                            page_content=table_chunk,
+                            metadata=table_metadata,
+                        )
+                    )
+                continue
+
+            if block.kind == "code":
+                split_documents.append(
+                    document.__class__(
+                        page_content=block_text,
+                        metadata={
+                            **block_metadata,
+                            "protected_block": True,
+                        },
+                    )
+                )
+                continue
+
+            text_documents = section_splitter.create_documents(
+                [block_text],
+                metadatas=[block_metadata],
+            )
+            for text_document in text_documents:
+                text_document.metadata["start_index"] = (
+                    block_metadata["start_index"]
+                    + int(text_document.metadata.get("start_index", 0))
+                )
+            split_documents.extend(text_documents)
     return split_documents
 
 
@@ -442,7 +698,7 @@ def _load_image_with_ocr(
 def _load_file(
     source_path: Path,
     input_dir: Path,
-    settings: Settings,
+    settings: RAGSettings,
     loaders: dict[str, Any],
 ) -> list[Any]:
     extension = source_path.suffix.lower()
@@ -484,6 +740,7 @@ def _split_documents(
     chunk_overlap_tokens: int,
     include_heading_context: bool,
     drop_heading_only_chunks: bool,
+    preserve_markdown_tables: bool,
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for document in documents:
@@ -503,6 +760,7 @@ def _split_documents(
                 chunk_size_tokens,
                 chunk_overlap_tokens,
                 include_heading_context=True,
+                preserve_markdown_tables=preserve_markdown_tables,
             )
         else:
             chunks = splitter.split_documents([document])
@@ -524,7 +782,10 @@ def _split_documents(
 
             if is_markdown and include_heading_context:
                 prefix = f"{context}\n\n" if context else ""
-                if _token_count(tokenizer, text) > chunk_size_tokens:
+                if (
+                    _token_count(tokenizer, text) > chunk_size_tokens
+                    and not metadata.get("protected_block", False)
+                ):
                     body_budget = max(
                         1,
                         chunk_size_tokens - _token_count(tokenizer, prefix),
@@ -566,7 +827,7 @@ def _split_documents(
 
 
 def parse_knowledge_base(
-    settings: Settings | None = None,
+    settings: RAGSettings | None = None,
     *,
     input_dir: str | Path | None = None,
     output_path: str | Path | None = None,
@@ -575,7 +836,7 @@ def parse_knowledge_base(
     fail_fast: bool = False,
 ) -> dict[str, Any]:
     """Recursively parse and chunk all supported files under the input directory."""
-    runtime_settings = settings or get_settings()
+    runtime_settings = settings or get_rag_settings()
     source_dir = _resolve_project_path(
         input_dir or runtime_settings.knowledge_base_input_dir
     )
@@ -633,6 +894,7 @@ def parse_knowledge_base(
                 effective_overlap,
                 runtime_settings.knowledge_base_include_heading_context,
                 runtime_settings.knowledge_base_drop_heading_only_chunks,
+                runtime_settings.knowledge_base_preserve_markdown_tables,
             )
             if records:
                 parsed_file_count += 1
@@ -687,6 +949,9 @@ def parse_knowledge_base(
         "drop_heading_only_chunks": (
             runtime_settings.knowledge_base_drop_heading_only_chunks
         ),
+        "preserve_markdown_tables": (
+            runtime_settings.knowledge_base_preserve_markdown_tables
+        ),
         "tokenizer_dir": str(
             _resolve_project_path(runtime_settings.knowledge_base_tokenizer_dir)
         ),
@@ -709,8 +974,64 @@ def parse_knowledge_base(
     return manifest
 
 
+async def parse_and_update_vector_store(
+    settings: RAGSettings | None = None,
+    *,
+    input_dir: str | Path | None = None,
+    output_path: str | Path | None = None,
+    chunk_size_tokens: int | None = None,
+    chunk_overlap_tokens: int | None = None,
+    fail_fast: bool = False,
+    skip_vector_store: bool = False,
+) -> dict[str, Any]:
+    """Parse the knowledge base, then asynchronously rebuild ChromaDB."""
+    runtime_settings = settings or get_rag_settings()
+    parse_manifest = await asyncio.to_thread(
+        parse_knowledge_base,
+        runtime_settings,
+        input_dir=input_dir,
+        output_path=output_path,
+        chunk_size_tokens=chunk_size_tokens,
+        chunk_overlap_tokens=chunk_overlap_tokens,
+        fail_fast=fail_fast,
+    )
+    if skip_vector_store:
+        return {
+            "parse": parse_manifest,
+            "vector_store": None,
+        }
+
+    log_event(
+        logger,
+        logging.INFO,
+        "knowledge_base.vector.rebuild.started",
+        chunks_path=parse_manifest["output_path"],
+        reset_collection=True,
+    )
+    try:
+        vector_manifest = await asyncio.to_thread(
+            build_chromadb,
+            runtime_settings,
+            chunks_path=parse_manifest["output_path"],
+            reset_collection=True,
+        )
+    except Exception:
+        log_event(
+            logger,
+            logging.ERROR,
+            "knowledge_base.vector.rebuild.failed",
+            chunks_path=parse_manifest["output_path"],
+        )
+        raise
+
+    return {
+        "parse": parse_manifest,
+        "vector_store": vector_manifest,
+    }
+
+
 def main() -> None:
-    settings = get_settings()
+    settings = get_rag_settings()
     parser = argparse.ArgumentParser(
         description="Recursively parse and chunk the knowledge base.",
     )
@@ -741,17 +1062,25 @@ def main() -> None:
         action="store_true",
         help="Stop immediately when one file fails to parse.",
     )
+    parser.add_argument(
+        "--skip-vector-store",
+        action="store_true",
+        help="Only parse files and skip the automatic ChromaDB rebuild.",
+    )
     args = parser.parse_args()
     configure_logging()
-    manifest = parse_knowledge_base(
-        settings=settings,
-        input_dir=args.input_dir,
-        output_path=args.output,
-        chunk_size_tokens=args.chunk_size,
-        chunk_overlap_tokens=args.chunk_overlap,
-        fail_fast=args.fail_fast,
+    result = asyncio.run(
+        parse_and_update_vector_store(
+            settings=settings,
+            input_dir=args.input_dir,
+            output_path=args.output,
+            chunk_size_tokens=args.chunk_size,
+            chunk_overlap_tokens=args.chunk_overlap,
+            fail_fast=args.fail_fast,
+            skip_vector_store=args.skip_vector_store,
+        )
     )
-    print(json.dumps(manifest, ensure_ascii=False, indent=2))
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

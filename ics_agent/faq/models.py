@@ -87,7 +87,7 @@ class FAQResult:
     bm25_score: float | None = None
     match_degree: float | None = None
     rag_query: str | None = None
-    mysql_query: str | None = None
+    postgres_query: str | None = None
     cache_key: str | None = None
 
     def to_dict(self) -> dict:
@@ -101,6 +101,6 @@ class FAQResult:
             "bm25_score": self.bm25_score,
             "match_degree": self.match_degree,
             "rag_query": self.rag_query,
-            "mysql_query": self.mysql_query,
+            "postgres_query": self.postgres_query,
             "cache_key": self.cache_key,
         }

@@ -1,31 +1,61 @@
-# 模块职责：构建 BM25 索引，并计算 FAQ 查询的匹配结果。
+# 模块职责：提供 FAQ 分词、BM25 索引和匹配度计算。
 
 import logging
 import math
 from collections import Counter
 from pathlib import Path
 
+import jieba
 from rank_bm25 import BM25Okapi
 
 from ics_agent.app.logging_config import log_event
 
 try:
-    from .models import FAQDocument, FAQMatch, FAQSnapshot
+    from .models import FAQMatch, FAQSnapshot
 except ImportError:
-    from models import FAQDocument, FAQMatch, FAQSnapshot
+    from models import FAQMatch, FAQSnapshot
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 try:
-    from ics_agent.app.config import get_settings
+    from ics_agent.faq.config import get_faq_settings
 except ModuleNotFoundError:
     import sys
 
     sys.path.insert(0, str(PROJECT_ROOT))
-    from ics_agent.app.config import get_settings
+    from ics_agent.faq.config import get_faq_settings
 
 
 logger = logging.getLogger(__name__)
+
+
+class JiebaTokenizer:
+    """Tokenize FAQ questions and queries with configured product terms."""
+
+    def __init__(self, terms: tuple[str, ...] | None = None) -> None:
+        jieba.default_logger.setLevel(logging.WARNING)
+        self._terms = (
+            terms
+            if terms is not None
+            else get_faq_settings().faq_terms_list
+        )
+        self._register_terms()
+        log_event(
+            logger,
+            logging.DEBUG,
+            "faq.tokenizer.initialized",
+            custom_term_count=len(self._terms),
+        )
+
+    def _register_terms(self) -> None:
+        for term in self._terms:
+            jieba.add_word(term, freq=200000, tag="nz")
+
+    def tokenize(self, text: str) -> list[str]:
+        return [token.strip() for token in jieba.lcut(text) if token.strip()]
+
+    def tokenize_many(self, texts: list[str]) -> list[list[str]]:
+        return [self.tokenize(text) for text in texts]
 
 
 def match_degree(
@@ -52,7 +82,7 @@ class BM25Matcher:
         if not snapshot.documents:
             raise ValueError("Cannot initialize BM25 with an empty FAQ snapshot.")
 
-        settings = get_settings()
+        settings = get_faq_settings()
         self._snapshot = snapshot
         self._index = BM25Okapi(
             snapshot.tokenized_questions,

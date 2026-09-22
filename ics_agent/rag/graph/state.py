@@ -1,0 +1,33 @@
+# 模块职责：定义 RAG MVP 图的共享状态和各节点间的数据契约。
+
+from __future__ import annotations
+
+from typing import Any, TypedDict
+
+from ics_agent.rag.reranker import RerankedDocument
+from ics_agent.rag.retrieval import RetrievedDocument
+
+
+class RAGState(TypedDict, total=False):
+    """RAG 图在各节点之间传递的状态。"""
+
+    # 输入和未来路由字段。
+    query: str
+    route: str
+
+    # 意图识别节点输出。
+    intent_id: int
+    intent_label: str
+    intent_probabilities: dict[str, float]
+    intent_confidence: float
+
+    # 检索和精排节点输出。
+    retrieved_documents: list[RetrievedDocument]
+    reranked_documents: list[RerankedDocument]
+
+    # 大模型回复节点输出。
+    llm_response: Any
+    answer: str
+
+    # 节点异常信息，保留给后续降级路由使用。
+    error: str

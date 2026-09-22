@@ -26,8 +26,9 @@ else:
         load_intent_csv,
     )
 
-from ics_agent.app.config import PROJECT_ROOT, Settings, get_settings
+from ics_agent.app.config import PROJECT_ROOT
 from ics_agent.app.logging_config import configure_logging, log_event
+from ics_agent.rag.config import RAGSettings, get_rag_settings
 
 
 logger = logging.getLogger(__name__)
@@ -204,12 +205,12 @@ def _predict_examples(
 
 def evaluate_model(
     dataset_path: str | Path,
-    settings: Settings | None = None,
+    settings: RAGSettings | None = None,
     model_path: str | Path | None = None,
     batch_size: int | None = None,
 ) -> dict[str, Any]:
     """Evaluate the saved model on every row of an independent labeled CSV."""
-    runtime_settings = settings or get_settings()
+    runtime_settings = settings or get_rag_settings()
     torch, (model_class, tokenizer_class) = _load_runtime_dependencies()
     test_dataset_path = _resolve_project_path(str(dataset_path))
     model_dir = _resolve_project_path(
@@ -277,7 +278,7 @@ def evaluate_model(
 
 
 def main() -> None:
-    settings = get_settings()
+    settings = get_rag_settings()
     parser = argparse.ArgumentParser(
         description="Evaluate the fine-tuned intent classifier on an independent CSV.",
     )

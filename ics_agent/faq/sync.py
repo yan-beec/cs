@@ -1,12 +1,11 @@
-# 模块职责：读取 FAQ Excel 问答对，事务化同步到 MySQL，并刷新 Redis FAQ 快照。
+# 模块职责：读取 FAQ Excel 问答对，事务化同步 PostgreSQL/Redis，并刷新运行时。
 
 from __future__ import annotations
 
-import argparse
+import asyncio
+import hashlib
 import json
 import logging
-import os
-import sys
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -14,32 +13,20 @@ from typing import Any, Iterable
 
 from openpyxl import load_workbook
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+from ics_agent.app.logging_config import log_event
+from ics_agent.faq.config import get_faq_settings
 
-if __package__ in {None, ""} and str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+from .repositories import (
+    FAQAnswerCache,
+    PostgreSQLConnectionPool,
+    RedisFAQSnapshotRepository,
+)
+from .service import FAQService, FAQSnapshotSynchronizer, get_faq_service
 
-from ics_agent.app.config import get_settings
-from ics_agent.app.logging_config import configure_logging, log_event
-
-try:
-    from ..repositories import MySQLConnectionPool
-    from ..repositories import FAQAnswerCache, RedisFAQSnapshotRepository
-    from ..service import FAQService, FAQSnapshotSynchronizer, get_faq_service
-except ImportError:
-    from ics_agent.faq.repositories import MySQLConnectionPool
-    from ics_agent.faq.repositories import (
-        FAQAnswerCache,
-        RedisFAQSnapshotRepository,
-    )
-    from ics_agent.faq.service import (
-        FAQService,
-        FAQSnapshotSynchronizer,
-        get_faq_service,
-    )
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-logger = logging.getLogger("ics_agent.faq.faq_base_in.sync_qna_to_mysql")
+logger = logging.getLogger("ics_agent.faq.sync")
 
 EXPECTED_COLUMNS = (
     "id",
@@ -72,7 +59,7 @@ class FAQExcelRow:
     answer_type: str
     updated_at: datetime
 
-    def to_mysql_params(self) -> tuple[Any, ...]:
+    def to_postgres_params(self) -> tuple[Any, ...]:
         return (
             self.question_id,
             self.question,
@@ -90,7 +77,7 @@ class FAQExcelRow:
 
 @dataclass(frozen=True)
 class FAQSyncResult:
-    """Summary of one Excel-to-MySQL synchronization."""
+    """Summary of one Excel-to-PostgreSQL synchronization."""
 
     source_path: str
     source_row_count: int
@@ -101,6 +88,73 @@ class FAQSyncResult:
     redis_cache_keys_removed: int | None = None
     bm25_document_count: int | None = None
     bm25_reloaded: bool = False
+    changed: bool = True
+    source_hash: str | None = None
+
+
+@dataclass(frozen=True)
+class FAQDatabaseSyncResult:
+    """Result of one atomic full replacement of the FAQ table."""
+
+    source_row_count: int
+    deleted_row_count: int
+    changed: bool
+    source_hash: str
+
+
+def _canonical_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, dict):
+        return {
+            str(key): _canonical_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_canonical_value(item) for item in value]
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith(("[", "{")):
+            try:
+                return _canonical_value(json.loads(stripped))
+            except json.JSONDecodeError:
+                pass
+        return stripped
+    return str(value)
+
+
+def _canonical_values(values: Iterable[Any]) -> list[Any]:
+    return [_canonical_value(value) for value in values]
+
+
+def _records_hash(records: Iterable[FAQExcelRow]) -> str:
+    ordered_records = sorted(records, key=lambda record: record.question_id)
+    payload = [
+        _canonical_values(record.to_postgres_params())
+        for record in ordered_records
+    ]
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()
+
+
+def _rows_hash(rows: Iterable[Iterable[Any]]) -> str:
+    payload = [_canonical_values(row) for row in rows]
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()
 
 
 def _resolve_project_path(path_value: str | Path) -> Path:
@@ -256,10 +310,14 @@ class FAQExcelReader:
 
             records: list[FAQExcelRow] = []
             seen_ids: set[int] = set()
+            skipped_need_human_count = 0
             for row_number, raw_row in enumerate(rows, start=2):
                 if not any(value not in (None, "") for value in raw_row):
                     continue
                 record = self._parse_row(raw_row, positions, row_number)
+                if record.need_human != 0:
+                    skipped_need_human_count += 1
+                    continue
                 if record.question_id in seen_ids:
                     raise ValueError(
                         f"Excel contains duplicate FAQ id "
@@ -277,7 +335,9 @@ class FAQExcelReader:
                 path=path,
                 sheet_name=selected_sheet,
                 row_count=len(records),
+                skipped_need_human_count=skipped_need_human_count,
             )
+            records.sort(key=lambda record: record.question_id)
             return records
         finally:
             workbook.close()
@@ -362,59 +422,58 @@ class FAQExcelReader:
 
 
 class FAQQnaSynchronizer:
-    """Synchronize validated FAQ records to the configured MySQL table."""
+    """Synchronize validated FAQ records to the configured PostgreSQL table."""
 
-    def __init__(self, connections: MySQLConnectionPool | None = None) -> None:
-        self._connections = connections or MySQLConnectionPool()
+    def __init__(
+        self,
+        connections: PostgreSQLConnectionPool | None = None,
+    ) -> None:
+        self._connections = connections or PostgreSQLConnectionPool()
 
     def sync(
         self,
         records: Iterable[FAQExcelRow],
-        *,
-        delete_missing: bool = True,
-    ) -> tuple[int, int]:
-        rows = list(records)
+    ) -> FAQDatabaseSyncResult:
+        rows = sorted(records, key=lambda record: record.question_id)
         if not rows:
             raise ValueError("Cannot synchronize an empty FAQ record set.")
 
-        settings = get_settings()
+        settings = get_faq_settings()
         table_name = settings.faq_table_name
         columns = ", ".join(EXPECTED_COLUMNS)
         placeholders = ", ".join(["%s"] * len(EXPECTED_COLUMNS))
-        update_clause = ", ".join(
-            f"{column}=VALUES({column})"
-            for column in EXPECTED_COLUMNS
-            if column != "id"
-        )
-        upsert_sql = f"""
+        source_hash = _records_hash(rows)
+        insert_sql = f"""
             INSERT INTO {table_name} ({columns})
             VALUES ({placeholders})
-            ON DUPLICATE KEY UPDATE {update_clause}
         """.strip()
 
         connection = self._connections.acquire()
         deleted_count = 0
+        changed = True
         try:
             cursor = connection.cursor()
             try:
-                connection.start_transaction()
-                cursor.executemany(
-                    upsert_sql,
-                    [record.to_mysql_params() for record in rows],
-                )
-                if delete_missing:
-                    ids = [record.question_id for record in rows]
-                    id_placeholders = ", ".join(["%s"] * len(ids))
+                with connection.transaction():
+                    # Serialize full replacements across processes. The lock is
+                    # transaction-scoped and does not alter the table schema.
                     cursor.execute(
-                        f"DELETE FROM {table_name} "
-                        f"WHERE id NOT IN ({id_placeholders})",
-                        ids,
+                        "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                        (f"ics_agent.faq.replace:{table_name}",),
                     )
-                    deleted_count = max(cursor.rowcount, 0)
-                connection.commit()
-            except Exception:
-                connection.rollback()
-                raise
+                    cursor.execute(
+                        f"SELECT {columns} FROM {table_name} ORDER BY id"
+                    )
+                    current_rows = cursor.fetchall()
+                    if _rows_hash(current_rows) == source_hash:
+                        changed = False
+                    else:
+                        cursor.execute(f"DELETE FROM {table_name}")
+                        deleted_count = max(cursor.rowcount, 0)
+                        cursor.executemany(
+                            insert_sql,
+                            [record.to_postgres_params() for record in rows],
+                        )
             finally:
                 cursor.close()
         finally:
@@ -423,34 +482,40 @@ class FAQQnaSynchronizer:
         log_event(
             logger,
             logging.INFO,
-            "faq.mysql.sync.success",
+            "faq.postgres.sync.success",
             table=table_name,
             source_row_count=len(rows),
             deleted_row_count=deleted_count,
+            replace_mode="full",
+            changed=changed,
+            source_hash=source_hash,
         )
-        return len(rows), deleted_count
+        return FAQDatabaseSyncResult(
+            source_row_count=len(rows),
+            deleted_row_count=deleted_count,
+            changed=changed,
+            source_hash=source_hash,
+        )
 
 
 def sync_qna_from_excel(
     workbook_path: str | Path | None = None,
     *,
     sheet_name: str | None = None,
-    delete_missing: bool = True,
     sync_redis: bool = True,
     clear_answer_cache: bool | None = None,
     refresh_bm25: bool = False,
     faq_service: FAQService | None = None,
 ) -> FAQSyncResult:
-    """Synchronize MySQL, Redis FAQ state, and optionally the live BM25 matcher."""
-    settings = get_settings()
+    """Synchronize PostgreSQL, Redis FAQ state, and optionally the live BM25 matcher."""
+    settings = get_faq_settings()
     source_path = _resolve_project_path(
         workbook_path or settings.faq_source_xlsx_path
     )
     records = FAQExcelReader().read(source_path, sheet_name=sheet_name)
-    upserted_count, deleted_count = FAQQnaSynchronizer().sync(
-        records,
-        delete_missing=delete_missing,
-    )
+    database_result = FAQQnaSynchronizer().sync(records)
+    upserted_count = database_result.source_row_count
+    deleted_count = database_result.deleted_row_count
 
     redis_count: int | None = None
     redis_snapshot_written = False
@@ -477,7 +542,7 @@ def sync_qna_from_excel(
                 written=redis_snapshot_written,
             )
         except Exception as exc:
-            # MySQL is the source-of-truth update. Redis can be refreshed by
+            # PostgreSQL is the source-of-truth update. Redis can be refreshed by
             # the normal FAQ initialization path when it becomes available.
             log_event(
                 logger,
@@ -539,6 +604,29 @@ def sync_qna_from_excel(
         redis_cache_keys_removed=redis_cache_keys_removed,
         bm25_document_count=bm25_document_count,
         bm25_reloaded=bm25_reloaded,
+        changed=database_result.changed,
+        source_hash=database_result.source_hash,
+    )
+
+
+async def async_sync_qna_from_excel(
+    workbook_path: str | Path | None = None,
+    *,
+    sheet_name: str | None = None,
+    sync_redis: bool = True,
+    clear_answer_cache: bool | None = None,
+    refresh_bm25: bool = False,
+    faq_service: FAQService | None = None,
+) -> FAQSyncResult:
+    """Run the blocking Excel/database refresh off the asyncio event loop."""
+    return await asyncio.to_thread(
+        sync_qna_from_excel,
+        workbook_path,
+        sheet_name=sheet_name,
+        sync_redis=sync_redis,
+        clear_answer_cache=clear_answer_cache,
+        refresh_bm25=refresh_bm25,
+        faq_service=faq_service,
     )
 
 
@@ -546,7 +634,6 @@ def refresh_faq_runtime_from_excel(
     workbook_path: str | Path | None = None,
     *,
     sheet_name: str | None = None,
-    delete_missing: bool = True,
     clear_answer_cache: bool | None = None,
     faq_service: FAQService | None = None,
 ) -> FAQSyncResult:
@@ -554,119 +641,8 @@ def refresh_faq_runtime_from_excel(
     return sync_qna_from_excel(
         workbook_path,
         sheet_name=sheet_name,
-        delete_missing=delete_missing,
         sync_redis=True,
         clear_answer_cache=clear_answer_cache,
         refresh_bm25=True,
         faq_service=faq_service,
     )
-
-
-def load_dotenv(path: Path) -> None:
-    """Load simple KEY=VALUE pairs for direct CLI execution."""
-    if not path.exists():
-        return
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        os.environ.setdefault(
-            key.strip(),
-            value.strip().strip('"').strip("'"),
-        )
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Synchronize FAQ Q&A rows from an Excel workbook to MySQL "
-            "and refresh the Redis FAQ snapshot."
-        )
-    )
-    parser.add_argument(
-        "--excel-path",
-        help="Override FAQ_SOURCE_XLSX_PATH for this execution.",
-    )
-    parser.add_argument(
-        "--sheet-name",
-        help="Workbook sheet name. Defaults to the first sheet.",
-    )
-    parser.add_argument(
-        "--keep-extra",
-        action="store_true",
-        help="Do not delete MySQL rows whose ids are absent from the workbook.",
-    )
-    parser.add_argument(
-        "--skip-redis-sync",
-        action="store_true",
-        help="Only update MySQL and leave the Redis snapshot unchanged.",
-    )
-    parser.add_argument(
-        "--keep-answer-cache",
-        action="store_true",
-        help="Refresh the Redis snapshot but keep the existing FAQ answer cache.",
-    )
-    args = parser.parse_args()
-
-    load_dotenv(PROJECT_ROOT / ".env")
-    configure_logging()
-    log_event(
-        logger,
-        logging.INFO,
-        "faq.cli.qna_sync.start",
-        excel_path=args.excel_path or get_settings().faq_source_xlsx_path,
-        sheet_name=args.sheet_name,
-        delete_missing=not args.keep_extra,
-        sync_redis=not args.skip_redis_sync,
-        clear_answer_cache=(
-            False if args.keep_answer_cache else
-            get_settings().faq_clear_answer_cache_on_sync
-        ),
-    )
-    try:
-        result = sync_qna_from_excel(
-            args.excel_path,
-            sheet_name=args.sheet_name,
-            delete_missing=not args.keep_extra,
-            sync_redis=not args.skip_redis_sync,
-            clear_answer_cache=(
-                False if args.keep_answer_cache else None
-            ),
-        )
-    except Exception as exc:
-        log_event(
-            logger,
-            logging.ERROR,
-            "faq.cli.qna_sync.failed",
-            error_type=type(exc).__name__,
-        )
-        raise
-
-    log_event(
-        logger,
-        logging.INFO,
-        "faq.cli.qna_sync.success",
-        source_row_count=result.source_row_count,
-        upserted_row_count=result.upserted_row_count,
-        deleted_row_count=result.deleted_row_count,
-        redis_snapshot_count=result.redis_snapshot_count,
-        redis_snapshot_written=result.redis_snapshot_written,
-        redis_cache_keys_removed=result.redis_cache_keys_removed,
-        bm25_document_count=result.bm25_document_count,
-        bm25_reloaded=result.bm25_reloaded,
-    )
-    print(
-        "FAQ sync completed: "
-        f"source_rows={result.source_row_count}, "
-        f"upserted={result.upserted_row_count}, "
-        f"deleted={result.deleted_row_count}, "
-        f"redis_snapshot={result.redis_snapshot_count}, "
-        f"redis_snapshot_written={result.redis_snapshot_written}, "
-        f"redis_cache_keys_removed={result.redis_cache_keys_removed}, "
-        f"bm25_reloaded={result.bm25_reloaded}"
-    )
-
-
-if __name__ == "__main__":
-    main()
