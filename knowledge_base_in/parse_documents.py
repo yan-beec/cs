@@ -51,7 +51,7 @@ def _resolve_project_path(path_value: str | Path) -> Path:
 
 
 def _load_langchain_components() -> tuple[Any, Any, dict[str, Any]]:
-    """Load LangChain components only when the parser is actually executed."""
+    """仅在实际执行解析器时加载 LangChain 组件。"""
     try:
         from langchain_community.document_loaders import (
             BSHTMLLoader,
@@ -87,7 +87,7 @@ def _load_langchain_components() -> tuple[Any, Any, dict[str, Any]]:
 
 @lru_cache(maxsize=2)
 def _load_tokenizer(tokenizer_dir: str) -> Any:
-    """Load a local tokenizer used only to measure real model token counts."""
+    """加载本地分词器，仅用于测量真实的模型 token 数量。"""
     try:
         from transformers import AutoTokenizer
     except ImportError as exc:
@@ -152,7 +152,7 @@ def _build_splitter(
 
 @dataclass(frozen=True)
 class _MarkdownSection:
-    """Markdown body text with the heading hierarchy active above it."""
+    """带有当前生效标题层级的 Markdown 正文。"""
 
     body: str
     body_start_index: int
@@ -161,7 +161,7 @@ class _MarkdownSection:
 
 @dataclass(frozen=True)
 class _MarkdownBlock:
-    """A section block that can be split independently."""
+    """可以独立拆分的章节块。"""
 
     kind: str
     text: str
@@ -169,7 +169,7 @@ class _MarkdownBlock:
 
 
 def _parse_markdown_sections(text: str) -> list[_MarkdownSection]:
-    """Split Markdown into non-empty body sections without losing heading paths."""
+    """将 Markdown 拆分为非空正文章节，同时保留标题路径。"""
     sections: list[_MarkdownSection] = []
     heading_stack: list[tuple[int, str]] = []
     body_lines: list[str] = []
@@ -238,7 +238,7 @@ def _parse_markdown_sections(text: str) -> list[_MarkdownSection]:
 
 
 def _is_markdown_table_separator(line: str) -> bool:
-    """Return whether a line is the separator row of a Markdown table."""
+    """判断一行是否为 Markdown 表格的分隔行。"""
     stripped = line.strip()
     if "|" not in stripped:
         return False
@@ -250,7 +250,7 @@ def _is_markdown_table_separator(line: str) -> bool:
 
 
 def _is_markdown_table_header(line: str) -> bool:
-    """Return whether a line can be the header row of a Markdown table."""
+    """判断一行是否可以作为 Markdown 表格的表头行。"""
     stripped = line.strip()
     return "|" in stripped and len(
         [cell for cell in stripped.strip("|").split("|") if cell.strip()]
@@ -258,7 +258,7 @@ def _is_markdown_table_header(line: str) -> bool:
 
 
 def _parse_markdown_blocks(text: str) -> list[_MarkdownBlock]:
-    """Parse a section into ordinary, table, and fenced-code blocks.
+    """将章节解析为普通块、表格块和围栏代码块。
 
     Tables are recognized from a header row followed by a Markdown separator
     row. Their physical rows remain atomic so a semantic row cannot be split.
@@ -371,7 +371,7 @@ def _split_markdown_table(
     tokenizer: Any,
     max_tokens: int,
 ) -> list[tuple[str, int]]:
-    """Keep Markdown tables intact, splitting only between complete rows."""
+    """保持 Markdown 表格完整，仅在完整行之间进行拆分。"""
     lines = table_text.splitlines(keepends=True)
     if len(lines) < 2:
         return [(table_text, 0)]
@@ -413,7 +413,7 @@ def _split_markdown_table(
 
 
 def _has_substantive_content(text: str) -> bool:
-    """Return False for blank, separator-only, or heading-only text."""
+    """空白文本、仅分隔符文本或仅标题文本返回 False。"""
     content_lines: list[str] = []
     for line in text.splitlines():
         stripped = line.strip()
@@ -447,7 +447,7 @@ def _heading_context(
     tokenizer: Any,
     chunk_size_tokens: int,
 ) -> tuple[str, int]:
-    """Build the longest useful heading path that fits inside the chunk budget."""
+    """构建适合当前分块预算的最长有效标题路径。"""
     if not heading_path:
         return "", 0
 
@@ -491,7 +491,7 @@ def _split_markdown_document(
     include_heading_context: bool,
     preserve_markdown_tables: bool,
 ) -> list[Any]:
-    """Split Markdown sections while protecting tables and code blocks."""
+    """拆分 Markdown 章节，同时保护表格和代码块。"""
     split_documents: list[Any] = []
     for section in _parse_markdown_sections(document.page_content):
         body = section.body.strip()
@@ -636,8 +636,25 @@ def _load_with_langchain(
     return documents
 
 
-@lru_cache(maxsize=1)
-def _load_ocr_engine() -> Any:
+def _build_ocr_runtime_params(
+    cpu_threads: int,
+    cpu_interop_threads: int,
+) -> dict[str, int]:
+    if cpu_threads < 1:
+        raise ValueError("ocr cpu_threads must be at least 1.")
+    if cpu_interop_threads < 1:
+        raise ValueError("ocr cpu_interop_threads must be at least 1.")
+    return {
+        "EngineConfig.onnxruntime.intra_op_num_threads": cpu_threads,
+        "EngineConfig.onnxruntime.inter_op_num_threads": cpu_interop_threads,
+    }
+
+
+@lru_cache(maxsize=4)
+def _load_ocr_engine(
+    cpu_threads: int,
+    cpu_interop_threads: int,
+) -> Any:
     try:
         from rapidocr import RapidOCR
     except ImportError as exc:
@@ -645,11 +662,16 @@ def _load_ocr_engine() -> Any:
             "RapidOCR is required to parse image files. Install rapidocr "
             "in the cs environment first."
         ) from exc
-    return RapidOCR()
+    return RapidOCR(
+        params=_build_ocr_runtime_params(
+            cpu_threads,
+            cpu_interop_threads,
+        )
+    )
 
 
 def _extract_ocr_text(result: Any) -> tuple[list[str], list[float]]:
-    """Support both current RapidOCR output objects and older tuple output."""
+    """同时兼容当前 RapidOCR 输出对象和旧版元组输出。"""
     texts = getattr(result, "txts", None)
     scores = getattr(result, "scores", None)
     if texts is None and isinstance(result, tuple):
@@ -669,9 +691,14 @@ def _load_image_with_ocr(
     source_path: Path,
     input_dir: Path,
     text_score: float,
+    cpu_threads: int,
+    cpu_interop_threads: int,
 ) -> list[Any]:
     Document, _, _ = _load_langchain_components()
-    result = _load_ocr_engine()(
+    result = _load_ocr_engine(
+        cpu_threads,
+        cpu_interop_threads,
+    )(
         source_path,
         text_score=text_score,
     )
@@ -716,6 +743,8 @@ def _load_file(
             source_path,
             input_dir,
             settings.knowledge_base_ocr_text_score,
+            settings.knowledge_base_ocr_cpu_threads,
+            settings.knowledge_base_ocr_cpu_interop_threads,
         )
 
     loader_class = loaders.get(extension)
@@ -835,7 +864,7 @@ def parse_knowledge_base(
     chunk_overlap_tokens: int | None = None,
     fail_fast: bool = False,
 ) -> dict[str, Any]:
-    """Recursively parse and chunk all supported files under the input directory."""
+    """递归解析输入目录下的所有受支持文件并进行分块。"""
     runtime_settings = settings or get_rag_settings()
     source_dir = _resolve_project_path(
         input_dir or runtime_settings.knowledge_base_input_dir
@@ -952,6 +981,10 @@ def parse_knowledge_base(
         "preserve_markdown_tables": (
             runtime_settings.knowledge_base_preserve_markdown_tables
         ),
+        "ocr_cpu_threads": runtime_settings.knowledge_base_ocr_cpu_threads,
+        "ocr_cpu_interop_threads": (
+            runtime_settings.knowledge_base_ocr_cpu_interop_threads
+        ),
         "tokenizer_dir": str(
             _resolve_project_path(runtime_settings.knowledge_base_tokenizer_dir)
         ),
@@ -984,7 +1017,7 @@ async def parse_and_update_vector_store(
     fail_fast: bool = False,
     skip_vector_store: bool = False,
 ) -> dict[str, Any]:
-    """Parse the knowledge base, then asynchronously rebuild ChromaDB."""
+    """解析知识库，然后异步重建 ChromaDB。"""
     runtime_settings = settings or get_rag_settings()
     parse_manifest = await asyncio.to_thread(
         parse_knowledge_base,

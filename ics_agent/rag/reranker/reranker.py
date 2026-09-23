@@ -148,7 +148,7 @@ class CrossEncoderModel:
         query: str,
         documents: Sequence[RetrievedDocument],
     ) -> list[float]:
-        """同步计算 query-document relevance scores，供线程池调用。"""
+        """同步计算查询与文档的相关性分数，供线程池调用。"""
         self._load()
         assert self._tokenizer is not None
         assert self._model is not None

@@ -74,6 +74,7 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: ${ADMIN_WEB_PORT:-3001}
+      TZ: ${TZ:-Asia/Shanghai}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       REDIS_URL: redis://redis:6379/0
@@ -82,12 +83,19 @@ services:
     volumes:
       - ./models:/app/models:ro
       - ./database:/app/database
+      - ./knowledge_base_in/output:/app/knowledge_base_in/output
       - ./knowledge_base_in/vector_store:/app/knowledge_base_in/vector_store
+      - ./log:/app/log
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "30m"
+        max-file: "5"
 
 volumes:
   postgres_data:

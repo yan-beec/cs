@@ -12,7 +12,7 @@ from ics_agent.app.config import PROJECT_ROOT
 
 
 class FAQSettings(BaseSettings):
-    """FAQ behavior and data-source configuration."""
+    """FAQ 行为和数据源配置。"""
 
     faq_match_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
     faq_bm25_k1: float = Field(default=1.5, gt=0.0)
@@ -58,5 +58,5 @@ class FAQSettings(BaseSettings):
 
 @lru_cache
 def get_faq_settings() -> FAQSettings:
-    """Return the process-level FAQ settings singleton."""
+    """返回进程级 FAQ 设置单例。"""
     return FAQSettings()

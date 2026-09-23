@@ -21,12 +21,12 @@ logger = logging.getLogger(__name__)
 
 
 class KnowledgeBaseUpdateInProgress(RuntimeError):
-    """Raised when another knowledge-base rebuild is already running."""
+    """已有其他知识库重建任务运行时抛出。"""
 
 
 @dataclass(frozen=True)
 class KnowledgeBaseUpdateStatus:
-    """Public state of one knowledge-base rebuild task."""
+    """一个知识库重建任务的公开状态。"""
 
     job_id: str
     source_hash: str
@@ -52,7 +52,7 @@ def _resolve_project_path(path_value: str | Path) -> Path:
 
 
 def _fingerprint_directory(source_dir: Path) -> str:
-    """Hash all file paths and contents in a stable order."""
+    """按稳定顺序计算所有文件路径和内容的哈希。"""
     if not source_dir.is_dir():
         raise FileNotFoundError(
             f"Knowledge base directory does not exist: {source_dir}"
@@ -78,7 +78,7 @@ def _fingerprint_directory(source_dir: Path) -> str:
 
 
 class KnowledgeBaseUpdateManager:
-    """Submit and observe one background full vector-store rebuild."""
+    """提交并观察一个后台全量向量库重建任务。"""
 
     def __init__(self, settings: RAGSettings | None = None) -> None:
         self.settings = settings or get_rag_settings()
@@ -248,7 +248,7 @@ class KnowledgeBaseUpdateManager:
                 self._active_hash = None
             if job_id not in self._statuses:
                 logger.warning(
-                    "event=knowledge_base.update.status_missing job_id=%s",
+                    "事件=知识库.更新.状态缺失 任务ID=%s",
                     job_id,
                 )
 
@@ -262,7 +262,7 @@ _manager_lock = threading.Lock()
 
 
 def get_knowledge_base_update_manager() -> KnowledgeBaseUpdateManager:
-    """Return the process-level knowledge-base update manager."""
+    """返回进程级知识库更新管理器。"""
     global _manager
     if _manager is None:
         with _manager_lock:

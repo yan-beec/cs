@@ -29,55 +29,34 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 logger = logging.getLogger("ics_agent.faq.sync")
 
 EXPECTED_COLUMNS = (
-    "id",
     "question",
     "answer",
-    "category",
-    "tags",
-    "similar_questions",
     "need_human",
     "enabled",
-    "priority",
-    "answer_type",
-    "updated_at",
 )
 
 
 @dataclass(frozen=True)
 class FAQExcelRow:
-    """One validated FAQ record read from the source workbook."""
+    """从源工作簿读取并校验通过的一条 FAQ 记录。"""
 
-    question_id: int
     question: str
     answer: str
-    category: str | None
-    tags: str | None
-    similar_questions: str | None
     need_human: int
     enabled: int
-    priority: int
-    answer_type: str
-    updated_at: datetime
 
     def to_postgres_params(self) -> tuple[Any, ...]:
         return (
-            self.question_id,
             self.question,
             self.answer,
-            self.category,
-            self.tags,
-            self.similar_questions,
             self.need_human,
             self.enabled,
-            self.priority,
-            self.answer_type,
-            self.updated_at,
         )
 
 
 @dataclass(frozen=True)
 class FAQSyncResult:
-    """Summary of one Excel-to-PostgreSQL synchronization."""
+    """一次从 Excel 同步到 PostgreSQL 的摘要。"""
 
     source_path: str
     source_row_count: int
@@ -94,10 +73,11 @@ class FAQSyncResult:
 
 @dataclass(frozen=True)
 class FAQDatabaseSyncResult:
-    """Result of one atomic full replacement of the FAQ table."""
+    """一次 FAQ 表原子全量替换的结果。"""
 
     source_row_count: int
     deleted_row_count: int
+    question_ids: tuple[int, ...]
     changed: bool
     source_hash: str
 
@@ -134,7 +114,7 @@ def _canonical_values(values: Iterable[Any]) -> list[Any]:
 
 
 def _records_hash(records: Iterable[FAQExcelRow]) -> str:
-    ordered_records = sorted(records, key=lambda record: record.question_id)
+    ordered_records = sorted(records, key=lambda record: record.question)
     payload = [
         _canonical_values(record.to_postgres_params())
         for record in ordered_records
@@ -148,7 +128,10 @@ def _records_hash(records: Iterable[FAQExcelRow]) -> str:
 
 
 def _rows_hash(rows: Iterable[Iterable[Any]]) -> str:
-    payload = [_canonical_values(row) for row in rows]
+    payload = sorted(
+        (_canonical_values(row) for row in rows),
+        key=lambda row: tuple(str(value) for value in row),
+    )
     serialized = json.dumps(
         payload,
         ensure_ascii=False,
@@ -178,13 +161,6 @@ def _required_text(
             f"Excel row {row_number} has an empty required field: {field_name}."
         )
     return text
-
-
-def _optional_text(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
 
 
 def _parse_integer(
@@ -224,51 +200,8 @@ def _parse_flag(value: Any, *, field_name: str, row_number: int) -> int:
     return parsed
 
 
-def _parse_json_array(
-    value: Any,
-    *,
-    field_name: str,
-    row_number: int,
-) -> str | None:
-    text = _optional_text(value)
-    if text is None:
-        return None
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"Excel row {row_number} field {field_name} is not valid JSON."
-        ) from exc
-    if not isinstance(parsed, list):
-        raise ValueError(
-            f"Excel row {row_number} field {field_name} must be a JSON array."
-        )
-    return json.dumps(parsed, ensure_ascii=False)
-
-
-def _parse_timestamp(value: Any, *, row_number: int) -> datetime:
-    if isinstance(value, datetime):
-        return value
-    if isinstance(value, date):
-        return datetime.combine(value, datetime.min.time())
-    text = _required_text(value, field_name="updated_at", row_number=row_number)
-    for timestamp_format in (
-        "%Y-%m-%d %H:%M:%S",
-        "%Y/%m/%d %H:%M:%S",
-        "%Y-%m-%d %H:%M",
-        "%Y/%m/%d %H:%M",
-    ):
-        try:
-            return datetime.strptime(text, timestamp_format)
-        except ValueError:
-            continue
-    raise ValueError(
-        f"Excel row {row_number} has an unsupported updated_at value: {text}."
-    )
-
-
 class FAQExcelReader:
-    """Load and validate the canonical FAQ workbook."""
+    """加载并校验规范 FAQ 工作簿。"""
 
     def read(
         self,
@@ -309,21 +242,17 @@ class FAQExcelReader:
             positions = {name: header.index(name) for name in EXPECTED_COLUMNS}
 
             records: list[FAQExcelRow] = []
-            seen_ids: set[int] = set()
-            skipped_need_human_count = 0
+            seen_questions: set[str] = set()
             for row_number, raw_row in enumerate(rows, start=2):
                 if not any(value not in (None, "") for value in raw_row):
                     continue
                 record = self._parse_row(raw_row, positions, row_number)
-                if record.need_human != 0:
-                    skipped_need_human_count += 1
-                    continue
-                if record.question_id in seen_ids:
+                if record.question in seen_questions:
                     raise ValueError(
-                        f"Excel contains duplicate FAQ id "
-                        f"{record.question_id} at row {row_number}."
+                        f"Excel contains duplicate FAQ question at row "
+                        f"{row_number}: {record.question}."
                     )
-                seen_ids.add(record.question_id)
+                seen_questions.add(record.question)
                 records.append(record)
 
             if not records:
@@ -335,9 +264,8 @@ class FAQExcelReader:
                 path=path,
                 sheet_name=selected_sheet,
                 row_count=len(records),
-                skipped_need_human_count=skipped_need_human_count,
             )
-            records.sort(key=lambda record: record.question_id)
+            records.sort(key=lambda record: record.question)
             return records
         finally:
             workbook.close()
@@ -370,12 +298,6 @@ class FAQExcelReader:
             return raw_row[position] if position < len(raw_row) else None
 
         return FAQExcelRow(
-            question_id=_parse_integer(
-                value("id"),
-                field_name="id",
-                row_number=row_number,
-                minimum=1,
-            ),
             question=_required_text(
                 value("question"),
                 field_name="question",
@@ -384,17 +306,6 @@ class FAQExcelReader:
             answer=_required_text(
                 value("answer"),
                 field_name="answer",
-                row_number=row_number,
-            ),
-            category=_optional_text(value("category")),
-            tags=_parse_json_array(
-                value("tags"),
-                field_name="tags",
-                row_number=row_number,
-            ),
-            similar_questions=_parse_json_array(
-                value("similar_questions"),
-                field_name="similar_questions",
                 row_number=row_number,
             ),
             need_human=_parse_flag(
@@ -407,22 +318,11 @@ class FAQExcelReader:
                 field_name="enabled",
                 row_number=row_number,
             ),
-            priority=_parse_integer(
-                value("priority"),
-                field_name="priority",
-                row_number=row_number,
-            ),
-            answer_type=_required_text(
-                value("answer_type"),
-                field_name="answer_type",
-                row_number=row_number,
-            ),
-            updated_at=_parse_timestamp(value("updated_at"), row_number=row_number),
         )
 
 
 class FAQQnaSynchronizer:
-    """Synchronize validated FAQ records to the configured PostgreSQL table."""
+    """将校验通过的 FAQ 记录同步到配置的 PostgreSQL 表。"""
 
     def __init__(
         self,
@@ -434,7 +334,7 @@ class FAQQnaSynchronizer:
         self,
         records: Iterable[FAQExcelRow],
     ) -> FAQDatabaseSyncResult:
-        rows = sorted(records, key=lambda record: record.question_id)
+        rows = sorted(records, key=lambda record: record.question)
         if not rows:
             raise ValueError("Cannot synchronize an empty FAQ record set.")
 
@@ -446,34 +346,45 @@ class FAQQnaSynchronizer:
         insert_sql = f"""
             INSERT INTO {table_name} ({columns})
             VALUES ({placeholders})
+            RETURNING id
         """.strip()
 
         connection = self._connections.acquire()
         deleted_count = 0
         changed = True
+        question_ids: list[int] = []
         try:
             cursor = connection.cursor()
             try:
                 with connection.transaction():
-                    # Serialize full replacements across processes. The lock is
-                    # transaction-scoped and does not alter the table schema.
+                    # 跨进程串行执行全量替换。该锁仅限于事务范围，
+                    # 不会修改表结构。
                     cursor.execute(
                         "SELECT pg_advisory_xact_lock(hashtext(%s))",
                         (f"ics_agent.faq.replace:{table_name}",),
                     )
                     cursor.execute(
-                        f"SELECT {columns} FROM {table_name} ORDER BY id"
+                        f"""
+                        SELECT id, {columns}
+                        FROM {table_name}
+                        ORDER BY question, id
+                        """.strip()
                     )
                     current_rows = cursor.fetchall()
-                    if _rows_hash(current_rows) == source_hash:
+                    if _rows_hash(row[1:] for row in current_rows) == source_hash:
                         changed = False
+                        question_ids = [int(row[0]) for row in current_rows]
                     else:
                         cursor.execute(f"DELETE FROM {table_name}")
                         deleted_count = max(cursor.rowcount, 0)
-                        cursor.executemany(
-                            insert_sql,
-                            [record.to_postgres_params() for record in rows],
-                        )
+                        for record in rows:
+                            cursor.execute(insert_sql, record.to_postgres_params())
+                            inserted_row = cursor.fetchone()
+                            if inserted_row is None:
+                                raise RuntimeError(
+                                    "FAQ insert did not return a generated id."
+                                )
+                            question_ids.append(int(inserted_row[0]))
             finally:
                 cursor.close()
         finally:
@@ -493,6 +404,7 @@ class FAQQnaSynchronizer:
         return FAQDatabaseSyncResult(
             source_row_count=len(rows),
             deleted_row_count=deleted_count,
+            question_ids=tuple(question_ids),
             changed=changed,
             source_hash=source_hash,
         )
@@ -507,7 +419,7 @@ def sync_qna_from_excel(
     refresh_bm25: bool = False,
     faq_service: FAQService | None = None,
 ) -> FAQSyncResult:
-    """Synchronize PostgreSQL, Redis FAQ state, and optionally the live BM25 matcher."""
+    """同步 PostgreSQL、Redis FAQ 状态，并按需刷新实时 BM25 匹配器。"""
     settings = get_faq_settings()
     source_path = _resolve_project_path(
         workbook_path or settings.faq_source_xlsx_path
@@ -542,8 +454,7 @@ def sync_qna_from_excel(
                 written=redis_snapshot_written,
             )
         except Exception as exc:
-            # PostgreSQL is the source-of-truth update. Redis can be refreshed by
-            # the normal FAQ initialization path when it becomes available.
+            # PostgreSQL 是事实来源，Redis 待恢复可用后由常规 FAQ 初始化流程刷新。
             log_event(
                 logger,
                 logging.WARNING,
@@ -618,7 +529,7 @@ async def async_sync_qna_from_excel(
     refresh_bm25: bool = False,
     faq_service: FAQService | None = None,
 ) -> FAQSyncResult:
-    """Run the blocking Excel/database refresh off the asyncio event loop."""
+    """在线程中执行阻塞式 Excel/数据库刷新，避免阻塞 asyncio 事件循环。"""
     return await asyncio.to_thread(
         sync_qna_from_excel,
         workbook_path,
@@ -637,7 +548,7 @@ def refresh_faq_runtime_from_excel(
     clear_answer_cache: bool | None = None,
     faq_service: FAQService | None = None,
 ) -> FAQSyncResult:
-    """Backend-ready one-call FAQ refresh for an uploaded workbook."""
+    """为上传的工作簿提供后端可直接调用的一站式 FAQ 刷新。"""
     return sync_qna_from_excel(
         workbook_path,
         sheet_name=sheet_name,

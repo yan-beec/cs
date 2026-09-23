@@ -34,7 +34,7 @@ TRAINING_ARTIFACT_NAMES = frozenset(
 
 @dataclass(frozen=True)
 class IntentTrainingResult:
-    """Summary returned after a completed fine-tuning run."""
+    """微调任务完成后返回的摘要。"""
 
     output_dir: str
     label2id: dict[str, int]
@@ -43,7 +43,7 @@ class IntentTrainingResult:
 
 
 def _compute_classification_metrics(eval_prediction: Any) -> dict[str, float]:
-    """Compute accuracy and macro F1 without requiring scikit-learn."""
+    """无需 scikit-learn 即可计算准确率和宏平均 F1。"""
     predictions = eval_prediction.predictions
     if isinstance(predictions, tuple):
         predictions = predictions[0]
@@ -98,7 +98,7 @@ def _compute_classification_metrics(eval_prediction: Any) -> dict[str, float]:
 
 
 class IntentClassifierTrainer:
-    """Build and run a BERT sequence classifier with ``transformers.Trainer``."""
+    """使用 ``transformers.Trainer`` 构建并运行 BERT 序列分类器。"""
 
     def __init__(self, settings: RAGSettings | None = None) -> None:
         self.settings = settings or get_rag_settings()
@@ -133,7 +133,7 @@ class IntentClassifierTrainer:
 
     @staticmethod
     def _detect_device() -> tuple[bool, str, str | None, int]:
-        """Detect CUDA and return whether training should use the GPU."""
+        """检测 CUDA，并返回训练是否应使用 GPU。"""
         try:
             import torch
         except ImportError as exc:
@@ -217,7 +217,7 @@ class IntentClassifierTrainer:
         eval_examples: Iterable[IntentClassificationExample] | None = None,
         checkpoint_dir: Path | None = None,
     ) -> tuple[Any, Any, dict[str, int], dict[int, str]]:
-        """Create a configured Transformers Trainer without starting training."""
+        """创建已配置的 Transformers Trainer，但不启动训练。"""
         (
             auto_tokenizer,
             auto_model,
@@ -322,7 +322,7 @@ class IntentClassifierTrainer:
         train_examples: Iterable[IntentClassificationExample],
         eval_examples: Iterable[IntentClassificationExample] | None = None,
     ) -> IntentTrainingResult:
-        """Train, evaluate and save the classifier and its label metadata."""
+        """训练、评估并保存分类器及其标签元数据。"""
         output_dir = self._resolve_project_path(self.settings.rag_output_dir)
         output_dir.parent.mkdir(parents=True, exist_ok=True)
         self._clean_final_output(output_dir)
@@ -388,7 +388,7 @@ class IntentClassifierTrainer:
 
     @staticmethod
     def _clean_final_output(output_dir: Path) -> None:
-        """Remove stale checkpoint folders from previous training runs."""
+        """删除之前训练运行遗留的过期检查点目录。"""
         if not output_dir.exists():
             return
         for child in output_dir.iterdir():
@@ -397,7 +397,7 @@ class IntentClassifierTrainer:
 
     @staticmethod
     def _remove_training_artifacts(output_dir: Path) -> None:
-        """Keep inference files while removing Trainer-only state files."""
+        """保留推理文件，同时删除仅供 Trainer 使用的状态文件。"""
         for child in output_dir.iterdir():
             if child.name in TRAINING_ARTIFACT_NAMES:
                 child.unlink()

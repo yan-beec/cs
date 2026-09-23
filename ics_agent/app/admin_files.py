@@ -39,7 +39,7 @@ MAX_PREVIEW_BYTES = 5 * 1024 * 1024
 
 
 class AdminFileOperationError(ValueError):
-    """Raised when an administrator file operation is invalid."""
+    """管理员文件操作无效时抛出。"""
 
 
 def resolve_project_path(path_value: str | Path) -> Path:
@@ -59,7 +59,7 @@ def safe_child_path(
     *,
     allow_missing: bool = False,
 ) -> Path:
-    """Resolve a relative path and reject traversal outside ``root``."""
+    """解析相对路径，并拒绝越出 ``root`` 的路径穿越。"""
     normalized = relative_path.replace("\\", "/").strip()
     if not normalized or normalized.startswith("/"):
         raise AdminFileOperationError("文件路径不能为空且必须是相对路径。")
@@ -170,7 +170,7 @@ def knowledge_file_preview(
     root: Path,
     relative_path: str,
 ) -> dict[str, object]:
-    """Return text content or metadata for a knowledge-base file preview."""
+    """返回知识库文件预览所需的文本内容或元数据。"""
     path = safe_child_path(root, relative_path)
     if not path.is_file():
         raise AdminFileOperationError("只能浏览文件。")
@@ -197,7 +197,7 @@ def knowledge_file_preview(
 def faq_workbook_preview(
     settings: Settings | None = None,
 ) -> dict[str, object]:
-    """Read the configured FAQ workbook into a browser-safe table payload."""
+    """读取配置的 FAQ 工作簿，并转换为浏览器可安全使用的表格数据。"""
     path = faq_file_path(settings)
     if not path.is_file():
         raise FileNotFoundError(path)

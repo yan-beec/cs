@@ -28,6 +28,17 @@ class RAGState(TypedDict, total=False):
     # 大模型回复节点输出。
     llm_response: Any
     answer: str
+    answer_override: str
+
+    # PostgreSQL checkpoint 对话记忆。
+    memory_enabled: bool
+    recent_messages: list[dict[str, Any]]
+    memory_history: list[dict[str, Any]]
+    summary_pending_messages: list[dict[str, Any]]
+    conversation_summary: str
+    conversation_turn_count: int
+    summary_turn_count: int
+    memory_summary_triggered: bool
 
     # 节点异常信息，保留给后续降级路由使用。
     error: str

@@ -36,22 +36,47 @@ ADMIN_WEB_PORT=3001
 FAQ 的数据库、Redis 快照和命令行入口已经收敛到 `ics_agent/faq/sync.py`
 和 `ics_agent/faq/cli.py`。
 
-当前版本的 Chatwoot Webhook 会对带文本的入站消息执行 RAG MVP，并将答案返回
-给 Webhook 调用方；暂未调用 Chatwoot API 将答案写回会话。
+当前版本的 Chatwoot Webhook 会对带文本的入站消息执行幂等登记并放入后台队列；
+只发送 emoji 的消息会跳过 FAQ/RAG，直接返回代码中的默认提示；
+默认只在 Webhook 任务状态中记录答案，不会主动向 Chatwoot 发消息。配置
+`CHATWOOT_API_TOKEN`、`CHATWOOT_ACCOUNT_ID` 并将
+`CHATWOOT_AUTO_REPLY_ENABLED=true` 后，后台任务会通过 Chatwoot Application API
+将答案发送回原会话；发送失败会复用现有的超时和指数退避重试。
+
+Webhook 签名按 Chatwoot 的带时间戳格式校验：使用
+`X-Chatwoot-Timestamp + "." + 原始 JSON 请求体` 计算 HMAC-SHA256，
+并与 `X-Chatwoot-Signature` 比较。默认只接受时间戳前后 5 分钟内的请求，
+可通过 `CHATWOOT_WEBHOOK_TOLERANCE_SECONDS` 调整。
+
+Webhook 会先持久化幂等状态，再放入后台队列。相同 Chatwoot 事件不会重复入队；
+RAG 处理单次默认超时 60 秒，失败后最多重试 3 次，采用指数退避。队列结果可以通过
+管理员接口查询：
+
+```text
+GET /admin/webhook-jobs/{event_key}
+```
 
 ## 本地运行
 
 在项目根目录 `D:\project\CS` 执行：
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+& 'C:\Users\lenovo\Anaconda3\envs\cs\python.exe' -m pip install -r requirements.txt
 Copy-Item .env.example .env
-uvicorn ics_agent.app.main:app --host 0.0.0.0 --port 3001 --reload
+& 'C:\Users\lenovo\Anaconda3\envs\cs\python.exe' `
+  -m ics_agent.app.serve `
+  --host 0.0.0.0 `
+  --port 3001 `
+  --reload
 ```
 
 项目根目录的 `requirements.txt` 是整个项目唯一的 Python 依赖清单。
+
+本地和生产启动器会将 Uvicorn 的标准输出和错误输出分别写入根目录 `log/` 下的
+`uvicorn-admin.stdout.log` 与 `uvicorn-admin.stderr.log`。默认每个活动日志文件
+达到 30 MB 后轮转，并保留 5 个历史文件；可通过 `.env` 中的
+`UVICORN_LOG_MAX_BYTES` 和 `UVICORN_LOG_BACKUP_COUNT` 调整。Docker Compose
+会将宿主机根目录的 `log/` 挂载到容器的 `/app/log`。
 
 ## PostgreSQL 和 Redis 容器
 
@@ -69,13 +94,45 @@ ChromaDB 使用本地持久化目录，不需要单独的 ChromaDB 镜像；RAG 
 运行环境保持一致。
 
 PostgreSQL 只负责提供数据库服务。应用启动时会检查
-`faq_qna_optimized` 表：如果表已存在则不修改；如果表不存在，则自动创建
-FAQ 所需的字段和索引，然后再执行 FAQ 初始化。FAQ 表包含：
-`id`、`question`、`answer`、`category`、`tags`、`similar_questions`、
-`need_human`、`enabled`、`priority`、`answer_type`、`updated_at`。
+`faq_qna_optimized` 表：如果表不存在，则自动创建 FAQ 所需的字段和索引；
+如果表已存在，则清理旧版的冗余字段，并确保 `id` 由数据库自动生成。
+FAQ 表包含：`id`、`question`、`answer`、`need_human`、`enabled`、
+`priority`、`updated_at`。
 首次创建表后，仍需要执行一次 Excel 同步脚本写入 FAQ 数据。
-`.env` 中的 `POSTGRES_DSN` 留空时，FAQ 会使用拆分的连接配置；后续接入
-LangGraph PostgreSQL checkpointer 时，可复用 `Settings.postgres_connection_string`。
+`.env` 中的 `POSTGRES_DSN` 留空时，FAQ 会使用拆分的连接配置；RAG 对话记忆
+复用 `Settings.postgres_connection_string`，并由应用启动时自动创建 LangGraph
+checkpoint 所需的数据表。
+
+## RAG 对话记忆
+
+Chatwoot Webhook 会使用 `account_id + conversation.id` 生成稳定的
+LangGraph `thread_id`，对话状态持久化到 PostgreSQL。每个会话保留最近 10 轮
+用户和客服消息作为滑动窗口；到第 10、20、30 轮时，额外调用一次 LLM 更新长期
+摘要。摘要必须保留用户主要需求、话题场景、主要问题、已确认事实和未解决事项。
+
+本地 `/rag/query` 接口可传入同一个 `thread_id` 验证跨请求记忆：
+
+```json
+{
+  "query": "我刚才说的充值问题还没解决",
+  "thread_id": "local:test-session"
+}
+```
+
+记忆默认保留 30 天无活动的会话。应用启动时会执行一批过期清理，之后每天执行一次；
+清理会删除该会话的全部 `checkpoints`、`checkpoint_blobs` 和 `checkpoint_writes`。
+管理员可以通过下面的接口立即删除单个会话：
+
+```text
+DELETE /admin/memory?thread_id=chatwoot:1:123
+```
+
+根目录 `main.py` 的交互模式会自动复用同一个会话 ID；如果使用单次命令，
+请显式传入相同的 `--thread-id` 才能跨进程继续历史对话：
+
+```powershell
+python main.py --thread-id local:test-session --query "我刚才咨询的充值问题是什么？"
+```
 
 ## 云端 LLM 工厂
 
@@ -170,7 +227,8 @@ knowledge_base_in/output/chunks.manifest.json
 ```
 
 输出文件写入完成后，脚本会通过异步线程自动执行 ChromaDB 向量库全量重建，
-默认删除旧的 `knowledge_base` collection 后重新写入所有 chunk。命令完成时会
+默认保留现有的 `knowledge_base` collection，清理旧记录后重新写入所有 chunk。
+这样可以避免运行中的检索器继续持有已删除的 collection 句柄。命令完成时会
 同时输出解析 manifest 和向量库 manifest。
 
 每行 JSON 包含稳定的块 ID、文本、token 数以及来源、文件类型、页码和块序号等
@@ -273,8 +331,11 @@ C:\Users\lenovo\Anaconda3\envs\cs\python.exe `
   knowledge_base_in\build_chromadb.py
 ```
 
-脚本默认重建 `knowledge_base` collection，防止已经从源文档删除的旧 chunk
-继续留在向量库中。向量库默认写入
+脚本默认在现有 `knowledge_base` collection 中清理旧记录后重新写入，防止已经
+从源文档删除的旧 chunk 继续留在向量库中，同时保持运行中检索器的 collection
+句柄有效。每次写入成功后还会自动清理 Chroma 可回收的写入日志、压缩
+`chroma.sqlite3`，并删除不再被当前 collection 引用的旧 UUID 索引目录，避免
+知识库反复迭代造成 `vector_store` 持续增长。向量库默认写入
 `knowledge_base_in/vector_store/chroma`，该目录已加入 `.gitignore`。
 如果只想对现有 collection 执行 upsert，可以追加 `--no-reset`。
 
@@ -282,6 +343,18 @@ C:\Users\lenovo\Anaconda3\envs\cs\python.exe `
 可以通过 `RAGSettings.knowledge_base_embedding_batch_size` 调整显存占用，
 通过 `RAGSettings.knowledge_base_chroma_upsert_batch_size` 调整 ChromaDB
 批量写入大小。
+
+全量更新默认启用保守的 CPU 保护：图片 OCR 的 ONNX Runtime intra-op 线程数
+限制为 2、inter-op 线程数限制为 1；BGE-M3 入库在 CPU 模式下同样限制
+PyTorch 的 intra-op 线程数为 2、inter-op 线程数为 1，tokenizer 并行关闭，并且
+同一进程内的在线查询和后台入库不会并行执行 BGE-M3 embedding。每个 ChromaDB
+批次之间默认让出 0.1 秒 CPU 时间。相关配置为
+`KNOWLEDGE_BASE_OCR_CPU_THREADS`、
+`KNOWLEDGE_BASE_OCR_CPU_INTEROP_THREADS`、
+`KNOWLEDGE_BASE_EMBEDDING_CPU_THREADS`、
+`KNOWLEDGE_BASE_EMBEDDING_CPU_INTEROP_THREADS` 和
+`KNOWLEDGE_BASE_EMBEDDING_BATCH_PAUSE_SECONDS`；可以适当提高线程数或缩短
+让步时间换取速度，但机器资源紧张时建议保持默认值。
 
 当前项目使用 ChromaDB `0.6.x` 的本地 dense collection 接口。BGE-M3 只生成
 dense embedding，向量和原始 chunk 文本、metadata 一起写入 ChromaDB，不生成
@@ -410,8 +483,10 @@ C:\Users\lenovo\Anaconda3\envs\cs\python.exe `
 ```
 
 脚本默认读取 `ics_agent/faq/config.py` 中 `FAQSettings.faq_source_xlsx_path`
-指定的 `database/最新问答对.xlsx`，以 Excel 的 `id` 为主键执行幂等更新，并删除
-Excel 中已不存在的旧记录。PostgreSQL 更新在单个事务中完成；Redis 不可用时只记录
+指定的 `database/最新问答对.xlsx`，按 `question`、`answer`、`need_human`、
+`enabled` 四列执行幂等的全量替换，数据库 `id` 不需要出现在 Excel 中。
+Excel 中已不存在的旧记录会被删除；`need_human=1` 的记录会保留在数据库中，
+但不会进入 FAQ 自动匹配。PostgreSQL 更新在单个事务中完成；Redis 不可用时只记录
 告警，不影响本次 PostgreSQL 更新。若只需要更新 PostgreSQL，可追加
 `--skip-redis-sync`；若不希望删除 Excel 中不存在的数据库记录，可追加
 `--keep-extra`。默认在最新 FAQ 快照刷新成功后，只清空 FAQ 专属的
@@ -652,8 +727,23 @@ POST http://127.0.0.1:3001/webhooks/chatwoot
 ```
 
 签名校验通过后，带有文本内容的入站 Chatwoot 消息会复用同一条 RAG 链路。
-当前接口会把 RAG 结果返回给测试客户端，尚未调用 Chatwoot API 将答案发送回
-会话；正式接入自动回复时需要再增加 Chatwoot 回复接口和异步任务队列。
+接口会快速返回排队状态，后台任务负责生成答案；开启
+`CHATWOOT_AUTO_REPLY_ENABLED` 后，答案会通过 Chatwoot API 发送回原会话。
+
+接入自动回复时，在当前 `.env` 中配置：
+
+```dotenv
+CHATWOOT_BASE_URL=http://127.0.0.1:3000
+CHATWOOT_API_TOKEN=你的 Chatwoot API access token
+CHATWOOT_ACCOUNT_ID=你的 Chatwoot account id
+CHATWOOT_AUTO_REPLY_ENABLED=true
+CHATWOOT_API_TIMEOUT=15
+```
+
+然后重启 `ics_agent`。Chatwoot Webhook 地址仍然使用
+`http://你的服务地址:3001/webhooks/chatwoot`，Webhook 签名密钥必须与
+`CHATWOOT_WEBHOOK_SECRET` 保持一致。首次上线建议先保持
+`CHATWOOT_AUTO_REPLY_ENABLED=false`，确认 Webhook 任务状态正常后再打开自动回复。
 
 ## 独立 Compose 连接地址
 

@@ -23,11 +23,11 @@ _CONCURRENCY_GATES: weakref.WeakKeyDictionary[
 
 
 class LLMConcurrencyLimitError(TimeoutError):
-    """Raised when no LLM concurrency slot is available before the deadline."""
+    """在截止时间前没有可用 LLM 并发槽位时抛出。"""
 
 
 def _load_init_chat_model() -> Any:
-    """Load LangChain lazily so the rest of the application stays importable."""
+    """延迟加载 LangChain，使应用其余部分仍可正常导入。"""
     try:
         from langchain.chat_models import init_chat_model
     except ImportError as exc:
@@ -39,7 +39,7 @@ def _load_init_chat_model() -> Any:
 
 
 def _get_concurrency_gate(settings: Settings) -> asyncio.Semaphore:
-    """Get the gate shared by calls in the current event loop."""
+    """获取当前事件循环中各调用共享的并发闸门。"""
     loop = asyncio.get_running_loop()
     key = (
         settings.llm_model,
@@ -56,7 +56,7 @@ def _get_concurrency_gate(settings: Settings) -> asyncio.Semaphore:
 
 
 async def _acquire_concurrency_slot(settings: Settings) -> asyncio.Semaphore:
-    """Acquire a shared async slot without blocking the event loop."""
+    """获取共享异步槽位，同时不阻塞事件循环。"""
     gate = _get_concurrency_gate(settings)
     started_at = time.perf_counter()
     try:
@@ -95,7 +95,7 @@ def _release_concurrency_slot(
     settings: Settings,
     gate: asyncio.Semaphore,
 ) -> None:
-    """Release an async slot after the provider call finishes."""
+    """提供商调用完成后释放异步槽位。"""
     gate.release()
     log_event(
         logger,
@@ -117,7 +117,7 @@ def _create_chat_model(
     api_key: str,
     base_url: str,
 ) -> Any:
-    """Create and cache one model instance per distinct configuration."""
+    """为每种不同配置创建并缓存一个模型实例。"""
     init_chat_model = _load_init_chat_model()
     kwargs: dict[str, Any] = {
         "temperature": temperature,
@@ -148,7 +148,7 @@ def _create_chat_model(
 
 
 def _get_chat_model(settings: Settings | None = None) -> Any:
-    """Return the cached LangChain chat model configured in the environment."""
+    """返回按环境配置并缓存的 LangChain 聊天模型。"""
     runtime_settings = settings or get_settings()
     return _create_chat_model(
         model=runtime_settings.llm_model,
@@ -166,7 +166,7 @@ def _build_model_input(
     prompt: PromptInput,
     system_prompt: str | None,
 ) -> PromptInput:
-    """Add an optional system message while preserving LangChain input types."""
+    """添加可选系统消息，同时保留 LangChain 输入类型。"""
     if not system_prompt:
         return prompt
     if isinstance(prompt, str):
@@ -186,7 +186,7 @@ async def call_cloud_llm(
     system_prompt: str | None = None,
     settings: Settings | None = None,
 ) -> Any:
-    """Asynchronously call the cloud LLM and return its native response."""
+    """异步调用云端 LLM，并返回其原生响应。"""
     runtime_settings = settings or get_settings()
     model = _get_chat_model(runtime_settings)
     gate = await _acquire_concurrency_slot(runtime_settings)
@@ -215,7 +215,7 @@ async def call_structured_llm(
     include_raw: bool = False,
     method: str | None = None,
 ) -> Any:
-    """Asynchronously call the LLM through ``with_structured_output``."""
+    """通过 ``with_structured_output`` 异步调用 LLM。"""
     runtime_settings = settings or get_settings()
     structured_model = _get_chat_model(runtime_settings).with_structured_output(
         schema,

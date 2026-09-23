@@ -25,6 +25,7 @@ from knowledge_base_in.build_chromadb import (
     _load_chromadb,
     _resolve_project_path,
 )
+from knowledge_base_in.vector_store_lock import vector_store_lock
 
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ _retriever_lock = Lock()
 
 @dataclass(frozen=True)
 class DenseSearchResult:
-    """One dense-ranked knowledge-base result."""
+    """一个经过稠密检索排序的知识库结果。"""
 
     chunk_id: str
     text: str
@@ -44,7 +45,7 @@ class DenseSearchResult:
 
 
 class DenseRetriever:
-    """BGE-M3 dense retriever backed by a persistent ChromaDB collection."""
+    """基于持久化 ChromaDB 集合的 BGE-M3 稠密检索器。"""
 
     def __init__(
         self,
@@ -73,7 +74,13 @@ class DenseRetriever:
             raise ValueError("top_k must be at least 1.")
 
         chromadb = _load_chromadb()
-        client = chromadb.PersistentClient(path=str(self.persist_dir))
+        from chromadb.config import Settings as ChromaSettings
+        from knowledge_base_in.chroma_telemetry import build_chroma_settings
+
+        client = chromadb.PersistentClient(
+            path=str(self.persist_dir),
+            settings=build_chroma_settings(ChromaSettings),
+        )
         try:
             self.collection = client.get_collection(name=self.collection_name)
         except ValueError as exc:
@@ -94,6 +101,10 @@ class DenseRetriever:
                 if embedding_batch_size is not None
                 else self.settings.knowledge_base_embedding_batch_size
             ),
+            cpu_threads=self.settings.knowledge_base_embedding_cpu_threads,
+            cpu_interop_threads=(
+                self.settings.knowledge_base_embedding_cpu_interop_threads
+            ),
         )
         log_event(
             logger,
@@ -104,7 +115,7 @@ class DenseRetriever:
         )
 
     def warm_up(self) -> None:
-        """Load the embedding model during application startup."""
+        """在应用启动期间加载向量模型。"""
         self.embedder.warm_up()
 
     def _search_sync(
@@ -120,18 +131,19 @@ class DenseRetriever:
         if result_limit < 1:
             raise ValueError("top_k must be at least 1.")
 
-        collection_count = self.collection.count()
-        if collection_count < 1:
-            raise RuntimeError(
-                f"ChromaDB collection is empty: {self.collection_name}"
-            )
-
         query_embedding = self.embedder.embed([normalized_query])[0]
-        result = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=min(result_limit, collection_count),
-            include=["documents", "metadatas", "distances"],
-        )
+        with vector_store_lock:
+            collection_count = self.collection.count()
+            if collection_count < 1:
+                raise RuntimeError(
+                    f"ChromaDB collection is empty: {self.collection_name}"
+                )
+
+            result = self.collection.query(
+                query_embeddings=[query_embedding],
+                n_results=min(result_limit, collection_count),
+                include=["documents", "metadatas", "distances"],
+            )
 
         results: list[DenseSearchResult] = []
         for index, chunk_id in enumerate(result["ids"][0], start=1):
@@ -168,7 +180,7 @@ class DenseRetriever:
 
 
 def get_dense_retriever(*, warm_up: bool = False) -> DenseRetriever:
-    """Return the process-level dense retriever singleton."""
+    """返回进程级稠密检索器单例。"""
     global _retriever
     if _retriever is None:
         with _retriever_lock:
@@ -180,7 +192,7 @@ def get_dense_retriever(*, warm_up: bool = False) -> DenseRetriever:
 
 
 def reset_dense_retriever() -> None:
-    """Clear the singleton, mainly for controlled rebuilds and tests."""
+    """清除单例，主要用于受控重建和测试。"""
     global _retriever
     with _retriever_lock:
         _retriever = None

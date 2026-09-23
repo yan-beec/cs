@@ -12,14 +12,48 @@ from ics_agent.app.config import PROJECT_ROOT
 
 
 class RAGSettings(BaseSettings):
-    """RAG model, document-processing and retrieval configuration."""
+    """RAG 模型、文档处理和检索配置。"""
 
-    # Intent classification.
+    # 意图分类。
     rag_pretrained_model_dir: str = (
         "models/google-bert--bert-base-chinese/snapshots/master"
     )
     rag_output_dir: str = "models/intent_classifier_bert"
     rag_warm_up_on_startup: bool = True
+    rag_memory_enabled: bool = True
+    rag_memory_window_turns: int = Field(default=10, ge=1)
+    rag_memory_summary_interval: int = Field(default=10, ge=1)
+    rag_memory_retention_days: int = Field(default=30, ge=1)
+    rag_memory_cleanup_interval_seconds: int = Field(
+        default=86400,
+        ge=60,
+    )
+    rag_memory_cleanup_batch_size: int = Field(default=500, ge=1, le=5000)
+    webhook_worker_count: int = Field(default=2, ge=1, le=16)
+    webhook_queue_max_size: int = Field(default=1000, ge=1, le=10000)
+    webhook_processing_timeout_seconds: float = Field(default=60.0, gt=0)
+    webhook_max_retries: int = Field(default=3, ge=0, le=10)
+    webhook_retry_initial_delay_seconds: float = Field(default=2.0, gt=0)
+    webhook_retry_backoff_multiplier: float = Field(default=2.0, ge=1.0)
+    webhook_retry_max_delay_seconds: float = Field(default=30.0, gt=0)
+    webhook_queue_shutdown_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+    )
+    webhook_idempotency_retention_days: int = Field(default=7, ge=1)
+    webhook_idempotency_stale_after_seconds: int = Field(
+        default=300,
+        ge=60,
+    )
+    webhook_idempotency_cleanup_interval_seconds: int = Field(
+        default=86400,
+        ge=60,
+    )
+    webhook_idempotency_cleanup_batch_size: int = Field(
+        default=1000,
+        ge=1,
+        le=10000,
+    )
     rag_num_labels: int = Field(default=4, ge=2)
     rag_max_length: int = Field(default=128, ge=8, le=512)
     rag_num_train_epochs: float = Field(default=3.0, gt=0)
@@ -34,7 +68,7 @@ class RAGSettings(BaseSettings):
     rag_eval_ratio: float = Field(default=0.2, gt=0, lt=1)
     rag_eval_dataset_path: str = "database/eval.csv"
 
-    # Knowledge-base parsing and dense vector store.
+    # 知识库解析和稠密向量库。
     knowledge_base_input_dir: str = "database/knowledge_base"
     knowledge_base_output_path: str = "knowledge_base_in/output/chunks.jsonl"
     knowledge_base_chunk_size_tokens: int = Field(default=512, ge=1)
@@ -47,17 +81,30 @@ class RAGSettings(BaseSettings):
     knowledge_base_preserve_markdown_tables: bool = True
     knowledge_base_ocr_enabled: bool = True
     knowledge_base_ocr_text_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    knowledge_base_ocr_cpu_threads: int = Field(default=2, ge=1, le=32)
+    knowledge_base_ocr_cpu_interop_threads: int = Field(default=1, ge=1, le=32)
     knowledge_base_embedding_model_dir: str = "models/bge-m3"
     knowledge_base_vector_db_dir: str = "knowledge_base_in/vector_store/chroma"
     knowledge_base_vector_collection: str = "knowledge_base"
     knowledge_base_embedding_batch_size: int = Field(default=8, ge=1)
     knowledge_base_embedding_max_length: int = Field(default=8192, ge=8)
     knowledge_base_chroma_upsert_batch_size: int = Field(default=128, ge=1)
+    knowledge_base_embedding_cpu_threads: int = Field(default=2, ge=1, le=32)
+    knowledge_base_embedding_cpu_interop_threads: int = Field(
+        default=1,
+        ge=1,
+        le=32,
+    )
+    knowledge_base_embedding_batch_pause_seconds: float = Field(
+        default=0.1,
+        ge=0,
+        le=60,
+    )
     knowledge_base_retrieval_top_k: int = Field(default=10, ge=1)
 
-    # Cross-encoder reranker.
+    # Cross-encoder 重排器。
     rag_reranker_model_dir: str = "models/bge-reranker-v2-m3"
-    rag_reranker_input_top_k: int = Field(default=20, ge=1)
+    rag_reranker_input_top_k: int = Field(default=10, ge=1)
     rag_reranker_output_top_k: int = Field(default=3, ge=1)
     rag_reranker_batch_size: int = Field(default=8, ge=1)
     rag_reranker_max_length: int = Field(default=512, ge=8, le=8192)
@@ -74,5 +121,5 @@ class RAGSettings(BaseSettings):
 
 @lru_cache
 def get_rag_settings() -> RAGSettings:
-    """Return the process-level RAG settings singleton."""
+    """返回进程级 RAG 设置单例。"""
     return RAGSettings()

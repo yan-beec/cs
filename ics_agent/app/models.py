@@ -20,6 +20,7 @@ class RAGQueryRequest(BaseModel):
     """本地 RAG 测试接口的请求体。"""
 
     query: str = Field(min_length=1, max_length=4096)
+    thread_id: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 class AdminLoginRequest(BaseModel):

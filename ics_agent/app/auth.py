@@ -33,16 +33,16 @@ JWT_AUDIENCE = "ics_agent_admin"
 
 
 class InvalidAdminCredentials(RuntimeError):
-    """Raised when the administrator username or password is invalid."""
+    """管理员用户名或密码无效时抛出。"""
 
 
 class AdminAuthConfigurationError(RuntimeError):
-    """Raised when required administrator authentication settings are missing."""
+    """缺少必要的管理员认证配置时抛出。"""
 
 
 @dataclass(frozen=True)
 class AdminPrincipal:
-    """Authenticated administrator identity attached to a request."""
+    """附加到请求上的已认证管理员身份。"""
 
     username: str
     role: str = "system_admin"
@@ -53,7 +53,7 @@ def _password_bytes(password: str) -> bytes:
 
 
 def hash_password(password: str) -> str:
-    """Hash a password with a salted PBKDF2-SHA256 record."""
+    """使用带盐的 PBKDF2-SHA256 记录计算密码哈希。"""
     if not password:
         raise ValueError("Administrator password cannot be empty.")
     salt = secrets.token_bytes(16)
@@ -74,7 +74,7 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password: str, encoded_hash: str) -> bool:
-    """Verify a PBKDF2 password record without exposing timing differences."""
+    """校验 PBKDF2 密码记录，同时避免暴露时序差异。"""
     try:
         scheme, iterations_text, salt_text, digest_text = encoded_hash.split(
             "$",
@@ -117,7 +117,7 @@ def ensure_admin_user(
     *,
     connections: PostgreSQLConnectionPool | None = None,
 ) -> None:
-    """Create the singleton administrator table and seed it once.
+    """创建单例管理员数据表，并完成一次初始化写入。
 
     The configured initial password is used only when the singleton row does
     not exist. Existing passwords are never overwritten on application start.
@@ -238,7 +238,7 @@ def authenticate_admin(
     settings: Settings | None = None,
     connections: PostgreSQLConnectionPool | None = None,
 ) -> str:
-    """Validate credentials and return a signed administrator JWT."""
+    """校验凭据并返回已签名的管理员 JWT。"""
     runtime_settings = settings or get_settings()
     if not username.strip() or not password:
         raise InvalidAdminCredentials("Invalid administrator credentials.")
@@ -301,7 +301,7 @@ def _decode_admin_token(
 
 
 async def authenticate_token(token: str) -> AdminPrincipal:
-    """Decode the token and verify the singleton admin is still active."""
+    """解码令牌，并确认单例管理员仍处于启用状态。"""
     principal = _decode_admin_token(token)
     active = await asyncio.to_thread(_is_active_admin, principal.username)
     if not active:
@@ -317,7 +317,7 @@ async def require_admin(
         bearer_scheme
     ),
 ) -> AdminPrincipal:
-    """FastAPI dependency for protected administrator operations."""
+    """受保护管理员操作使用的 FastAPI 依赖。"""
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

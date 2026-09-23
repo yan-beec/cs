@@ -14,7 +14,7 @@ try:
     from psycopg import Error as PostgresError
 except ImportError:
     class PostgresError(Exception):
-        """Fallback type until the PostgreSQL dependency is installed."""
+        """PostgreSQL 依赖安装前使用的占位类型。"""
 
 from ics_agent.app.logging_config import log_event
 
@@ -58,12 +58,12 @@ logger = logging.getLogger(__name__)
 
 
 class FAQUpdateInProgress(RuntimeError):
-    """Raised when a different FAQ update is already running."""
+    """已有其他 FAQ 更新任务运行时抛出。"""
 
 
 @dataclass(frozen=True)
 class FAQUpdateStatus:
-    """Public status returned when a background FAQ update is submitted."""
+    """提交后台 FAQ 更新任务后返回的公开状态。"""
 
     job_id: str
     source_hash: str
@@ -72,7 +72,7 @@ class FAQUpdateStatus:
 
 @dataclass(frozen=True)
 class _FAQRuntimeVersion:
-    """An immutable FAQ version used by queries until the next atomic swap."""
+    """在下一次原子切换前供查询使用的不可变 FAQ 版本。"""
 
     matcher: BM25Matcher
     answers: dict[int, str] | None
@@ -207,7 +207,7 @@ class FAQService:
         self,
         runtime_version: _FAQRuntimeVersion,
     ) -> None:
-        """Publish one complete FAQ version with a single pointer swap."""
+        """通过一次指针切换发布一个完整 FAQ 版本。"""
         with self._version_lock:
             previous_version = self._runtime_version
             self._runtime_version = runtime_version
@@ -238,7 +238,7 @@ class FAQService:
         answers: dict[int, str] | None = None,
         source_hash: str | None = None,
     ) -> "FAQService":
-        """Atomically publish an already prepared FAQ runtime version."""
+        """原子发布已经准备好的 FAQ 运行时版本。"""
         runtime_version = self._build_runtime_version(
             snapshot,
             answers=answers,
@@ -328,8 +328,7 @@ class FAQService:
                     and self._initialized
                     and self._runtime_version is not None
                 ):
-                    # A background refresh may have published a newer version
-                    # while startup initialization was reading the old one.
+                    # 启动初始化读取旧版本时，后台刷新可能已经发布了更新版本。
                     return self
                 runtime_version = self._build_runtime_version(
                     snapshot,
@@ -581,30 +580,46 @@ class FAQService:
         source_path: str,
         source_hash: str,
     ) -> object:
-        """Commit a prepared Excel version, then atomically publish it."""
+        """提交准备好的 Excel 版本，然后原子发布它。"""
         from .sync import (
             FAQQnaSynchronizer,
             FAQSyncResult,
         )
 
-        typed_records = list(records)
-        active_records = [
-            record
+        typed_records = sorted(
+            records,
+            key=lambda record: str(getattr(record, "question", "")),
+        )
+        if not any(
+            getattr(record, "enabled", 1) == 1
+            and getattr(record, "need_human", 0) == 0
             for record in typed_records
-            if getattr(record, "enabled", 1) == 1
+        ):
+            raise ValueError("FAQ workbook contains no usable FAQ records.")
+        database_result = FAQQnaSynchronizer().sync(  # type: ignore[arg-type]
+            typed_records
+        )
+        active_records = [
+            (question_id, record)
+            for question_id, record in zip(
+                database_result.question_ids,
+                typed_records,
+            )
+            if (
+                getattr(record, "enabled", 1) == 1
+                and getattr(record, "need_human", 0) == 0
+            )
         ]
-        if not active_records:
-            raise ValueError("FAQ workbook contains no enabled FAQ records.")
 
         snapshot = self._synchronizer.build_snapshot(
             [
-                (record.question_id, record.question)  # type: ignore[attr-defined]
-                for record in active_records
+                (question_id, record.question)  # type: ignore[attr-defined]
+                for question_id, record in active_records
             ]
         )
         answers = {
-            record.question_id: record.answer  # type: ignore[attr-defined]
-            for record in active_records
+            question_id: record.answer  # type: ignore[attr-defined]
+            for question_id, record in active_records
         }
         new_runtime_version = self._build_runtime_version(
             snapshot,
@@ -612,9 +627,7 @@ class FAQService:
             source_hash=source_hash,
         )
 
-        # The database replacement happens without holding any query lock.
-        # Existing requests keep their old in-memory version until commit ends.
-        database_result = FAQQnaSynchronizer().sync(typed_records)  # type: ignore[arg-type]
+        # 数据库替换完成后，再通过一次指针切换发布新的运行时版本。
         snapshot = self._synchronizer.save_snapshot(snapshot)
         redis_snapshot_written = self._synchronizer.last_redis_save_succeeded
 
@@ -648,7 +661,7 @@ class FAQService:
         *,
         sheet_name: str | None = None,
     ) -> FAQUpdateStatus:
-        """Prepare and submit a deduplicated background FAQ refresh."""
+        """准备并提交去重后的后台 FAQ 刷新任务。"""
         from .sync import (
             FAQExcelReader,
             _records_hash,
@@ -760,8 +773,7 @@ class FAQService:
         job_id: str,
         task: asyncio.Task | None = None,
     ) -> None:
-        # Consume the exception because the task is intentionally detached
-        # from the request that submitted the background refresh.
+        # 消费该异常，因为此任务有意与提交后台刷新的请求分离。
         if task is not None and not task.cancelled():
             try:
                 task.exception()
@@ -794,8 +806,7 @@ def get_faq_service() -> FAQService:
     return _service
 
 
-# Public runtime aliases keep application code independent from the singleton
-# implementation while avoiding a separate wrapper module.
+# 公开运行时别名让应用代码与单例实现解耦，同时避免额外的包装模块。
 FAQRuntime = FAQService
 FAQRuntimeResult = FAQResult
 
@@ -817,7 +828,7 @@ async def submit_faq_excel_refresh(
     *,
     sheet_name: str | None = None,
 ) -> FAQUpdateStatus:
-    """Submit a deduplicated, non-blocking FAQ workbook refresh."""
+    """提交去重后的非阻塞 FAQ 工作簿刷新任务。"""
     return await get_runtime().submit_excel_refresh(
         workbook_path,
         sheet_name=sheet_name,

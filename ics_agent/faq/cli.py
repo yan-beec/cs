@@ -1,4 +1,4 @@
-"""Command-line tools for the FAQ subsystem.
+"""FAQ 子系统命令行工具。
 
 Use ``python -m ics_agent.faq <command>`` from the project root.
 """
@@ -40,7 +40,7 @@ logger = logging.getLogger("ics_agent.faq.cli")
 
 
 def load_dotenv(path: Path = PROJECT_ROOT / ".env") -> None:
-    """Load simple KEY=VALUE pairs for direct command-line execution."""
+    """加载供命令行直接执行的简单 KEY=VALUE 配置。"""
     if not path.exists():
         return
     for raw_line in path.read_text(encoding="utf-8").splitlines():
@@ -67,7 +67,7 @@ def search_faq(
     threshold: float | None = None,
     client: redis.Redis | None = None,
 ):
-    """Search FAQ through the shared service."""
+    """通过共享服务搜索 FAQ。"""
     if client is None:
         return get_faq_service().query(query, threshold=threshold)
 
@@ -84,7 +84,7 @@ FAQSearchResult = FAQResult
 
 
 def sync_faq_snapshot(include_disabled: bool = False) -> dict[str, str | int]:
-    """Rebuild the Redis FAQ snapshot from PostgreSQL."""
+    """从 PostgreSQL 重建 Redis FAQ 快照。"""
     synchronizer = FAQSnapshotSynchronizer(
         faq_repository=FAQRepository(),
         snapshot_repository=RedisFAQSnapshotRepository(),
@@ -129,7 +129,7 @@ def load_bm25_from_redis(
     client: redis.Redis | None = None,
     key: str | None = None,
 ) -> BM25Matcher:
-    """Build a BM25 matcher from the Redis FAQ snapshot."""
+    """根据 Redis FAQ 快照构建 BM25 匹配器。"""
     client = client or redis_client()
     repository = RedisFAQSnapshotRepository(client)
     snapshot = repository.load()

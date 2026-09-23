@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 class JiebaTokenizer:
-    """Tokenize FAQ questions and queries with configured product terms."""
+    """使用配置的产品词对 FAQ 问题和查询进行分词。"""
 
     def __init__(self, terms: tuple[str, ...] | None = None) -> None:
         jieba.default_logger.setLevel(logging.WARNING)

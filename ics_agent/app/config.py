@@ -14,7 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class AppSettings(BaseSettings):
-    """Application and infrastructure settings.
+    """应用和基础设施设置。
 
     FAQ and RAG behavior defaults live in their own module configuration
     objects. This class only owns application, infrastructure, authentication,
@@ -26,25 +26,37 @@ class AppSettings(BaseSettings):
     port: int = 3001
     log_level: str = "INFO"
 
-    # Browser/admin service binding and upload/log initialization.
+    # 浏览器/管理后台服务绑定，以及上传和日志初始化。
     admin_web_host: str = "127.0.0.1"
     admin_web_port: int = Field(default=3001, ge=1, le=65535)
     admin_log_buffer_size: int = Field(default=2000, ge=100, le=10000)
     admin_file_max_size_mb: int = Field(default=100, ge=1, le=1024)
+    uvicorn_log_directory: str = "log"
+    uvicorn_log_max_bytes: int = Field(default=30 * 1024 * 1024, ge=1024)
+    uvicorn_log_backup_count: int = Field(default=5, ge=1, le=100)
+    uvicorn_stdout_log_filename: str = "uvicorn-admin.stdout.log"
+    uvicorn_stderr_log_filename: str = "uvicorn-admin.stderr.log"
 
-    # Chatwoot and other external service connection settings.
+    # Chatwoot 和其他外部服务连接配置。
     chatwoot_base_url: str = "http://127.0.0.1:3000"
     chatwoot_api_token: str = ""
     chatwoot_account_id: str = ""
     chatwoot_webhook_secret: str = ""
+    chatwoot_webhook_tolerance_seconds: int = Field(
+        default=300,
+        ge=1,
+        le=3600,
+    )
+    chatwoot_auto_reply_enabled: bool = False
+    chatwoot_api_timeout: float = Field(default=15.0, gt=0)
 
-    # Singleton administrator initialization and authentication.
+    # 单例管理员初始化和身份认证。
     admin_username: str = "Denpans"
     admin_initial_password: str = ""
     admin_jwt_secret: str = ""
     admin_access_token_expire_seconds: int = Field(default=3600, ge=300)
 
-    # PostgreSQL connection and pool settings.
+    # PostgreSQL 连接和连接池配置。
     postgres_dsn: str = ""
     postgres_host: str = "127.0.0.1"
     postgres_port: int = 5432
@@ -57,14 +69,14 @@ class AppSettings(BaseSettings):
     postgres_connection_timeout: int = Field(default=5, ge=1)
     postgres_pool_acquire_timeout: float = Field(default=0.05, gt=0)
 
-    # Redis connection and failure-degradation settings.
+    # Redis 连接和故障降级配置。
     redis_url: str = "redis://127.0.0.1:6380/0"
     redis_key_prefix: str = "ics_agent:"
     redis_connect_timeout: float = Field(default=0.5, gt=0)
     redis_socket_timeout: float = Field(default=0.5, gt=0)
     redis_failure_cooldown_seconds: float = Field(default=30.0, gt=0)
 
-    # Cloud LLM provider connection and runtime limits.
+    # 云端 LLM 提供商连接和运行时限制。
     llm_model: str = "deepseek-flash"
     llm_model_provider: str = "openai"
     llm_temperature: float = Field(default=0.2, ge=0.0, le=2.0)
@@ -86,7 +98,7 @@ class AppSettings(BaseSettings):
 
     @property
     def postgres_connection_string(self) -> str:
-        """Return a PostgreSQL URI reusable by future checkpoint adapters."""
+        """返回可供后续检查点适配器复用的 PostgreSQL URI。"""
         if self.postgres_dsn:
             return self.postgres_dsn
         user = quote(self.postgres_user, safe="")
@@ -94,7 +106,8 @@ class AppSettings(BaseSettings):
         database = quote(self.postgres_database, safe="")
         return (
             f"postgresql://{user}:{password}@{self.postgres_host}:"
-            f"{self.postgres_port}/{database}"
+            f"{self.postgres_port}/{database}?sslmode="
+            f"{quote(self.postgres_sslmode, safe='')}"
         )
 
 
@@ -103,5 +116,5 @@ Settings = AppSettings
 
 @lru_cache
 def get_settings() -> AppSettings:
-    """Return the process-level application settings singleton."""
+    """返回进程级应用设置单例。"""
     return AppSettings()

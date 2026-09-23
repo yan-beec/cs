@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class IntentClassificationExample:
-    """A single text classification example from the intent CSV dataset."""
+    """意图分类 CSV 数据集中的一个文本分类样本。"""
 
     text: str
     label: str
@@ -67,7 +67,7 @@ def _validate_examples(
 
 
 def load_intent_csv(path: str | Path) -> list[IntentClassificationExample]:
-    """Load the project's ``id,text,label,label_id`` CSV dataset."""
+    """加载项目的 ``id,text,label,label_id`` CSV 数据集。"""
     source = Path(path)
     if not source.exists():
         raise FileNotFoundError(f"Intent classification file does not exist: {source}")
@@ -124,7 +124,7 @@ def load_intent_csv(path: str | Path) -> list[IntentClassificationExample]:
 def build_intent_label_mapping(
     examples: Iterable[IntentClassificationExample],
 ) -> tuple[dict[str, int], dict[int, str]]:
-    """Build the label mappings declared by the CSV's ``label_id`` column."""
+    """根据 CSV 的 ``label_id`` 列构建标签映射。"""
     example_list = _validate_examples(examples)
     id_to_label = {
         example.label_id: example.label
@@ -145,7 +145,7 @@ def split_intent_examples(
     eval_ratio: float = 0.2,
     seed: int = 42,
 ) -> tuple[list[IntentClassificationExample], list[IntentClassificationExample]]:
-    """Create a deterministic, stratified train/evaluation split."""
+    """创建确定性的分层训练集/评估集拆分。"""
     if not 0 < eval_ratio < 1:
         raise ValueError("eval_ratio must be greater than 0 and less than 1.")
 
@@ -182,7 +182,7 @@ def split_intent_examples(
 
 
 class IntentClassificationDataset:
-    """A lightweight tokenized dataset accepted by ``transformers.Trainer``."""
+    """可供 ``transformers.Trainer`` 使用的轻量级分词数据集。"""
 
     def __init__(
         self,

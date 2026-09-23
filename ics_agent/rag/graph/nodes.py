@@ -259,7 +259,7 @@ async def reranker_node(state: RAGState) -> dict[str, Any]:
 
 
 def _response_content(response: Any) -> str:
-    """Extract text from a LangChain response while tolerating provider formats."""
+    """提取 LangChain 响应中的文本，同时兼容不同提供商的格式。"""
     content = getattr(response, "content", response)
     if isinstance(content, str):
         return content

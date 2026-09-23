@@ -102,7 +102,7 @@ def _classification_metrics(
     predicted_ids: list[int],
     label_ids: Iterable[int],
 ) -> dict[str, Any]:
-    """Calculate aggregate metrics and a row-normalized confusion matrix."""
+    """计算汇总指标和按行归一化的混淆矩阵。"""
     if len(expected_ids) != len(predicted_ids):
         raise ValueError("Expected and predicted label counts do not match.")
     if not expected_ids:
@@ -209,7 +209,7 @@ def evaluate_model(
     model_path: str | Path | None = None,
     batch_size: int | None = None,
 ) -> dict[str, Any]:
-    """Evaluate the saved model on every row of an independent labeled CSV."""
+    """使用独立标注 CSV 的每一行评估已保存的模型。"""
     runtime_settings = settings or get_rag_settings()
     torch, (model_class, tokenizer_class) = _load_runtime_dependencies()
     test_dataset_path = _resolve_project_path(str(dataset_path))

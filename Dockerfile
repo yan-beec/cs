@@ -4,6 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
+RUN mkdir -p /app/log
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -13,4 +14,4 @@ COPY knowledge_base_in ./knowledge_base_in
 
 EXPOSE 3001
 
-CMD ["sh", "-c", "uvicorn ics_agent.app.main:app --host ${HOST:-0.0.0.0} --port ${PORT:-3001}"]
+CMD ["python", "-m", "ics_agent.app.serve"]

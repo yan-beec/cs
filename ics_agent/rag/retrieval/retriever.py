@@ -46,7 +46,7 @@ class RetrievedDocument:
 
 
 class RetrievalService:
-    """RAG 知识库 dense 检索服务。"""
+    """RAG 知识库稠密检索服务。"""
 
     def __init__(
         self,
