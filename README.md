@@ -365,18 +365,7 @@ ics_agent/
 
 knowledge_base_in/          文档解析和向量库构建工具
 database/                   FAQ、知识库和训练数据
-tests/                      单元测试
 ```
-
-## 测试
-
-在项目根目录运行：
-
-```powershell
-python -m unittest discover -s tests -p "test_*.py"
-```
-
-测试覆盖 Webhook 签名和 Emoji 消息处理、向量库刷新，以及知识库 CPU 线程限制。
 
 ## 许可证
 
