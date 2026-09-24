@@ -189,6 +189,7 @@ Webhook 只处理带文本的入站消息：
 - 失败后最多重试 3 次，并使用指数退避。
 - 只包含 Emoji 的消息不会进入 RAG，会返回默认提示。
 - 默认只记录答案，不主动回复 Chatwoot。
+- 普通 AI 处理期间会将 Chatwoot 会话保持为 `pending`，不会以 `open` 状态出现在人工座席待接管队列。
 - 用户明确输入“人工”或“转人工”时，会先关闭该会话的 AI 回复开关，再执行 Chatwoot 人工接管。
 - 人工接管会打开会话、添加 `handoff_required` 标签、写入私有备注，并按配置分配 Team/Agent。
 - 人工接管后，当前 Chatwoot 对话在坐席结束本轮处理前不会再自动回复。
@@ -201,6 +202,7 @@ Webhook 只处理带文本的入站消息：
 CHATWOOT_BASE_URL=http://127.0.0.1:3000
 CHATWOOT_API_TOKEN=你的 Chatwoot API Token
 CHATWOOT_ACCOUNT_ID=你的 Account ID
+CHATWOOT_HMAC_TOKEN=Website Inbox 的 HMAC token
 CHATWOOT_WEBHOOK_SECRET=与 Chatwoot 一致的密钥
 CHATWOOT_AUTO_REPLY_ENABLED=true
 CHATWOOT_HANDOFF_ENABLED=true
@@ -217,8 +219,46 @@ API 完成会话状态更新、标签、私有备注、分配和一次性公开�
 重试时这些动作按本地 PostgreSQL 会话状态逐项幂等处理。服务需要接收
 Chatwoot 的会话状态变更 Webhook，至少覆盖坐席将会话标记为
 `resolved` 或 `pending` 的事件；如果没有状态事件，服务会尝试读取当前状态，
-但 Chatwoot 重新收到用户消息后可能已经自动变回 `open`，无法可靠判断上一轮
-人工是否已结束。
+同时普通用户消息触发的 Chatwoot `open` 会在 AI 处理开始和回复完成后同步回
+`pending`；只有明确转人工路径会保持 `open`。
+
+### Website Widget 用户身份和历史会话
+
+`support-chat.html` 默认调用：
+
+```http
+GET /chatwoot/profile?identifier=10001&name=张三
+```
+
+服务端使用 `CHATWOOT_HMAC_TOKEN` 生成 `identifier_hash`，H5 再调用
+Chatwoot `setUser`。这样即使 `file://` 页面重开、浏览器无法持久化
+`cw_conversation` cookie，Chatwoot 仍能把新入口归到同一个 Contact，并检索
+该用户已验证的历史会话。
+
+`CHATWOOT_HMAC_TOKEN` 只能放在 `ics_agent` 后端环境变量中，不能放进 H5。
+本地联调可以设置：
+
+```dotenv
+CHATWOOT_PROFILE_ALLOW_QUERY_IDENTIFIERS=true
+```
+
+正式环境应把 `PROFILE_ENDPOINT` 替换成业务后端接口，由登录态返回
+`identifier`、`identifier_hash`、`name` 等资料，并保持
+`CHATWOOT_PROFILE_ALLOW_QUERY_IDENTIFIERS=false`。
+
+如果 Website Widget 在启用 HMAC 前已经产生过带明确 `identifier` 的历史入口，
+需要在 Chatwoot PostgreSQL 中执行一次迁移，让这些历史入口也能被安全查询。
+只迁移已有明确身份的 Contact，不合并匿名访客：
+
+```sql
+UPDATE contact_inboxes ci
+SET hmac_verified = TRUE
+FROM contacts c
+WHERE c.id = ci.contact_id
+  AND ci.inbox_id = <Website Inbox ID>
+  AND c.identifier IS NOT NULL
+  AND ci.hmac_verified = FALSE;
+```
 
 查询 Webhook 后台任务：
 

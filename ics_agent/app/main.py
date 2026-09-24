@@ -1,6 +1,8 @@
 # 模块职责：创建 FastAPI 应用，并承载健康检查和 Webhook 接收入口。
 
 import asyncio
+import hashlib
+import hmac
 import logging
 import tempfile
 import time
@@ -20,6 +22,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 from .auth import (
     AdminAuthConfigurationError,
@@ -94,6 +97,7 @@ webhook_queue: WebhookJobQueue | None = None
 EMOJI_ACK_MESSAGE = "如果有什么需要帮助，可以直接问我哦，我会尽力帮您解答的~"
 HANDOFF_NOTICE_MESSAGE = "已为您转接人工客服，请稍等..."
 HANDOFF_RELEASE_STATUSES = {"resolved", "pending"}
+AI_CHATWOOT_STATUS = "pending"
 CHATWOOT_TYPING_HEARTBEAT_SECONDS = 20.0
 CONVERSATION_STATUS_EVENTS = {
     "conversation.status_changed",
@@ -230,6 +234,22 @@ app = FastAPI(
     version="0.1.0",
     description="Chatwoot webhook receiver and intelligent customer-service agent.",
     lifespan=lifespan,
+)
+
+def _chatwoot_profile_origins() -> list[str]:
+    return [
+        origin.strip()
+        for origin in settings.chatwoot_profile_allowed_origins.split(",")
+        if origin.strip()
+    ]
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_chatwoot_profile_origins(),
+    allow_credentials=True,
+    allow_methods=["GET", "OPTIONS"],
+    allow_headers=["Accept", "Authorization", "Content-Type"],
 )
 
 ADMIN_PAGE_PATH = Path(__file__).with_name("admin.html")
@@ -448,6 +468,50 @@ async def _update_chatwoot_typing(
         )
 
 
+async def _set_ai_chatwoot_status(
+    *,
+    account_id: str,
+    conversation_id: str,
+    event_key: str | None = None,
+) -> None:
+    """让 AI 处理中的会话保持 pending，避免出现在人工待接管队列。"""
+    try:
+        await asyncio.to_thread(
+            get_chatwoot_client().set_conversation_status,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            status=AI_CHATWOOT_STATUS,
+        )
+        await asyncio.to_thread(
+            conversation_control_repository.record_conversation_status,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            status=AI_CHATWOOT_STATUS,
+            release_handoff=False,
+        )
+        log_event(
+            logger,
+            logging.INFO,
+            "webhook.ai_conversation.status_synced",
+            event_key=event_key,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            status=AI_CHATWOOT_STATUS,
+        )
+    except ChatwootAPIError as exc:
+        log_event(
+            logger,
+            logging.WARNING,
+            "webhook.ai_conversation.status_sync_failed",
+            event_key=event_key,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            status=AI_CHATWOOT_STATUS,
+            status_code=exc.status_code,
+        )
+        raise
+
+
 async def _keep_chatwoot_typing(
     *,
     account_id: str,
@@ -544,6 +608,15 @@ async def _process_webhook_job_unlocked(
             job=job,
             control=control,
             content=content,
+        )
+
+    if settings.chatwoot_auto_reply_enabled and account_id and conversation_id:
+        # Chatwoot 会在收到用户入站消息后自动将会话置为 open。
+        # 普通 AI 处理不应进入人工座席队列，因此立即压回 pending。
+        await _set_ai_chatwoot_status(
+            account_id=account_id,
+            conversation_id=conversation_id,
+            event_key=job.event_key,
         )
 
     typing_task: asyncio.Task[None] | None = None
@@ -652,6 +725,11 @@ async def _process_webhook_job_unlocked(
                     if sent_message.get("id") is None
                     else str(sent_message.get("id"))
                 ),
+            )
+            await _set_ai_chatwoot_status(
+                account_id=account_id,
+                conversation_id=conversation_id,
+                event_key=job.event_key,
             )
     log_event(
         logger,
@@ -898,6 +976,73 @@ def _handoff_result(
 def health() -> dict[str, str]:
     log_event(logger, logging.DEBUG, "app.health")
     return {"status": "ok", "service": "ics_agent"}
+
+
+@app.get("/chatwoot/profile")
+def chatwoot_profile(
+    request: Request,
+    identifier: str = Query(..., min_length=1, max_length=256),
+    name: str | None = Query(default=None, max_length=256),
+    email: str | None = Query(default=None, max_length=320),
+    phone_number: str | None = Query(default=None, max_length=64),
+    avatar_url: str | None = Query(default=None, max_length=2048),
+) -> JSONResponse:
+    """为 Website Widget 生成稳定的 Chatwoot 用户身份。
+
+    生产环境应由业务后端根据登录态返回 identifier，而不是信任 URL
+    参数。当前接口保留查询参数是为了兼容 APP WebView 和 file:// 本地联调。
+    """
+    if not settings.chatwoot_profile_allow_query_identifiers:
+        raise HTTPException(
+            status_code=403,
+            detail="Query-based Chatwoot profile lookup is disabled.",
+        )
+
+    clean_identifier = identifier.strip()
+    hmac_token = settings.chatwoot_hmac_token.strip()
+    if not hmac_token:
+        raise HTTPException(
+            status_code=503,
+            detail="Chatwoot HMAC token is not configured.",
+        )
+
+    identifier_hash = hmac.new(
+        hmac_token.encode("utf-8"),
+        clean_identifier.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    profile: dict[str, object] = {
+        "identifier": clean_identifier,
+        "identifier_hash": identifier_hash,
+        "name": name.strip() if name and name.strip() else None,
+        "email": email.strip() if email and email.strip() else None,
+        "phone_number": (
+            phone_number.strip()
+            if phone_number and phone_number.strip()
+            else None
+        ),
+        "avatar_url": (
+            avatar_url.strip()
+            if avatar_url and avatar_url.strip()
+            else None
+        ),
+        "custom_attributes": {
+            "app_user_id": clean_identifier,
+        },
+    }
+    profile = {
+        key: value
+        for key, value in profile.items()
+        if value is not None
+    }
+    log_event(
+        logger,
+        logging.INFO,
+        "chatwoot.profile.generated",
+        identifier=clean_identifier,
+        origin=request.headers.get("origin"),
+    )
+    return JSONResponse(status_code=200, content=profile)
 
 
 @app.get("/admin/webhook-jobs/{event_key}")

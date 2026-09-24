@@ -41,6 +41,11 @@ class AppSettings(BaseSettings):
     chatwoot_base_url: str = "http://127.0.0.1:3000"
     chatwoot_api_token: str = ""
     chatwoot_account_id: str = ""
+    chatwoot_hmac_token: str = ""
+    chatwoot_profile_allowed_origins: str = (
+        "null,http://localhost:8090,http://127.0.0.1:8090"
+    )
+    chatwoot_profile_allow_query_identifiers: bool = False
     chatwoot_webhook_secret: str = ""
     chatwoot_webhook_tolerance_seconds: int = Field(
         default=300,

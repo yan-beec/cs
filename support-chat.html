@@ -179,7 +179,7 @@
        * 1. CHATWOOT_BASE_URL 改成你的 Chatwoot 访问地址。
        * 2. WEBSITE_TOKEN 改成 Chatwoot Website Inbox 的 website token。
        * 3. PROFILE_ENDPOINT 由你的业务后端提供，返回当前登录用户资料和 identifier_hash。
-       *    当前为空，表示先不校验登录身份，直接打开 Chatwoot。后续 APP 登录接入后再启用。
+       *    本地默认使用 ics_agent 的身份接口，保证 file:// 重开时仍复用同一客户和会话历史。
        * 4. PROFILE_ENDPOINT 为空时，会尝试从 URL 参数读取用户资料，方便 APP 先联调：
        *    ?userId=123&name=张三&phone=13800000000&email=user@example.com
        *    正式上线仍建议使用 PROFILE_ENDPOINT + identifier_hash。
@@ -203,7 +203,8 @@
       var CONFIG = {
         CHATWOOT_BASE_URL: "http://localhost:3000",
         WEBSITE_TOKEN: "EEuW9UJz2w55BfWAshYxh1TY",
-        PROFILE_ENDPOINT: "",
+        PROFILE_ENDPOINT: "http://localhost:3001/chatwoot/profile",
+        REQUIRE_IDENTIFIER_HASH: true,
         DEFAULT_LOCALE: "zh_CN",
         PROFILE_TIMEOUT_MS: 10000,
         WIDGET_READY_TIMEOUT_MS: 15000
@@ -330,6 +331,24 @@
           return Promise.resolve(getProfileFromQuery());
         }
 
+        var queryProfile = getProfileFromQuery();
+        var profileUrl = new URL(CONFIG.PROFILE_ENDPOINT, window.location.href);
+        if (queryProfile && queryProfile.identifier) {
+          profileUrl.searchParams.set("identifier", queryProfile.identifier);
+          if (queryProfile.name) {
+            profileUrl.searchParams.set("name", queryProfile.name);
+          }
+          if (queryProfile.email) {
+            profileUrl.searchParams.set("email", queryProfile.email);
+          }
+          if (queryProfile.phone_number) {
+            profileUrl.searchParams.set("phone_number", queryProfile.phone_number);
+          }
+          if (queryProfile.avatar_url) {
+            profileUrl.searchParams.set("avatar_url", queryProfile.avatar_url);
+          }
+        }
+
         var token = runtime.authToken || getAppTokenFromBridge();
         var headers = {
           "Accept": "application/json"
@@ -339,7 +358,7 @@
           headers.Authorization = "Bearer " + token;
         }
 
-        return fetchWithTimeout(CONFIG.PROFILE_ENDPOINT, {
+        return fetchWithTimeout(profileUrl.toString(), {
           method: "GET",
           credentials: "include",
           headers: headers
@@ -405,6 +424,9 @@
       function applyUser(profile) {
         if (!profile || !profile.identifier) {
           return;
+        }
+        if (CONFIG.REQUIRE_IDENTIFIER_HASH && !profile.identifier_hash) {
+          throw new Error("缺少 Chatwoot 身份校验信息，请配置后端 PROFILE_ENDPOINT。");
         }
 
         var user = {
