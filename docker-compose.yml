@@ -1,7 +1,8 @@
+name: cs
+
 services:
   postgres:
     image: postgres:16.15-alpine3.23
-    container_name: cs-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-cs}
@@ -26,7 +27,6 @@ services:
 
   redis:
     image: redis:7.4.11-alpine3.21
-    container_name: cs-redis
     restart: unless-stopped
     ports:
       - "127.0.0.1:${REDIS_HOST_PORT:-6380}:6379"
@@ -47,7 +47,6 @@ services:
 
   redisinsight:
     image: redis/redisinsight:3.8.0
-    container_name: cs-redisinsight
     restart: unless-stopped
     ports:
       - "127.0.0.1:${REDISINSIGHT_HOST_PORT:-5540}:5540"
@@ -67,7 +66,6 @@ services:
       context: .
       dockerfile: Dockerfile
     image: ics-agent:py310
-    container_name: ics-agent
     restart: unless-stopped
     env_file:
       - .env

@@ -168,6 +168,8 @@ class ConversationMemoryManager:
         if self._checkpointer is None or self._pool is None:
             return 0
         settings = get_rag_settings()
+        if settings.rag_memory_retention_days <= 0:
+            return 0
         async with self._pool.connection() as connection:
             async with connection.cursor() as cursor:
                 await cursor.execute(

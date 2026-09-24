@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import logging
 import random
 from dataclasses import dataclass
@@ -30,6 +31,19 @@ class IntentClassificationExample:
             raise ValueError("Intent classification label cannot be empty.")
         if self.label_id < 0:
             raise ValueError("Intent classification label_id cannot be negative.")
+
+
+def calculate_intent_dataset_sha256(path: str | Path) -> str:
+    """计算训练 CSV 的文件指纹，用于绑定模型与其训练数据。"""
+    source = Path(path)
+    if not source.is_file():
+        raise FileNotFoundError(f"Intent classification file does not exist: {source}")
+
+    digest = hashlib.sha256()
+    with source.open("rb") as file:
+        for block in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _validate_examples(

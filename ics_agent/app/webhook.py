@@ -202,11 +202,21 @@ def verify_signature(
 
 def parse_event(raw_body: bytes) -> ChatwootWebhookEvent:
     payload: dict[str, Any] = json.loads(raw_body)
+    conversation = payload.get("conversation") or {}
+    custom_attributes = conversation.get("custom_attributes") or {}
+    if not isinstance(custom_attributes, dict):
+        custom_attributes = {}
+    thread_id = (
+        payload.get("thread_id")
+        or conversation.get("thread_id")
+        or custom_attributes.get("thread_id")
+    )
     return ChatwootWebhookEvent(
         event=str(payload.get("event", "")),
         id=payload.get("id") or payload.get("message", {}).get("id"),
+        thread_id=None if thread_id is None else str(thread_id),
         account=payload.get("account"),
-        conversation=payload.get("conversation"),
+        conversation=conversation,
         message_type=payload.get("message_type"),
         content=payload.get("content"),
         sender=payload.get("sender"),

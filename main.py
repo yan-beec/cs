@@ -3,7 +3,9 @@
 在 PyCharm 中直接运行本文件，输入用户问题即可执行：
 
     query -> FAQ 命中直接回复
-          -> FAQ 未命中 -> 意图识别 -> 检索 -> 精排 -> LLM 回复
+          -> FAQ 未命中 -> 意图识别
+               -> 闲聊 -> LLM 回复
+               -> 其他意图 -> 检索 -> 精排 -> LLM 回复
 
 依赖的 PostgreSQL 和 Redis 需要提前启动。
 """
@@ -51,11 +53,19 @@ def _print_result(result: Mapping[str, Any]) -> None:
         print("FAQ 命中: 是")
         print(f"匹配问题: {result.get('matched_question') or '缓存命中'}")
     else:
-        print("FAQ 命中: 否，已进入 RAG")
+        is_chitchat = route == "chitchat"
+        if is_chitchat:
+            print("FAQ 命中: 否，意图为闲聊，已跳过检索和精排")
+        else:
+            print("FAQ 命中: 否，已进入 RAG")
         print(f"意图: {result.get('intent_label')}")
         print(f"意图置信度: {result.get('intent_confidence')}")
-        print(f"召回数量: {result.get('retrieved_count')}")
-        print(f"精排数量: {result.get('reranked_count')}")
+        if is_chitchat:
+            print("召回数量: 0（闲聊分支已跳过）")
+            print("精排数量: 0（闲聊分支已跳过）")
+        else:
+            print(f"召回数量: {result.get('retrieved_count')}")
+            print(f"精排数量: {result.get('reranked_count')}")
 
     print("\n最终回复:")
     print(result.get("answer") or "未生成有效回复。")

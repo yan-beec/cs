@@ -19,11 +19,13 @@ from .data import (
     IntentClassificationDataset,
     IntentClassificationExample,
     build_intent_label_mapping,
+    calculate_intent_dataset_sha256,
 )
 
 
 logger = logging.getLogger(__name__)
 CHECKPOINT_PREFIX = "checkpoint-"
+LABEL_METADATA_SCHEMA_VERSION = 1
 TRAINING_ARTIFACT_NAMES = frozenset(
     {
         "trainer_state.json",
@@ -40,6 +42,8 @@ class IntentTrainingResult:
     label2id: dict[str, int]
     id2label: dict[int, str]
     metrics: dict[str, Any]
+    dataset_path: str | None = None
+    dataset_sha256: str | None = None
 
 
 def _compute_classification_metrics(eval_prediction: Any) -> dict[str, float]:
@@ -234,15 +238,6 @@ class IntentClassifierTrainer:
         all_examples = train_list + (eval_list or [])
         label2id, id2label = build_intent_label_mapping(all_examples)
 
-        if len(label2id) != self.settings.rag_num_labels:
-            log_event(
-                logger,
-                logging.WARNING,
-                "rag.intent_classifier.label_count_overrides_config",
-                configured=self.settings.rag_num_labels,
-                actual=len(label2id),
-            )
-
         model_dir = self._resolve_project_path(
             self.settings.rag_pretrained_model_dir
         )
@@ -321,16 +316,29 @@ class IntentClassifierTrainer:
         self,
         train_examples: Iterable[IntentClassificationExample],
         eval_examples: Iterable[IntentClassificationExample] | None = None,
+        dataset_path: str | Path | None = None,
     ) -> IntentTrainingResult:
         """训练、评估并保存分类器及其标签元数据。"""
         output_dir = self._resolve_project_path(self.settings.rag_output_dir)
         output_dir.parent.mkdir(parents=True, exist_ok=True)
         self._clean_final_output(output_dir)
+        resolved_dataset_path = (
+            self._resolve_project_path(str(dataset_path))
+            if dataset_path is not None
+            else None
+        )
+        dataset_sha256 = (
+            calculate_intent_dataset_sha256(resolved_dataset_path)
+            if resolved_dataset_path is not None
+            else None
+        )
         log_event(
             logger,
             logging.INFO,
             "rag.intent_classifier.training.start",
             output_dir=output_dir,
+            dataset_path=resolved_dataset_path,
+            dataset_sha256=dataset_sha256,
         )
 
         with tempfile.TemporaryDirectory(
@@ -357,15 +365,27 @@ class IntentClassifierTrainer:
         self._remove_training_artifacts(output_dir)
 
         labels_path = output_dir / "labels.json"
+        labels_payload: dict[str, Any] = {
+            "schema_version": LABEL_METADATA_SCHEMA_VERSION,
+            "label_count": len(id2label),
+            "label2id": label2id,
+            "id2label": {
+                str(label_id): label
+                for label_id, label in id2label.items()
+            },
+        }
+        if resolved_dataset_path is not None:
+            try:
+                dataset_display_path = resolved_dataset_path.relative_to(PROJECT_ROOT)
+            except ValueError:
+                dataset_display_path = resolved_dataset_path
+            labels_payload["dataset"] = {
+                "path": str(dataset_display_path).replace("\\", "/"),
+                "sha256": dataset_sha256,
+            }
         labels_path.write_text(
             json.dumps(
-                {
-                    "label2id": label2id,
-                    "id2label": {
-                        str(label_id): label
-                        for label_id, label in id2label.items()
-                    },
-                },
+                labels_payload,
                 ensure_ascii=False,
                 indent=2,
             ),
@@ -384,6 +404,12 @@ class IntentClassifierTrainer:
             label2id=label2id,
             id2label=id2label,
             metrics=metrics,
+            dataset_path=(
+                None
+                if resolved_dataset_path is None
+                else str(resolved_dataset_path)
+            ),
+            dataset_sha256=dataset_sha256,
         )
 
     @staticmethod

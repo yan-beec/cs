@@ -37,10 +37,17 @@ def _rag_payload(
     state: Mapping[str, Any],
 ) -> dict[str, object]:
     """将 RAG 图状态规范化为公开查询响应。"""
-    retrieved_documents = state.get("retrieved_documents", []) or []
-    reranked_documents = state.get("reranked_documents", []) or []
+    route = str(state.get("route") or "rag")
+    if route == "chitchat":
+        retrieved_documents: list[Any] = []
+        reranked_documents: list[Any] = []
+        documents: list[dict[str, object]] = []
+    else:
+        retrieved_documents = state.get("retrieved_documents", []) or []
+        reranked_documents = state.get("reranked_documents", []) or []
+        documents = _document_summaries(state)
     return {
-        "route": "rag",
+        "route": route,
         "query": query,
         "answer": state.get("answer", ""),
         "intent_id": state.get("intent_id"),
@@ -49,7 +56,7 @@ def _rag_payload(
         "intent_confidence": state.get("intent_confidence"),
         "retrieved_count": len(retrieved_documents),
         "reranked_count": len(reranked_documents),
-        "documents": _document_summaries(state),
+        "documents": documents,
     }
 
 
@@ -132,7 +139,7 @@ async def run_query(
     """先通过 FAQ、必要时再通过 RAG 执行一次应用查询。
 
     公开字段约定：
-    - ``route`` is the final answer route: ``faq`` or ``rag``.
+    - ``route`` is the final answer route: ``faq``, ``chitchat`` or ``rag``.
     - ``faq_route`` preserves the FAQ service route: ``cache``, ``faq`` or
       ``rag``.
     - ``answer`` is always the answer returned to the caller.

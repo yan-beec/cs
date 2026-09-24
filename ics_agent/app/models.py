@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 class ChatwootWebhookEvent(BaseModel):
     event: str = ""
     id: str | int | None = None
+    thread_id: str | None = None
     account: dict[str, Any] | None = None
     conversation: dict[str, Any] | None = None
     message_type: str | None = None

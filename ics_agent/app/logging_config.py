@@ -63,7 +63,6 @@ _EVENT_SEGMENT_TRANSLATIONS = {
     "init_failed": "初始化失败",
     "initialize": "初始化",
     "invalid": "无效",
-    "label_count_overrides_config": "标签数量覆盖配置",
     "lifecycle": "生命周期",
     "llm_factory": "LLM 工厂",
     "llm_reply": "LLM 回复",

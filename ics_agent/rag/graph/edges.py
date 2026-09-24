@@ -52,7 +52,14 @@ def build_rag_graph(*, checkpointer: Any | None = None) -> Any:
             "rag": "intent_recognition",
         },
     )
-    graph.add_edge("intent_recognition", "retrieval")
+    graph.add_conditional_edges(
+        "intent_recognition",
+        route_after_intent_recognition,
+        {
+            "chitchat": "llm_reply",
+            "rag": "retrieval",
+        },
+    )
     graph.add_edge("retrieval", "reranker")
     graph.add_edge("reranker", "llm_reply")
     graph.add_edge("llm_reply", "memory_finalize")
@@ -67,6 +74,13 @@ def build_rag_graph(*, checkpointer: Any | None = None) -> Any:
         checkpoint_enabled=checkpointer is not None,
     )
     return compiled_graph
+
+
+def route_after_intent_recognition(state: RAGState) -> str:
+    """闲聊意图跳过检索和精排，其余意图进入完整 RAG 链路。"""
+    if state.get("route") == "chitchat":
+        return "chitchat"
+    return "rag"
 
 
 def get_rag_graph(

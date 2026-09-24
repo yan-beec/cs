@@ -48,6 +48,11 @@ class AppSettings(BaseSettings):
         le=3600,
     )
     chatwoot_auto_reply_enabled: bool = False
+    chatwoot_handoff_enabled: bool = True
+    chatwoot_handoff_label: str = "handoff_required"
+    chatwoot_handoff_notice_enabled: bool = True
+    chatwoot_handoff_team_id: str = ""
+    chatwoot_handoff_assignee_id: str = ""
     chatwoot_api_timeout: float = Field(default=15.0, gt=0)
 
     # 单例管理员初始化和身份认证。

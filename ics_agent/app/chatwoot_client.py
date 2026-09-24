@@ -25,7 +25,7 @@ class ChatwootAPIError(RuntimeError):
 
 
 class ChatwootClient:
-    """通过 Chatwoot Application API 发送会话消息。"""
+    """通过 Chatwoot Application API 操作会话和发送消息。"""
 
     def __init__(self, settings: AppSettings | None = None) -> None:
         self._settings = settings or get_settings()
@@ -38,41 +38,255 @@ class ChatwootClient:
         content: str,
     ) -> dict[str, Any]:
         """向指定会话发送一条公开的 outgoing 文本消息。"""
-        token = self._settings.chatwoot_api_token.strip()
-        if not token:
+        return self._create_message(
+            account_id=account_id,
+            conversation_id=conversation_id,
+            content=content,
+            private=False,
+        )
+
+    def toggle_typing_status(
+        self,
+        *,
+        account_id: str,
+        conversation_id: str,
+        typing_status: str,
+    ) -> dict[str, Any]:
+        """切换 Chatwoot 会话中的坐席输入状态。"""
+        account_id, conversation_id = self._validate_conversation(
+            account_id,
+            conversation_id,
+        )
+        clean_status = str(typing_status or "").strip().lower()
+        if clean_status not in {"on", "off"}:
             raise ChatwootAPIError(
-                "CHATWOOT_API_TOKEN is not configured."
+                "Chatwoot typing status must be either on or off."
             )
-        if not account_id.strip():
-            raise ChatwootAPIError("Chatwoot account_id is missing.")
-        if not conversation_id.strip():
-            raise ChatwootAPIError("Chatwoot conversation_id is missing.")
+        return self._request_json(
+            "POST",
+            self._conversation_path(account_id, conversation_id)
+            + "/toggle_typing_status",
+            {"typing_status": clean_status},
+        )
+
+    def create_private_note(
+        self,
+        *,
+        account_id: str,
+        conversation_id: str,
+        content: str,
+    ) -> dict[str, Any]:
+        """向会话写入一条坐席可见、用户不可见的私有备注。"""
+        return self._create_message(
+            account_id=account_id,
+            conversation_id=conversation_id,
+            content=content,
+            private=True,
+        )
+
+    def get_conversation(
+        self,
+        *,
+        account_id: str,
+        conversation_id: str,
+    ) -> dict[str, Any]:
+        """读取 Chatwoot 会话当前状态。"""
+        account_id, conversation_id = self._validate_conversation(
+            account_id,
+            conversation_id,
+        )
+        return self._request_json(
+            "GET",
+            self._conversation_path(account_id, conversation_id),
+        )
+
+    def add_conversation_labels(
+        self,
+        *,
+        account_id: str,
+        conversation_id: str,
+        labels: list[str],
+    ) -> dict[str, Any]:
+        """给会话添加标签；Chatwoot 会按标签集合处理重复项。"""
+        account_id, conversation_id = self._validate_conversation(
+            account_id,
+            conversation_id,
+        )
+        clean_labels = sorted(
+            {
+                label.strip()
+                for label in labels
+                if label and label.strip()
+            }
+        )
+        if not clean_labels:
+            raise ChatwootAPIError("Chatwoot conversation labels are empty.")
+        return self._request_json(
+            "POST",
+            self._conversation_path(account_id, conversation_id) + "/labels",
+            {"labels": clean_labels},
+        )
+
+    def update_conversation(
+        self,
+        *,
+        account_id: str,
+        conversation_id: str,
+        status: str | None = None,
+        assignee_id: int | None = None,
+        team_id: int | None = None,
+    ) -> dict[str, Any]:
+        """更新会话状态或分配信息。"""
+        account_id, conversation_id = self._validate_conversation(
+            account_id,
+            conversation_id,
+        )
+        if status is not None:
+            if assignee_id is not None or team_id is not None:
+                raise ChatwootAPIError(
+                    "Chatwoot status and assignment must be updated separately."
+                )
+            return self.set_conversation_status(
+                account_id=account_id,
+                conversation_id=conversation_id,
+                status=status,
+            )
+        payload: dict[str, Any] = {}
+        if assignee_id is not None:
+            payload["assignee_id"] = assignee_id
+        if team_id is not None:
+            payload["team_id"] = team_id
+        if not payload:
+            raise ChatwootAPIError("Chatwoot conversation update is empty.")
+        return self._request_json(
+            "PATCH",
+            self._conversation_path(account_id, conversation_id),
+            payload,
+        )
+
+    def set_conversation_status(
+        self,
+        *,
+        account_id: str,
+        conversation_id: str,
+        status: str,
+    ) -> dict[str, Any]:
+        """通过 Chatwoot 的状态切换端点设置会话状态。"""
+        account_id, conversation_id = self._validate_conversation(
+            account_id,
+            conversation_id,
+        )
+        clean_status = str(status or "").strip().lower()
+        if not clean_status:
+            raise ChatwootAPIError("Chatwoot conversation status is empty.")
+        return self._request_json(
+            "POST",
+            self._conversation_path(account_id, conversation_id)
+            + "/toggle_status",
+            {"status": clean_status},
+        )
+
+    def assign_conversation(
+        self,
+        *,
+        account_id: str,
+        conversation_id: str,
+        assignee_id: int | None = None,
+        team_id: int | None = None,
+    ) -> dict[str, Any]:
+        """按配置将会话分配给 Team 和/或 Agent。"""
+        account_id, conversation_id = self._validate_conversation(
+            account_id,
+            conversation_id,
+        )
+        payload: dict[str, Any] = {}
+        if assignee_id is not None:
+            payload["assignee_id"] = assignee_id
+        if team_id is not None:
+            payload["team_id"] = team_id
+        if not payload:
+            raise ChatwootAPIError("Chatwoot assignment is empty.")
+        return self._request_json(
+            "POST",
+            self._conversation_path(account_id, conversation_id)
+            + "/assignments",
+            payload,
+        )
+
+    def _create_message(
+        self,
+        *,
+        account_id: str,
+        conversation_id: str,
+        content: str,
+        private: bool,
+    ) -> dict[str, Any]:
+        account_id, conversation_id = self._validate_conversation(
+            account_id,
+            conversation_id,
+        )
         if not content.strip():
             raise ChatwootAPIError("Chatwoot message content is empty.")
-
-        base_url = self._settings.chatwoot_base_url.rstrip("/")
-        url = (
-            f"{base_url}/api/v1/accounts/{quote(account_id, safe='')}"
-            f"/conversations/{quote(conversation_id, safe='')}/messages"
-        )
-        payload = json.dumps(
+        return self._request_json(
+            "POST",
+            self._conversation_path(account_id, conversation_id) + "/messages",
             {
                 "content": content,
                 "message_type": "outgoing",
-                "private": False,
+                "private": private,
                 "content_type": "text",
             },
-            ensure_ascii=False,
-        ).encode("utf-8")
+        )
+
+    def _conversation_path(
+        self,
+        account_id: str,
+        conversation_id: str,
+    ) -> str:
+        return (
+            f"/api/v1/accounts/{quote(account_id, safe='')}"
+            f"/conversations/{quote(conversation_id, safe='')}"
+        )
+
+    @staticmethod
+    def _validate_conversation(
+        account_id: str,
+        conversation_id: str,
+    ) -> tuple[str, str]:
+        account_id = str(account_id or "").strip()
+        conversation_id = str(conversation_id or "").strip()
+        if not account_id:
+            raise ChatwootAPIError("Chatwoot account_id is missing.")
+        if not conversation_id:
+            raise ChatwootAPIError("Chatwoot conversation_id is missing.")
+        return account_id, conversation_id
+
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        token = self._settings.chatwoot_api_token.strip()
+        if not token:
+            raise ChatwootAPIError("CHATWOOT_API_TOKEN is not configured.")
+
+        raw_payload = (
+            json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            if payload is not None
+            else None
+        )
+        headers = {
+            "Accept": "application/json",
+            "api_access_token": token,
+        }
+        if raw_payload is not None:
+            headers["Content-Type"] = "application/json"
         request = Request(
-            url,
-            data=payload,
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "api_access_token": token,
-            },
-            method="POST",
+            self._settings.chatwoot_base_url.rstrip("/") + path,
+            data=raw_payload,
+            headers=headers,
+            method=method,
         )
 
         try:

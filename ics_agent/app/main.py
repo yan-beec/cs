@@ -5,7 +5,7 @@ import logging
 import tempfile
 import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import (
@@ -47,6 +47,11 @@ from .chatwoot_client import (
     ChatwootAPIError,
     get_chatwoot_client,
 )
+from .conversation_control import (
+    ConversationControl,
+    get_conversation_control_repository,
+)
+from .handoff import is_explicit_handoff_request
 from .logging_config import configure_logging, get_log_snapshot, log_event
 from .models import (
     AdminFileDeleteRequest,
@@ -84,8 +89,22 @@ rag_settings = get_rag_settings()
 configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 webhook_repository = get_webhook_idempotency_repository()
+conversation_control_repository = get_conversation_control_repository()
 webhook_queue: WebhookJobQueue | None = None
 EMOJI_ACK_MESSAGE = "如果有什么需要帮助，可以直接问我哦，我会尽力帮您解答的~"
+HANDOFF_NOTICE_MESSAGE = "已为您转接人工客服，请稍等..."
+HANDOFF_RELEASE_STATUSES = {"resolved", "pending"}
+CHATWOOT_TYPING_HEARTBEAT_SECONDS = 20.0
+CONVERSATION_STATUS_EVENTS = {
+    "conversation.status_changed",
+    "conversation.status.changed",
+    "conversation.updated",
+    "conversation.resolved",
+    "conversation.pending",
+    "conversation.opened",
+    "conversation.reopened",
+}
+_conversation_locks: dict[str, asyncio.Lock] = {}
 log_event(
     logger,
     logging.INFO,
@@ -116,6 +135,15 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         logger.exception(
             "事件=应用.Webhook幂等.初始化失败 错误类型=%s",
+            type(exc).__name__,
+        )
+
+    try:
+        await asyncio.to_thread(conversation_control_repository.ensure_table)
+        log_event(logger, logging.INFO, "app.conversation_control.ready")
+    except Exception as exc:
+        logger.exception(
+            "事件=应用.Chatwoot会话控制.初始化失败 错误类型=%s",
             type(exc).__name__,
         )
 
@@ -243,7 +271,9 @@ async def _run_rag_query(
 
 
 def _should_process_webhook_event(event: ChatwootWebhookEvent) -> bool:
-    """仅处理带文本的入站消息，避免回复消息触发重复 RAG。"""
+    """处理入站消息和会话状态事件，忽略 outgoing 消息。"""
+    if _is_conversation_status_event(event):
+        return bool(event.conversation or _conversation_status(event))
     if not event.content or not event.content.strip():
         return False
     if event.message_type is None:
@@ -252,7 +282,7 @@ def _should_process_webhook_event(event: ChatwootWebhookEvent) -> bool:
 
 
 def _webhook_thread_id(event: ChatwootWebhookEvent) -> str | None:
-    """根据 Chatwoot 会话生成稳定的 LangGraph thread_id。"""
+    """按 Chatwoot 会话生成稳定的长期记忆 ID。"""
     conversation = event.conversation or {}
     account = event.account or {}
     conversation_id = conversation.get("id")
@@ -260,7 +290,9 @@ def _webhook_thread_id(event: ChatwootWebhookEvent) -> str | None:
     if conversation_id is not None:
         return f"chatwoot:{account_id or 'default'}:{conversation_id}"
 
-    # 极少数事件没有 conversation 对象时，尽量使用 sender 维持短期连续性。
+    # 没有 conversation 对象时，再使用外部线程或 sender 维持连续性。
+    if event.thread_id and event.thread_id.strip():
+        return f"chatwoot:external:{event.thread_id.strip()}"
     sender_id = (event.sender or {}).get("id")
     if sender_id is not None:
         return f"chatwoot:sender:{sender_id}"
@@ -269,42 +301,311 @@ def _webhook_thread_id(event: ChatwootWebhookEvent) -> str | None:
     return None
 
 
+def _webhook_conversation_reference(
+    event: ChatwootWebhookEvent,
+) -> tuple[str, str]:
+    """返回 Chatwoot API 和会话控制共同使用的主键。"""
+    conversation = event.conversation or {}
+    account = event.account or {}
+    account_id = str(
+        account.get("id")
+        or conversation.get("account_id")
+        or event.raw.get("account_id")
+        or settings.chatwoot_account_id
+        or ""
+    ).strip()
+    conversation_id = str(
+        conversation.get("id")
+        or event.raw.get("conversation_id")
+        or (
+            event.id
+            if _is_conversation_status_event(event)
+            else ""
+        )
+        or ""
+    ).strip()
+    return account_id, conversation_id
+
+
 def _webhook_event_key(
     event: ChatwootWebhookEvent,
     raw_body: bytes,
 ) -> str:
     """优先使用 Chatwoot 事件 ID，没有 ID 时使用请求体哈希。"""
     account = event.account or {}
-    account_id = account.get("id") or "default"
+    account_id = (
+        account.get("id")
+        or event.raw.get("account_id")
+        or "default"
+    )
     if event.id is not None:
+        if _is_conversation_status_event(event):
+            event_name = event.event.strip().lower().replace("_", ".")
+            status = _conversation_status(event) or "unknown"
+            return (
+                f"chatwoot:{account_id}:conversation:"
+                f"{event_name}:{event.id}:{status}"
+            )
         return f"chatwoot:{account_id}:{event.id}"
     return f"chatwoot:payload:{payload_hash(raw_body)}"
 
 
-async def _process_webhook_job(job: WebhookJob) -> dict[str, object]:
-    """后台执行一条入站消息；结果由队列写入幂等记录。"""
-    event = job.event
-    content = event.content or ""
-    if is_emoji_only_text(content):
+def _conversation_status(event: ChatwootWebhookEvent) -> str | None:
+    """提取 Chatwoot 当前会话状态。"""
+    conversation = event.conversation or {}
+    value = (
+        conversation.get("status")
+        or event.raw.get("status")
+        or event.raw.get("conversation_status")
+    )
+    normalized = str(value or "").strip().lower()
+    return normalized or None
+
+
+def _is_conversation_status_event(event: ChatwootWebhookEvent) -> bool:
+    event_name = event.event.strip().lower().replace("_", ".")
+    return event_name in CONVERSATION_STATUS_EVENTS
+
+
+def _is_handoff_release_status(status: str | None) -> bool:
+    return status in HANDOFF_RELEASE_STATUSES
+
+
+async def _refresh_handoff_from_chatwoot_status(
+    *,
+    event: ChatwootWebhookEvent,
+    control: ConversationControl,
+) -> ConversationControl:
+    """用 Webhook 或 Chatwoot 当前状态判断人工轮次是否结束。"""
+    account_id, conversation_id = _webhook_conversation_reference(event)
+    status = _conversation_status(event)
+    if (
+        control.handoff_required
+        and status is None
+        and account_id
+        and conversation_id
+    ):
+        try:
+            conversation = await asyncio.to_thread(
+                get_chatwoot_client().get_conversation,
+                account_id=account_id,
+                conversation_id=conversation_id,
+            )
+            status = str(conversation.get("status") or "").strip().lower()
+        except ChatwootAPIError as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "webhook.handoff.status_lookup_failed",
+                account_id=account_id,
+                conversation_id=conversation_id,
+                status_code=exc.status_code,
+            )
+            return control
+
+    if status is None:
+        return control
+
+    if account_id and conversation_id:
+        control = await asyncio.to_thread(
+            conversation_control_repository.record_conversation_status,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            status=status,
+        )
+    return control
+
+
+async def _update_chatwoot_typing(
+    *,
+    account_id: str,
+    conversation_id: str,
+    typing_status: str,
+) -> None:
+    """更新 Chatwoot 输入状态；状态失败不应阻断 AI 回复。"""
+    try:
+        await asyncio.to_thread(
+            get_chatwoot_client().toggle_typing_status,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            typing_status=typing_status,
+        )
+    except ChatwootAPIError as exc:
         log_event(
             logger,
-            logging.INFO,
-            "webhook.emoji_only",
-            event_key=job.event_key,
-            content_length=len(content),
+            logging.WARNING,
+            "webhook.chatwoot_typing.failed",
+            account_id=account_id,
+            conversation_id=conversation_id,
+            typing_status=typing_status,
+            status_code=exc.status_code,
         )
-        result: dict[str, object] = {
-            "route": "emoji_ack",
-            "faq_route": "emoji_ack",
-            "answer": EMOJI_ACK_MESSAGE,
+    except Exception as exc:
+        logger.warning(
+            "事件=Chatwoot输入状态更新失败 状态=%s 错误类型=%s",
+            typing_status,
+            type(exc).__name__,
+        )
+
+
+async def _keep_chatwoot_typing(
+    *,
+    account_id: str,
+    conversation_id: str,
+) -> None:
+    """在长 RAG 链路中周期性续期 typing_on，避免 Chatwoot 30 秒自动关闭。"""
+    await _update_chatwoot_typing(
+        account_id=account_id,
+        conversation_id=conversation_id,
+        typing_status="on",
+    )
+    while True:
+        await asyncio.sleep(CHATWOOT_TYPING_HEARTBEAT_SECONDS)
+        await _update_chatwoot_typing(
+            account_id=account_id,
+            conversation_id=conversation_id,
+            typing_status="on",
+        )
+
+
+async def _process_webhook_job(job: WebhookJob) -> dict[str, object]:
+    """后台执行一条入站消息；结果由队列写入幂等记录。"""
+    account_id, conversation_id = _webhook_conversation_reference(job.event)
+    lock_key = f"{account_id}:{conversation_id}"
+    lock = _conversation_locks.setdefault(lock_key, asyncio.Lock())
+    async with lock:
+        return await _process_webhook_job_unlocked(job)
+
+
+async def _process_webhook_job_unlocked(
+    job: WebhookJob,
+) -> dict[str, object]:
+    """在同一会话串行处理，避免人工动作和 AI 回复并发交错。"""
+    event = job.event
+    content = event.content or ""
+    account_id, conversation_id = _webhook_conversation_reference(event)
+    message_id = None if event.id is None else str(event.id)
+    thread_id = _webhook_thread_id(event)
+    explicit_handoff = is_explicit_handoff_request(content)
+    control: ConversationControl | None = None
+
+    if _is_conversation_status_event(event):
+        status = _conversation_status(event)
+        if account_id and conversation_id and status:
+            control = await asyncio.to_thread(
+                conversation_control_repository.record_conversation_status,
+                account_id=account_id,
+                conversation_id=conversation_id,
+                status=status,
+            )
+        return {
+            "route": "conversation_status",
+            "faq_route": "conversation_status",
+            "answer": "",
             "intent_label": None,
             "intent_confidence": None,
+            "chatwoot_status": status,
+            "handoff_released": _is_handoff_release_status(status),
         }
-    else:
-        result = await _run_rag_query(
-            content,
-            thread_id=_webhook_thread_id(event),
+
+    if account_id and conversation_id:
+        control = await asyncio.to_thread(
+            conversation_control_repository.record_user_message,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            thread_id=thread_id,
+            message_id=message_id,
+            chatwoot_status=_conversation_status(event),
         )
+        control = await _refresh_handoff_from_chatwoot_status(
+            event=event,
+            control=control,
+        )
+        if explicit_handoff:
+            control, _ = await asyncio.to_thread(
+                conversation_control_repository.request_handoff,
+                account_id=account_id,
+                conversation_id=conversation_id,
+                thread_id=thread_id,
+                reason="explicit_keyword",
+                message_id=message_id,
+                chatwoot_status=_conversation_status(event),
+            )
+    elif explicit_handoff:
+        raise ValueError(
+            "Chatwoot handoff requires account_id and conversation_id."
+        )
+
+    if explicit_handoff or (control is not None and control.handoff_required):
+        if control is None:
+            raise RuntimeError("Conversation control is unavailable.")
+        return await _complete_handoff(
+            event=event,
+            job=job,
+            control=control,
+            content=content,
+        )
+
+    typing_task: asyncio.Task[None] | None = None
+    if settings.chatwoot_auto_reply_enabled and account_id and conversation_id:
+        typing_task = asyncio.create_task(
+            _keep_chatwoot_typing(
+                account_id=account_id,
+                conversation_id=conversation_id,
+            )
+        )
+    try:
+        if is_emoji_only_text(content):
+            log_event(
+                logger,
+                logging.INFO,
+                "webhook.emoji_only",
+                event_key=job.event_key,
+                content_length=len(content),
+            )
+            result: dict[str, object] = {
+                "route": "emoji_ack",
+                "faq_route": "emoji_ack",
+                "answer": EMOJI_ACK_MESSAGE,
+                "intent_label": None,
+                "intent_confidence": None,
+            }
+        else:
+            result = await _run_rag_query(
+                content,
+                thread_id=thread_id,
+            )
+    finally:
+        if typing_task is not None:
+            typing_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await typing_task
+            await _update_chatwoot_typing(
+                account_id=account_id,
+                conversation_id=conversation_id,
+                typing_status="off",
+            )
+
+    if account_id and conversation_id:
+        latest_control = await asyncio.to_thread(
+            conversation_control_repository.get,
+            account_id=account_id,
+            conversation_id=conversation_id,
+        )
+        if latest_control is not None and (
+            latest_control.handoff_required
+            or not latest_control.ai_enabled
+        ):
+            log_event(
+                logger,
+                logging.INFO,
+                "webhook.ai_reply.suppressed_after_handoff",
+                event_key=job.event_key,
+                account_id=account_id,
+                conversation_id=conversation_id,
+            )
+            return _handoff_suppressed_result(latest_control)
+
     reply_result: dict[str, object] = {
         "enabled": settings.chatwoot_auto_reply_enabled,
         "sent": False,
@@ -341,6 +642,17 @@ async def _process_webhook_job(job: WebhookJob) -> dict[str, object]:
             "sent": True,
             "message_id": sent_message.get("id"),
         }
+        if account_id and conversation_id:
+            await asyncio.to_thread(
+                conversation_control_repository.mark_ai_message,
+                account_id=account_id,
+                conversation_id=conversation_id,
+                message_id=(
+                    None
+                    if sent_message.get("id") is None
+                    else str(sent_message.get("id"))
+                ),
+            )
     log_event(
         logger,
         logging.INFO,
@@ -355,6 +667,230 @@ async def _process_webhook_job(job: WebhookJob) -> dict[str, object]:
         "intent_label": result["intent_label"],
         "intent_confidence": result["intent_confidence"],
         "chatwoot_reply": reply_result,
+    }
+
+
+async def _complete_handoff(
+    *,
+    event: ChatwootWebhookEvent,
+    job: WebhookJob,
+    control: ConversationControl,
+    content: str,
+) -> dict[str, object]:
+    """执行一次可重试、动作级幂等的 Chatwoot 人工接管。"""
+    account_id, conversation_id = _webhook_conversation_reference(event)
+    if not account_id or not conversation_id:
+        raise ValueError(
+            "Chatwoot handoff requires account_id and conversation_id."
+        )
+
+    if not settings.chatwoot_handoff_enabled:
+        log_event(
+            logger,
+            logging.WARNING,
+            "webhook.handoff.disabled",
+            event_key=job.event_key,
+        )
+        return _handoff_result(
+            control=control,
+            actions={"enabled": False},
+            notice_sent=False,
+        )
+
+    client = get_chatwoot_client()
+    actions: dict[str, object] = {"enabled": True}
+
+    if not control.handoff_conversation_updated:
+        await asyncio.to_thread(
+            client.set_conversation_status,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            status="open",
+        )
+        await asyncio.to_thread(
+            conversation_control_repository.record_conversation_status,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            status="open",
+        )
+        await asyncio.to_thread(
+            conversation_control_repository.mark_handoff_action,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            action="conversation_updated",
+        )
+    actions["conversation_updated"] = True
+
+    handoff_label = settings.chatwoot_handoff_label.strip()
+    if not control.handoff_label_applied:
+        if handoff_label:
+            await asyncio.to_thread(
+                client.add_conversation_labels,
+                account_id=account_id,
+                conversation_id=conversation_id,
+                labels=[handoff_label],
+            )
+        await asyncio.to_thread(
+            conversation_control_repository.mark_handoff_action,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            action="label_applied",
+        )
+    actions["label_applied"] = bool(handoff_label)
+
+    if not control.handoff_note_created:
+        note = _build_handoff_note(
+            event=event,
+            control=control,
+            content=content,
+        )
+        note_result = await asyncio.to_thread(
+            client.create_private_note,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            content=note,
+        )
+        await asyncio.to_thread(
+            conversation_control_repository.mark_handoff_action,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            action="note_created",
+            message_id=_chatwoot_message_id(note_result),
+        )
+    actions["note_created"] = True
+
+    team_id = _optional_chatwoot_id(settings.chatwoot_handoff_team_id)
+    assignee_id = _optional_chatwoot_id(
+        settings.chatwoot_handoff_assignee_id
+    )
+    if not control.handoff_assignment_applied:
+        if team_id is not None or assignee_id is not None:
+            await asyncio.to_thread(
+                client.assign_conversation,
+                account_id=account_id,
+                conversation_id=conversation_id,
+                team_id=team_id,
+                assignee_id=assignee_id,
+            )
+        await asyncio.to_thread(
+            conversation_control_repository.mark_handoff_action,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            action="assignment_applied",
+        )
+    actions["assignment_applied"] = (
+        team_id is not None or assignee_id is not None
+    )
+
+    notice_sent = control.handoff_notice_sent
+    notice_message_id: str | None = None
+    if not control.handoff_notice_sent:
+        if settings.chatwoot_handoff_notice_enabled:
+            notice_result = await asyncio.to_thread(
+                client.send_message,
+                account_id=account_id,
+                conversation_id=conversation_id,
+                content=HANDOFF_NOTICE_MESSAGE,
+            )
+            notice_message_id = _chatwoot_message_id(notice_result)
+        await asyncio.to_thread(
+            conversation_control_repository.mark_handoff_action,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            action="notice_sent",
+            message_id=notice_message_id,
+        )
+        notice_sent = settings.chatwoot_handoff_notice_enabled
+    actions["notice_sent"] = notice_sent
+
+    log_event(
+        logger,
+        logging.INFO,
+        "webhook.handoff.completed",
+        event_key=job.event_key,
+        account_id=account_id,
+        conversation_id=conversation_id,
+        reason=control.handoff_reason,
+        notice_sent=notice_sent,
+    )
+    return _handoff_result(
+        control=control,
+        actions=actions,
+        notice_sent=notice_sent,
+    )
+
+
+def _build_handoff_note(
+    *,
+    event: ChatwootWebhookEvent,
+    control: ConversationControl,
+    content: str,
+) -> str:
+    """构造坐席可读的接管备注，限制用户输入长度。"""
+    original_content = content.strip()[:2000] or "(empty)"
+    return (
+        "智能客服已触发人工接管。\n"
+        f"转人工原因：{control.handoff_reason or 'explicit_user_request'}\n"
+        f"用户原始消息：{original_content}\n"
+        f"Webhook message id：{event.id or 'unknown'}"
+    )
+
+
+def _optional_chatwoot_id(value: str) -> int | None:
+    value = str(value or "").strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError(f"Invalid Chatwoot numeric id: {value}") from exc
+
+
+def _chatwoot_message_id(result: dict[str, object]) -> str | None:
+    message_id = result.get("id")
+    return None if message_id is None else str(message_id)
+
+
+def _handoff_suppressed_result(
+    control: ConversationControl,
+) -> dict[str, object]:
+    return {
+        "route": "handoff_suppressed",
+        "faq_route": "handoff_suppressed",
+        "answer": "",
+        "intent_label": None,
+        "intent_confidence": None,
+        "handoff_required": True,
+        "handoff_reason": control.handoff_reason,
+        "chatwoot_reply": {
+            "enabled": settings.chatwoot_auto_reply_enabled,
+            "sent": False,
+        },
+    }
+
+
+def _handoff_result(
+    *,
+    control: ConversationControl,
+    actions: dict[str, object],
+    notice_sent: bool,
+) -> dict[str, object]:
+    return {
+        "route": "handoff",
+        "faq_route": "handoff",
+        "answer": HANDOFF_NOTICE_MESSAGE if notice_sent else "",
+        "intent_label": None,
+        "intent_confidence": None,
+        "handoff_required": True,
+        "handoff_reason": control.handoff_reason,
+        "chatwoot_handoff": actions,
+        "chatwoot_reply": {
+            "enabled": (
+                settings.chatwoot_handoff_enabled
+                and settings.chatwoot_handoff_notice_enabled
+            ),
+            "sent": notice_sent,
+        },
     }
 
 
@@ -993,6 +1529,9 @@ async def chatwoot_webhook(
         webhook_event=event.event,
         event_id=event.id,
         message_type=event.message_type,
+        account_id=_webhook_conversation_reference(event)[0],
+        conversation_id=_webhook_conversation_reference(event)[1],
+        chatwoot_status=_conversation_status(event),
     )
 
     if not _should_process_webhook_event(event):
@@ -1052,6 +1591,41 @@ async def chatwoot_webhook(
             },
         )
 
+    handoff_detected = is_explicit_handoff_request(event.content)
+    if handoff_detected:
+        account_id, conversation_id = _webhook_conversation_reference(event)
+        try:
+            await asyncio.to_thread(
+                conversation_control_repository.request_handoff,
+                account_id=account_id,
+                conversation_id=conversation_id,
+                thread_id=_webhook_thread_id(event),
+                reason="explicit_keyword",
+                message_id=None if event.id is None else str(event.id),
+            )
+        except Exception as exc:
+            await asyncio.to_thread(
+                webhook_repository.mark_failed,
+                event_key,
+                f"handoff_state_failed: {exc}",
+            )
+            logger.exception(
+                "事件=Chatwoot转人工状态.写入失败 错误类型=%s",
+                type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Chatwoot handoff state is temporarily unavailable.",
+            ) from exc
+        log_event(
+            logger,
+            logging.INFO,
+            "webhook.handoff.detected",
+            event_key=event_key,
+            account_id=account_id,
+            conversation_id=conversation_id,
+        )
+
     if webhook_queue is None:
         await asyncio.to_thread(
             webhook_repository.mark_failed,
@@ -1087,5 +1661,6 @@ async def chatwoot_webhook(
             "event": event.event,
             "event_id": event.id,
             "event_key": event_key,
+            "handoff_detected": handoff_detected,
         },
     )

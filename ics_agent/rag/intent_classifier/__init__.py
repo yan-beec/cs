@@ -4,6 +4,7 @@ from .data import (
     IntentClassificationDataset,
     IntentClassificationExample,
     build_intent_label_mapping,
+    calculate_intent_dataset_sha256,
     load_intent_csv,
     split_intent_examples,
 )
@@ -15,6 +16,7 @@ __all__ = [
     "IntentClassifierTrainer",
     "IntentTrainingResult",
     "build_intent_label_mapping",
+    "calculate_intent_dataset_sha256",
     "load_intent_csv",
     "split_intent_examples",
 ]

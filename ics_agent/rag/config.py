@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -19,11 +18,13 @@ class RAGSettings(BaseSettings):
         "models/google-bert--bert-base-chinese/snapshots/master"
     )
     rag_output_dir: str = "models/intent_classifier_bert"
+    rag_intent_dataset_path: str = "database/intent_dataset_4000.csv"
     rag_warm_up_on_startup: bool = True
     rag_memory_enabled: bool = True
     rag_memory_window_turns: int = Field(default=10, ge=1)
     rag_memory_summary_interval: int = Field(default=10, ge=1)
-    rag_memory_retention_days: int = Field(default=30, ge=1)
+    # 0 表示永久保留会话记忆，不执行按时间清理。
+    rag_memory_retention_days: int = Field(default=0, ge=0)
     rag_memory_cleanup_interval_seconds: int = Field(
         default=86400,
         ge=60,
@@ -54,7 +55,6 @@ class RAGSettings(BaseSettings):
         ge=1,
         le=10000,
     )
-    rag_num_labels: int = Field(default=4, ge=2)
     rag_max_length: int = Field(default=128, ge=8, le=512)
     rag_num_train_epochs: float = Field(default=3.0, gt=0)
     rag_learning_rate: float = Field(default=2e-5, gt=0)

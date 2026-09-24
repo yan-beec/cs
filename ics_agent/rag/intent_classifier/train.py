@@ -1,4 +1,4 @@
-# 模块职责：提供基于 intent_dataset_4000.csv 的意图分类微调命令行入口。
+# 模块职责：提供基于可配置 CSV 数据集的意图分类微调命令行入口。
 
 from __future__ import annotations
 
@@ -28,7 +28,6 @@ from ics_agent.rag.config import get_rag_settings
 
 
 logger = logging.getLogger(__name__)
-DEFAULT_DATASET = PROJECT_ROOT / "database" / "intent_dataset_4000.csv"
 
 
 def main() -> None:
@@ -38,7 +37,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--dataset",
-        default=str(DEFAULT_DATASET),
+        default=settings.rag_intent_dataset_path,
         help="CSV file containing text, label and label_id columns.",
     )
     parser.add_argument(
@@ -56,7 +55,10 @@ def main() -> None:
     args = parser.parse_args()
 
     configure_logging()
-    examples = load_intent_csv(args.dataset)
+    dataset_path = Path(args.dataset)
+    if not dataset_path.is_absolute():
+        dataset_path = PROJECT_ROOT / dataset_path
+    examples = load_intent_csv(dataset_path)
     train_examples, eval_examples = split_intent_examples(
         examples,
         eval_ratio=args.eval_ratio,
@@ -73,11 +75,14 @@ def main() -> None:
     result = IntentClassifierTrainer(settings=settings).train(
         train_examples=train_examples,
         eval_examples=eval_examples,
+        dataset_path=dataset_path,
     )
     print(
         json.dumps(
             {
                 "output_dir": result.output_dir,
+                "dataset_path": result.dataset_path,
+                "dataset_sha256": result.dataset_sha256,
                 "label2id": result.label2id,
                 "id2label": result.id2label,
                 "metrics": result.metrics,

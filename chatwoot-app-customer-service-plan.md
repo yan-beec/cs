@@ -118,6 +118,8 @@ Chatwoot Conversation
 - 显式转人工关键词和业务规则判断。
 - 会话级人工接管状态。
 - 人工接管后停止 AI 自动回复。
+- 人工接管状态按 Chatwoot 会话轮次保存；坐席将会话标记为 `resolved` 或
+  `pending` 后，下一条用户消息重新进入 AI。
 - Chatwoot 会话标签、私有备注、团队或坐席分配。
 - Chatwoot 与智能客服的完整端到端验收测试。
 
@@ -169,7 +171,7 @@ FAQ 数据继续使用当前项目的 `question`、`answer`、`need_human`、`en
 5. 增加无法回答、敏感问题和需要账号核验问题的人工引导策略。
 6. 增加 FAQ、RAG、意图分类、检索失败和模型失败的测试样例。
 7. 验证 PostgreSQL 不可用、Redis 不可用、模型加载失败时的降级行为。
-8. 验证会话记忆不会串会话，`thread_id` 必须按会话稳定生成。
+8. 验证会话记忆不会串会话，`thread_id` 按 Chatwoot 对话稳定生成，保证同一窗口历史持续。
 9. 为转人工策略预留统一的结果字段，例如：
 
 ```text
@@ -364,6 +366,8 @@ chatwoot_conversation_control
 --------------------------------
 account_id
 conversation_id
+active_thread_id
+last_chatwoot_status
 ai_enabled
 handoff_required
 handoff_reason
@@ -377,7 +381,11 @@ created_at
 updated_at
 ```
 
-`ai_enabled` 是智能客服自己的控制状态，不依赖 Chatwoot 是否存在同名字段。Chatwoot 的标签、备注、分配和会话状态用于坐席侧展示与运营，数据库状态用于智能客服判断是否继续处理。
+`ai_enabled` 是智能客服自己的控制状态，不依赖 Chatwoot 是否存在同名字段。
+人工接管状态按 Chatwoot 对话轮次生效：同一轮人工处理中后续消息停止 AI；
+坐席将会话标记为 `resolved` 或 `pending` 后，状态记录被释放，下一条用户消息
+重新进入 AI，同时继续复用同一个 Chatwoot 对话的长期历史。Chatwoot 的标签、
+备注、分配和会话状态用于坐席侧展示与运营，数据库状态用于智能客服判断是否继续处理。
 
 ### 5.7 Chatwoot API 客户端扩展方向
 

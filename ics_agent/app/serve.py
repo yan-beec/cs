@@ -153,6 +153,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=settings.port)
     parser.add_argument("--reload", action="store_true")
     parser.add_argument(
+        "--reload-dir",
+        action="append",
+        default=[],
+        help="启用热重载时要监听的目录，可重复指定。",
+    )
+    parser.add_argument(
         "--log-max-bytes",
         type=int,
         default=settings.uvicorn_log_max_bytes,
@@ -204,6 +210,8 @@ def main(argv: list[str] | None = None) -> int:
     ]
     if args.reload:
         command.append("--reload")
+        for directory in args.reload_dir:
+            command.extend(["--reload-dir", directory])
 
     process = subprocess.Popen(
         command,

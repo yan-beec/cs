@@ -85,7 +85,29 @@ python -m ics_agent.app.serve --host 0.0.0.0 --port 3001 --reload
 docker compose up -d --build
 ```
 
-Compose 会挂载 `models/`、`database/`、知识库解析结果、向量库和日志目录。
+Compose 项目名称固定为 `cs`，容器和数据卷会自动使用 `cs` 命名空间，
+例如 `cs-postgres-1`、`cs-redis-1` 和 `cs_postgres_data`，避免与服务器上其他
+Compose 项目使用相同名称。
+
+默认的 `docker-compose.override.yml` 会额外挂载 `ics_agent/` 源码目录，并启用热重载。
+首次启动或修改依赖、Dockerfile 后执行：
+
+```powershell
+docker compose up -d --build ics-agent
+```
+
+只修改 Python 代码时通常会自动重载；如果需要手动重启：
+
+```powershell
+docker compose restart ics-agent
+```
+
+Compose 会挂载 `ics_agent/`、`models/`、`database/`、知识库解析结果、向量库和日志目录。
+如果要按生产镜像方式运行（不挂载本地源码、不启用热重载），请显式停用覆盖文件：
+
+```powershell
+docker compose -f docker-compose.yml up -d --build ics-agent
+```
 
 ## 配置
 
@@ -105,7 +127,7 @@ LLM_BASE_URL=https://api.deepseek.com
 | `POSTGRES_*` / `POSTGRES_DSN` | PostgreSQL 连接 |
 | `REDIS_URL` | Redis 连接 |
 | `LLM_MODEL`、`LLM_MODEL_PROVIDER`、`LLM_API_KEY`、`LLM_BASE_URL` | 云端 LLM |
-| `RAG_WARM_UP_ON_STARTUP` | 是否在启动时加载本地模型 |
+| `RAG_WARM_UP_ON_STARTUP`、`RAG_INTENT_DATASET_PATH` | 是否在启动时加载本地模型、意图分类 CSV 路径 |
 | `FAQ_SYNC_ON_STARTUP` | 是否在启动时刷新 FAQ Redis 快照 |
 | `CHATWOOT_*` | Chatwoot Webhook 和自动回复 |
 | `ADMIN_*` | 管理员认证 |
@@ -134,6 +156,8 @@ Content-Type: application/json
 ```
 
 `thread_id` 可选。传入相同的 ID 时，服务会复用 PostgreSQL 中的对话记忆。
+Chatwoot Webhook 默认按同一个 `conversation_id` 生成稳定 `thread_id`；
+`RAG_MEMORY_RETENTION_DAYS=0` 时长期保留该记忆，不会因时间自动清理。
 
 返回结果包含：
 
@@ -165,6 +189,11 @@ Webhook 只处理带文本的入站消息：
 - 失败后最多重试 3 次，并使用指数退避。
 - 只包含 Emoji 的消息不会进入 RAG，会返回默认提示。
 - 默认只记录答案，不主动回复 Chatwoot。
+- 用户明确输入“人工”或“转人工”时，会先关闭该会话的 AI 回复开关，再执行 Chatwoot 人工接管。
+- 人工接管会打开会话、添加 `handoff_required` 标签、写入私有备注，并按配置分配 Team/Agent。
+- 人工接管后，当前 Chatwoot 对话在坐席结束本轮处理前不会再自动回复。
+- 坐席在 Chatwoot 中点击“已解决”或“待处理”后，下一条用户消息会重新进入 AI。
+- 同一个 Chatwoot 对话会继续复用长期历史，不需要新建窗口或切换 `thread_id`。
 
 配置以下变量后才会发送自动回复：
 
@@ -174,7 +203,22 @@ CHATWOOT_API_TOKEN=你的 Chatwoot API Token
 CHATWOOT_ACCOUNT_ID=你的 Account ID
 CHATWOOT_WEBHOOK_SECRET=与 Chatwoot 一致的密钥
 CHATWOOT_AUTO_REPLY_ENABLED=true
+CHATWOOT_HANDOFF_ENABLED=true
+CHATWOOT_HANDOFF_LABEL=handoff_required
+CHATWOOT_HANDOFF_NOTICE_ENABLED=true
+# 可选；不配置时使用 Chatwoot 自身的自动分配规则。
+CHATWOOT_HANDOFF_TEAM_ID=
+CHATWOOT_HANDOFF_ASSIGNEE_ID=
 ```
+
+转人工由同一个 `POST /webhooks/chatwoot` 入口触发，不需要把
+Chatwoot Application API Token 暴露给前端。服务会调用 Chatwoot Application
+API 完成会话状态更新、标签、私有备注、分配和一次性公开提示；Webhook
+重试时这些动作按本地 PostgreSQL 会话状态逐项幂等处理。服务需要接收
+Chatwoot 的会话状态变更 Webhook，至少覆盖坐席将会话标记为
+`resolved` 或 `pending` 的事件；如果没有状态事件，服务会尝试读取当前状态，
+但 Chatwoot 重新收到用户消息后可能已经自动变回 `open`，无法可靠判断上一轮
+人工是否已结束。
 
 查询 Webhook 后台任务：
 
@@ -298,13 +342,17 @@ Authorization: Bearer <access_token>
 
 ## 意图分类模型
 
-训练数据默认是：
+训练数据默认由 `RAG_INTENT_DATASET_PATH` 指定，默认值是：
 
 ```text
 database/intent_dataset_4000.csv
 ```
 
-CSV 至少包含 `text`、`label` 和 `label_id` 三列。训练使用本地中文 BERT，默认按类别进行 8:2 分层切分，模型输出到：
+CSV 至少包含 `text`、`label` 和 `label_id` 三列。`label` 和 `label_id`
+是分类器唯一的类别定义，训练器会从 CSV 动态生成 `num_labels`、
+`label2id`、`id2label` 和模型标签元数据，代码和配置不再固定业务类别或类别数量。
+每个 `label_id` 必须从 0 开始连续编号，并且每个类别至少需要两条样本。
+训练使用本地中文 BERT，默认按类别进行 8:2 分层切分，模型输出到：
 
 ```text
 models/intent_classifier_bert/
@@ -324,6 +372,11 @@ python -m ics_agent.rag.intent_classifier.train `
   --eval-ratio 0.2 `
   --seed 42
 ```
+
+新增或调整意图时，只需准备符合上述格式的新 CSV，并重新执行训练命令。
+训练产物会保存该 CSV 的路径、标签映射和文件指纹；应用启动时优先使用模型
+元数据记录的 CSV，并校验它是否仍与模型一致，避免继续使用旧分类模型。
+重新训练后重启应用即可加载新的类别。
 
 使用独立标注集评估：
 

@@ -12,6 +12,11 @@ from typing import Any
 from ics_agent.app.config import PROJECT_ROOT
 from ics_agent.app.logging_config import log_event
 from ics_agent.rag.config import RAGSettings, get_rag_settings
+from ics_agent.rag.intent_classifier.data import (
+    build_intent_label_mapping,
+    calculate_intent_dataset_sha256,
+    load_intent_csv,
+)
 from ics_agent.llm_factory import call_cloud_llm
 from ics_agent.rag.prompt import SYSTEM_PROMPT, build_dynamic_prompt
 from ics_agent.rag.reranker import arerank_documents
@@ -21,6 +26,8 @@ from .state import RAGState
 
 
 logger = logging.getLogger(__name__)
+
+CHITCHAT_INTENT_LABEL = "闲聊"
 
 
 class IntentClassifierModel:
@@ -33,6 +40,9 @@ class IntentClassifierModel:
         self.settings = settings or get_rag_settings()
         self.model_dir = self._resolve_project_path(
             self.settings.rag_output_dir
+        )
+        self.dataset_path = self._resolve_project_path(
+            self.settings.rag_intent_dataset_path
         )
         if not self.model_dir.is_dir():
             raise FileNotFoundError(
@@ -87,7 +97,11 @@ class IntentClassifierModel:
                 loaded = False
 
         self._tokenizer, self._model, self._device = cached
-        self._id_to_label = self._load_label_mapping(self.model_dir)
+        self._id_to_label = self._load_label_mapping(
+            self.model_dir,
+            self._model,
+            self.dataset_path,
+        )
         log_event(
             logger,
             logging.INFO,
@@ -102,26 +116,88 @@ class IntentClassifierModel:
         )
 
     @staticmethod
-    def _load_label_mapping(model_dir: Path) -> dict[int, str]:
+    def _load_label_mapping(
+        model_dir: Path,
+        model: Any,
+        fallback_dataset_path: Path,
+    ) -> dict[int, str]:
         labels_path = model_dir / "labels.json"
         if labels_path.is_file():
             payload = json.loads(labels_path.read_text(encoding="utf-8"))
             mapping = payload.get("id2label") or {}
-            return {
+            id_to_label = {
                 int(label_id): str(label)
                 for label_id, label in mapping.items()
             }
+        else:
+            config_path = model_dir / "config.json"
+            if not config_path.is_file():
+                raise FileNotFoundError(
+                    f"Intent classifier label metadata does not exist: {model_dir}"
+                )
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            id_to_label = {
+                int(label_id): str(label)
+                for label_id, label in (payload.get("id2label") or {}).items()
+            }
 
-        config_path = model_dir / "config.json"
-        if not config_path.is_file():
-            raise FileNotFoundError(
-                f"Intent classifier label metadata does not exist: {model_dir}"
+        dataset_metadata = payload.get("dataset") or {}
+        dataset_path_value = dataset_metadata.get("path")
+        if dataset_path_value:
+            dataset_path = Path(str(dataset_path_value))
+            if not dataset_path.is_absolute():
+                dataset_path = PROJECT_ROOT / dataset_path
+        else:
+            dataset_path = fallback_dataset_path
+
+        expected_ids = list(range(len(id_to_label)))
+        if sorted(id_to_label) != expected_ids:
+            raise ValueError(
+                "Intent classifier model label IDs must be continuous and start at zero: "
+                f"{sorted(id_to_label)}"
             )
-        payload = json.loads(config_path.read_text(encoding="utf-8"))
-        return {
-            int(label_id): str(label)
-            for label_id, label in (payload.get("id2label") or {}).items()
-        }
+
+        model_label_count = getattr(model.config, "num_labels", None)
+        if model_label_count is not None and int(model_label_count) != len(id_to_label):
+            raise ValueError(
+                "Intent classifier model output size does not match its label metadata: "
+                f"num_labels={model_label_count}, labels={len(id_to_label)}"
+            )
+
+        if not dataset_path.is_file():
+            raise FileNotFoundError(
+                "Configured intent classification dataset does not exist: "
+                f"{dataset_path}"
+            )
+
+        examples = load_intent_csv(dataset_path)
+        _, dataset_id_to_label = build_intent_label_mapping(examples)
+        if dataset_id_to_label != id_to_label:
+            raise ValueError(
+                "Intent classifier model labels do not match the configured dataset: "
+                f"dataset={dataset_id_to_label}, model={id_to_label}. "
+                "Retrain the model with the configured CSV."
+            )
+
+        expected_sha256 = dataset_metadata.get("sha256")
+        if expected_sha256:
+            actual_sha256 = calculate_intent_dataset_sha256(dataset_path)
+            if actual_sha256 != expected_sha256:
+                raise ValueError(
+                    "Configured intent classification dataset differs from the CSV "
+                    "used to train the loaded model. Retrain the model with the "
+                    f"current dataset: {dataset_path}"
+                )
+        else:
+            log_event(
+                logger,
+                logging.WARNING,
+                "rag.graph.intent_model.legacy_metadata",
+                model_dir=model_dir,
+                reason="dataset_fingerprint_missing",
+            )
+
+        return id_to_label
 
     def warm_up(self) -> None:
         """在应用启动时加载意图模型。"""
@@ -192,7 +268,7 @@ def get_intent_classifier(*, warm_up: bool = False) -> IntentClassifierModel:
 
 
 async def intent_recognition_node(state: RAGState) -> dict[str, Any]:
-    """识别用户意图，暂不基于结果做条件分支。"""
+    """识别用户意图，并为后续图路由写入分支标识。"""
     query = state.get("query", "").strip()
     if not query:
         raise ValueError("RAG state query cannot be empty.")
@@ -200,20 +276,35 @@ async def intent_recognition_node(state: RAGState) -> dict[str, Any]:
     intent_id, intent_label, probabilities, confidence = await (
         get_intent_classifier().predict(query)
     )
+    route = (
+        "chitchat"
+        if intent_label == CHITCHAT_INTENT_LABEL
+        else "rag"
+    )
     log_event(
         logger,
         logging.INFO,
         "rag.graph.node.intent.completed",
         intent_label=intent_label,
         confidence=round(confidence, 4),
+        route=route,
     )
-    return {
+    result = {
         "intent_id": intent_id,
         "intent_label": intent_label,
         "intent_probabilities": probabilities,
         "intent_confidence": confidence,
-        "route": "rag",
+        "route": route,
     }
+    if route == "chitchat":
+        # 闲聊分支跳过检索和精排；清空 checkpoint 中可能残留的上一轮结果。
+        result.update(
+            {
+                "retrieved_documents": [],
+                "reranked_documents": [],
+            }
+        )
+    return result
 
 
 async def retrieval_node(state: RAGState) -> dict[str, Any]:
@@ -275,7 +366,7 @@ def _response_content(response: Any) -> str:
 
 
 async def llm_reply_node(state: RAGState) -> dict[str, Any]:
-    """基于精排后的 Top-5 文档调用云端 LLM 生成回复。"""
+    """调用云端 LLM 生成回复，兼容 RAG 和闲聊两条上游路径。"""
     query = state.get("query", "").strip()
     if not query:
         raise ValueError("RAG state query cannot be empty.")
