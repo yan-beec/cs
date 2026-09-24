@@ -362,9 +362,10 @@ def _webhook_event_key(
         if _is_conversation_status_event(event):
             event_name = event.event.strip().lower().replace("_", ".")
             status = _conversation_status(event) or "unknown"
+            body_hash = payload_hash(raw_body)
             return (
                 f"chatwoot:{account_id}:conversation:"
-                f"{event_name}:{event.id}:{status}"
+                f"{event_name}:{event.id}:{status}:{body_hash}"
             )
         return f"chatwoot:{account_id}:{event.id}"
     return f"chatwoot:payload:{payload_hash(raw_body)}"

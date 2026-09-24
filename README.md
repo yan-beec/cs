@@ -114,8 +114,11 @@ docker compose -f docker-compose.yml up -d --build ics-agent
 所有运行时配置从项目根目录的 `.env` 读取。建议至少修改：
 
 ```dotenv
+APP_ENV=production
 ADMIN_INITIAL_PASSWORD=替换为管理员初始密码
 ADMIN_JWT_SECRET=替换为随机长密钥
+LLM_MODEL=deepseek-flash
+LLM_MODEL_PROVIDER=openai
 LLM_API_KEY=你的模型服务密钥
 LLM_BASE_URL=https://api.deepseek.com
 ```
@@ -195,6 +198,8 @@ Webhook 只处理带文本的入站消息：
 - 人工接管后，当前 Chatwoot 对话在坐席结束本轮处理前不会再自动回复。
 - 坐席在 Chatwoot 中点击“已解决”或“待处理”后，下一条用户消息会重新进入 AI。
 - 同一个 Chatwoot 对话会继续复用长期历史，不需要新建窗口或切换 `thread_id`。
+- 会话状态类 Webhook 的幂等键包含请求体哈希，避免同一会话第二次标记
+  `resolved`、`pending` 或 `open` 时被旧事件记录误判为重复。
 
 配置以下变量后才会发送自动回复：
 
@@ -220,7 +225,9 @@ API 完成会话状态更新、标签、私有备注、分配和一次性公开�
 Chatwoot 的会话状态变更 Webhook，至少覆盖坐席将会话标记为
 `resolved` 或 `pending` 的事件；如果没有状态事件，服务会尝试读取当前状态，
 同时普通用户消息触发的 Chatwoot `open` 会在 AI 处理开始和回复完成后同步回
-`pending`；只有明确转人工路径会保持 `open`。
+`pending`；只有明确转人工路径会保持 `open`。如果历史状态中残留
+`handoff_required=true` 但最后已知状态已经是 `resolved` 或 `pending`，服务启动
+和下一条用户消息都会自愈释放该人工轮次。
 
 ### Website Widget 用户身份和历史会话
 

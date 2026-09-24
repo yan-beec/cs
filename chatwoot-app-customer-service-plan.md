@@ -349,7 +349,7 @@ POST /webhooks/chatwoot
 ```
 
 4. 按配置将会话分配给指定 Team 或 Agent。
-5. 必要时将会话保持为 open 状态，确保坐席工作台可以看到。
+5. 仅在明确转人工时将会话切换为 `open`，确保坐席工作台可以接管；普通 AI 处理期间保持 `pending`，避免误出现在人工待接管队列。
 6. 给用户发送一次公开提示：
 
 ```text
@@ -382,10 +382,18 @@ updated_at
 ```
 
 `ai_enabled` 是智能客服自己的控制状态，不依赖 Chatwoot 是否存在同名字段。
+普通 AI 消息处理开始后，Chatwoot 会话状态同步为 `pending`；Chatwoot 收到用户
+消息时可能短暂自动变为 `open`，但不代表人工接管。只有明确转人工动作才设置
+为 `open`。AI 主动同步的 `pending` 不会释放人工接管状态，避免和坐席手动点击
+`pending` 的结束人工信号混淆。
 人工接管状态按 Chatwoot 对话轮次生效：同一轮人工处理中后续消息停止 AI；
 坐席将会话标记为 `resolved` 或 `pending` 后，状态记录被释放，下一条用户消息
 重新进入 AI，同时继续复用同一个 Chatwoot 对话的长期历史。Chatwoot 的标签、
 备注、分配和会话状态用于坐席侧展示与运营，数据库状态用于智能客服判断是否继续处理。
+状态类 Webhook 的幂等键需要带请求体哈希，不能只用会话 id 和状态；同一会话
+可能多次进入 `open -> resolved/pending -> open` 的新轮次，旧的 `resolved`
+记录不能阻止后续轮次释放人工接管。服务启动和新用户消息处理时，也应对
+`handoff_required=true` 且最后已知状态为 `resolved` 或 `pending` 的历史脏状态做自愈释放。
 
 ### 5.7 Chatwoot API 客户端扩展方向
 
