@@ -19,6 +19,7 @@ class RAGSettings(BaseSettings):
     )
     rag_output_dir: str = "models/intent_classifier_bert"
     rag_intent_dataset_path: str = "database/intent_dataset_4000.csv"
+    rag_intent_dataset_verify_fingerprint: bool = True
     rag_warm_up_on_startup: bool = True
     rag_memory_enabled: bool = True
     rag_memory_window_turns: int = Field(default=10, ge=1)
@@ -100,11 +101,11 @@ class RAGSettings(BaseSettings):
         ge=0,
         le=60,
     )
-    knowledge_base_retrieval_top_k: int = Field(default=10, ge=1)
+    knowledge_base_retrieval_top_k: int = Field(default=8, ge=1)
 
     # Cross-encoder 重排器。
     rag_reranker_model_dir: str = "models/bge-reranker-v2-m3"
-    rag_reranker_input_top_k: int = Field(default=10, ge=1)
+    rag_reranker_input_top_k: int = Field(default=8, ge=1)
     rag_reranker_output_top_k: int = Field(default=3, ge=1)
     rag_reranker_batch_size: int = Field(default=8, ge=1)
     rag_reranker_max_length: int = Field(default=512, ge=8, le=8192)

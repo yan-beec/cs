@@ -77,7 +77,36 @@ python -m ics_agent.app.serve --host 0.0.0.0 --port 3001 --reload
 ```text
 管理后台：http://127.0.0.1:3001/admin
 健康检查：http://127.0.0.1:3001/health
+客服入口：http://127.0.0.1:3001/support-chat
 ```
+
+远端部署时，建议通过 Nginx、Caddy 或云负载均衡将 `3001` 代理到公网域名，
+然后在 `.env` 中配置浏览器能够访问的 Chatwoot 地址：
+
+```dotenv
+CHATWOOT_PUBLIC_BASE_URL=https://chat.example.com
+```
+
+此时客服入口为：
+
+```text
+https://cs.example.com/support-chat
+```
+
+`CHATWOOT_BASE_URL` 是 `ics-agent` 容器访问 Chatwoot API 的地址，
+`CHATWOOT_PUBLIC_BASE_URL` 是浏览器加载 Website Widget 时使用的地址，两者
+可以不同。若页面放在独立域名下，还需要把该页面域名加入
+`CHATWOOT_PROFILE_ALLOWED_ORIGINS`。
+
+当前页面允许没有用户标识时以匿名访客进入。正式接入 APP 登录态时，不要把
+`userId` 作为唯一可信身份来源；应由业务后端根据登录令牌生成
+`identifier` 和 `identifier_hash`，并将：
+
+```dotenv
+CHATWOOT_PROFILE_ALLOW_QUERY_IDENTIFIERS=false
+```
+
+作为生产配置。
 
 也可以直接使用应用 Compose：
 
@@ -183,7 +212,8 @@ X-Chatwoot-Timestamp
 X-Chatwoot-Signature
 ```
 
-当 `CHATWOOT_WEBHOOK_SECRET` 已配置时，服务会按 Chatwoot 的时间戳签名格式校验原始请求体，默认只接受前后 5 分钟内的请求。
+当前推荐通过 AgentBot Webhook 接入，使用 `CHATWOOT_AGENT_BOT_SECRET` 校验签名。
+`CHATWOOT_WEBHOOK_SECRET` 仅用于普通 Account Webhook；不使用普通 Webhook 时保持为空即可。
 
 Webhook 只处理带文本的入站消息：
 
@@ -208,7 +238,13 @@ CHATWOOT_BASE_URL=http://127.0.0.1:3000
 CHATWOOT_API_TOKEN=你的 Chatwoot API Token
 CHATWOOT_ACCOUNT_ID=你的 Account ID
 CHATWOOT_HMAC_TOKEN=Website Inbox 的 HMAC token
-CHATWOOT_WEBHOOK_SECRET=与 Chatwoot 一致的密钥
+CHATWOOT_WEBHOOK_SECRET=
+# 当前推荐使用 AgentBot Webhook；普通 Account Webhook 不使用时保持为空。
+# AgentBot 设置中的 Secret；使用 AgentBot Webhook 时必须配置
+CHATWOOT_AGENT_BOT_SECRET=Chatwoot AgentBot Secret
+# AgentBot 的 Access Token 和 ID，让回复以 AgentBot 身份写回
+CHATWOOT_AGENT_BOT_ACCESS_TOKEN=Chatwoot AgentBot Access Token
+CHATWOOT_AGENT_BOT_ID=Chatwoot AgentBot ID
 CHATWOOT_AUTO_REPLY_ENABLED=true
 CHATWOOT_HANDOFF_ENABLED=true
 CHATWOOT_HANDOFF_LABEL=handoff_required
@@ -216,18 +252,32 @@ CHATWOOT_HANDOFF_NOTICE_ENABLED=true
 # 可选；不配置时使用 Chatwoot 自身的自动分配规则。
 CHATWOOT_HANDOFF_TEAM_ID=
 CHATWOOT_HANDOFF_ASSIGNEE_ID=
+# Chatwoot 静音联系人默认 7 天后自动解除；单位为秒。
+CHATWOOT_BLOCK_DURATION_SECONDS=604800
+CHATWOOT_BLOCK_REAPER_INTERVAL_SECONDS=60
+CHATWOOT_BLOCK_REAPER_BATCH_SIZE=100
 ```
 
 转人工由同一个 `POST /webhooks/chatwoot` 入口触发，不需要把
-Chatwoot Application API Token 暴露给前端。服务会调用 Chatwoot Application
-API 完成会话状态更新、标签、私有备注、分配和一次性公开提示；Webhook
+Chatwoot API Token 暴露给前端。服务会调用 Chatwoot API 完成会话状态更新、标签、
+私有备注、分配和一次性公开提示；Webhook
 重试时这些动作按本地 PostgreSQL 会话状态逐项幂等处理。服务需要接收
 Chatwoot 的会话状态变更 Webhook，至少覆盖坐席将会话标记为
 `resolved` 或 `pending` 的事件；如果没有状态事件，服务会尝试读取当前状态，
-同时普通用户消息触发的 Chatwoot `open` 会在 AI 处理开始和回复完成后同步回
-`pending`；只有明确转人工路径会保持 `open`。如果历史状态中残留
+同时普通用户消息触发的 Chatwoot `open` 会在 AI 处理开始和回复完成后尽力同步回
+`pending`；状态同步失败不会阻断 RAG 或已生成的 AI 回复，只有明确转人工路径会保持
+`open`。如果历史状态中残留
 `handoff_required=true` 但最后已知状态已经是 `resolved` 或 `pending`，服务启动
 和下一条用户消息都会自愈释放该人工轮次。
+
+Chatwoot 的 Mute 会将联系人标记为 `blocked`，但不会阻止外部 AgentBot
+主动调用会话打开接口。因此，`ics-agent` 会在转人工前检查联系人静音状态；
+已静音联系人不会被转入人工队列，并会收到“非常抱歉，当前人工座席繁忙，请稍后再试。”
+的提示。座席通过 Chatwoot 静音联系人后，服务默认将该状态记录 7 天，
+后台任务到期后调用 Chatwoot 联系人 API 自动设置 `blocked=false`。
+可通过 `CHATWOOT_BLOCK_DURATION_SECONDS` 调整时长；设置为 `604800` 即 7 天。
+联系人 API 必须使用用户 API Token，不能使用 AgentBot Token；可配置
+`CHATWOOT_CONTACT_API_TOKEN`，未配置时回退到 `CHATWOOT_API_TOKEN`。
 
 ### Website Widget 用户身份和历史会话
 

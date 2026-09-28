@@ -39,14 +39,23 @@ class AppSettings(BaseSettings):
 
     # Chatwoot 和其他外部服务连接配置。
     chatwoot_base_url: str = "http://127.0.0.1:3000"
+    # 浏览器访问 Website Widget 时使用的公网地址；不应填写容器内地址。
+    chatwoot_public_base_url: str = ""
     chatwoot_api_token: str = ""
+    # 联系人查询和 blocked 更新不能使用 AgentBot Token。
+    chatwoot_contact_api_token: str = ""
     chatwoot_account_id: str = ""
     chatwoot_hmac_token: str = ""
     chatwoot_profile_allowed_origins: str = (
         "null,http://localhost:8090,http://127.0.0.1:8090"
     )
     chatwoot_profile_allow_query_identifiers: bool = False
+    # Account Webhook 和 AgentBot Webhook 的签名密钥可能不同。
     chatwoot_webhook_secret: str = ""
+    chatwoot_agent_bot_secret: str = ""
+    # 配置 AgentBot 自己的 Token 后，回复会以 AgentBot 身份写回 Chatwoot。
+    chatwoot_agent_bot_access_token: str = ""
+    chatwoot_agent_bot_id: str = ""
     chatwoot_webhook_tolerance_seconds: int = Field(
         default=300,
         ge=1,
@@ -58,6 +67,19 @@ class AppSettings(BaseSettings):
     chatwoot_handoff_notice_enabled: bool = True
     chatwoot_handoff_team_id: str = ""
     chatwoot_handoff_assignee_id: str = ""
+    chatwoot_block_duration_seconds: int = Field(
+        default=7 * 24 * 60 * 60,
+        ge=60,
+    )
+    chatwoot_block_reaper_interval_seconds: int = Field(
+        default=60,
+        ge=5,
+    )
+    chatwoot_block_reaper_batch_size: int = Field(
+        default=100,
+        ge=1,
+        le=1000,
+    )
     chatwoot_api_timeout: float = Field(default=15.0, gt=0)
 
     # 单例管理员初始化和身份认证。

@@ -101,6 +101,9 @@ class IntentClassifierModel:
             self.model_dir,
             self._model,
             self.dataset_path,
+            verify_dataset_fingerprint=(
+                self.settings.rag_intent_dataset_verify_fingerprint
+            ),
         )
         log_event(
             logger,
@@ -120,6 +123,8 @@ class IntentClassifierModel:
         model_dir: Path,
         model: Any,
         fallback_dataset_path: Path,
+        *,
+        verify_dataset_fingerprint: bool = True,
     ) -> dict[int, str]:
         labels_path = model_dir / "labels.json"
         if labels_path.is_file():
@@ -183,10 +188,22 @@ class IntentClassifierModel:
         if expected_sha256:
             actual_sha256 = calculate_intent_dataset_sha256(dataset_path)
             if actual_sha256 != expected_sha256:
-                raise ValueError(
-                    "Configured intent classification dataset differs from the CSV "
-                    "used to train the loaded model. Retrain the model with the "
-                    f"current dataset: {dataset_path}"
+                message = (
+                    "Configured intent classification dataset differs from the "
+                    "CSV used to train the loaded model. Retrain the model with "
+                    f"the current dataset: {dataset_path}"
+                )
+                if verify_dataset_fingerprint:
+                    raise ValueError(message)
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "rag.graph.intent_model.dataset_fingerprint_mismatch",
+                    model_dir=model_dir,
+                    dataset_path=dataset_path,
+                    expected_sha256=expected_sha256,
+                    actual_sha256=actual_sha256,
+                    reason="verification_disabled_by_config",
                 )
         else:
             log_event(

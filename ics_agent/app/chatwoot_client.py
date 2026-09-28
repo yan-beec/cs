@@ -100,6 +100,52 @@ class ChatwootClient:
             self._conversation_path(account_id, conversation_id),
         )
 
+    def get_contact(
+        self,
+        *,
+        account_id: str,
+        contact_id: str,
+    ) -> dict[str, Any]:
+        """读取 Chatwoot 联系人当前状态。"""
+        account_id = str(account_id or "").strip()
+        contact_id = str(contact_id or "").strip()
+        if not account_id:
+            raise ChatwootAPIError("Chatwoot account_id is missing.")
+        if not contact_id:
+            raise ChatwootAPIError("Chatwoot contact_id is missing.")
+        return self._request_json(
+            "GET",
+            (
+                f"/api/v1/accounts/{quote(account_id, safe='')}"
+                f"/contacts/{quote(contact_id, safe='')}"
+            ),
+            access_token=self._contact_api_token(),
+        )
+
+    def set_contact_blocked(
+        self,
+        *,
+        account_id: str,
+        contact_id: str,
+        blocked: bool,
+    ) -> dict[str, Any]:
+        """设置 Chatwoot 联系人的 blocked 状态。"""
+        account_id = str(account_id or "").strip()
+        contact_id = str(contact_id or "").strip()
+        if not account_id:
+            raise ChatwootAPIError("Chatwoot account_id is missing.")
+        if not contact_id:
+            raise ChatwootAPIError("Chatwoot contact_id is missing.")
+        return self._request_json(
+            "PUT",
+            (
+                f"/api/v1/accounts/{quote(account_id, safe='')}"
+                f"/contacts/{quote(contact_id, safe='')}"
+            ),
+            {"blocked": bool(blocked)},
+            access_token=self._contact_api_token(),
+        )
+
     def add_conversation_labels(
         self,
         *,
@@ -227,15 +273,20 @@ class ChatwootClient:
         )
         if not content.strip():
             raise ChatwootAPIError("Chatwoot message content is empty.")
+        payload: dict[str, Any] = {
+            "content": content,
+            "message_type": "outgoing",
+            "private": private,
+            "content_type": "text",
+        }
+        agent_bot_id = self._settings.chatwoot_agent_bot_id.strip()
+        if agent_bot_id:
+            payload["sender_type"] = "AgentBot"
+            payload["sender_id"] = agent_bot_id
         return self._request_json(
             "POST",
             self._conversation_path(account_id, conversation_id) + "/messages",
-            {
-                "content": content,
-                "message_type": "outgoing",
-                "private": private,
-                "content_type": "text",
-            },
+            payload,
         )
 
     def _conversation_path(
@@ -266,10 +317,18 @@ class ChatwootClient:
         method: str,
         path: str,
         payload: dict[str, Any] | None = None,
+        *,
+        access_token: str | None = None,
     ) -> dict[str, Any]:
-        token = self._settings.chatwoot_api_token.strip()
+        token = (access_token or "").strip() or (
+            self._settings.chatwoot_agent_bot_access_token.strip()
+            or self._settings.chatwoot_api_token.strip()
+        )
         if not token:
-            raise ChatwootAPIError("CHATWOOT_API_TOKEN is not configured.")
+            raise ChatwootAPIError(
+                "CHATWOOT_AGENT_BOT_ACCESS_TOKEN or "
+                "CHATWOOT_API_TOKEN is not configured."
+            )
 
         raw_payload = (
             json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -321,6 +380,18 @@ class ChatwootClient:
         except json.JSONDecodeError:
             return {"raw_response": raw_response.decode("utf-8", errors="replace")}
         return result if isinstance(result, dict) else {"data": result}
+
+    def _contact_api_token(self) -> str:
+        token = (
+            self._settings.chatwoot_contact_api_token.strip()
+            or self._settings.chatwoot_api_token.strip()
+        )
+        if not token:
+            raise ChatwootAPIError(
+                "CHATWOOT_CONTACT_API_TOKEN or CHATWOOT_API_TOKEN "
+                "is required for Chatwoot contact operations."
+            )
+        return token
 
 
 _CLIENT = ChatwootClient()

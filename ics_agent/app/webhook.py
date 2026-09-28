@@ -5,6 +5,7 @@ import hmac
 import json
 import time
 import unicodedata
+from collections.abc import Mapping
 from typing import Any
 
 from .models import ChatwootWebhookEvent
@@ -222,3 +223,92 @@ def parse_event(raw_body: bytes) -> ChatwootWebhookEvent:
         sender=payload.get("sender"),
         raw=payload,
     )
+
+
+def contact_blocked_from_payload(
+    payload: Mapping[str, Any],
+) -> bool | None:
+    """从 Chatwoot 事件或 API 响应中提取联系人 blocked 状态。
+
+    Chatwoot 的会话数据通常把联系人放在 ``meta.sender`` 中，
+    联系人事件则可能直接把 ``blocked`` 放在顶层。
+    ``None`` 表示当前载荷没有携带该字段。
+    """
+    conversation = payload.get("conversation")
+    conversation = conversation if isinstance(conversation, Mapping) else {}
+    meta = conversation.get("meta")
+    meta = meta if isinstance(meta, Mapping) else {}
+    payload_meta = payload.get("meta")
+    payload_meta = (
+        payload_meta if isinstance(payload_meta, Mapping) else {}
+    )
+
+    candidates: list[Any] = [
+        payload.get("contact"),
+        payload.get("sender"),
+        conversation.get("contact"),
+        conversation.get("sender"),
+        meta.get("contact"),
+        meta.get("sender"),
+        payload_meta.get("contact"),
+        payload_meta.get("sender"),
+    ]
+    observed = False
+    direct_blocked = payload.get("blocked")
+    if direct_blocked is not None:
+        candidates.insert(0, {"blocked": direct_blocked})
+
+    changed_attributes = payload.get("changed_attributes")
+    if isinstance(changed_attributes, list):
+        for changed_attribute in changed_attributes:
+            if not isinstance(changed_attribute, Mapping):
+                continue
+            blocked_change = changed_attribute.get("blocked")
+            if not isinstance(blocked_change, Mapping):
+                continue
+            current_value = blocked_change.get("current_value")
+            if current_value is not None:
+                candidates.insert(0, {"blocked": current_value})
+
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping) or "blocked" not in candidate:
+            continue
+        observed = True
+        value = candidate.get("blocked")
+        if isinstance(value, bool):
+            if value:
+                return True
+            continue
+        if isinstance(value, (int, float)):
+            if bool(value):
+                return True
+            continue
+        if isinstance(value, str):
+            if value.strip().lower() in {"1", "true", "yes"}:
+                return True
+
+    return False if observed else None
+
+
+def contact_block_change_from_payload(
+    payload: Mapping[str, Any],
+) -> bool | None:
+    """只读取明确的 blocked 变更；普通联系人快照不算解除动作。"""
+    changed_attributes = payload.get("changed_attributes")
+    if not isinstance(changed_attributes, list):
+        return None
+
+    for changed_attribute in changed_attributes:
+        if not isinstance(changed_attribute, Mapping):
+            continue
+        blocked_change = changed_attribute.get("blocked")
+        if not isinstance(blocked_change, Mapping):
+            continue
+        current_value = blocked_change.get("current_value")
+        if isinstance(current_value, bool):
+            return current_value
+        if isinstance(current_value, (int, float)):
+            return bool(current_value)
+        if isinstance(current_value, str):
+            return current_value.strip().lower() in {"1", "true", "yes"}
+    return None

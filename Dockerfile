@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY ics_agent ./ics_agent
 COPY knowledge_base_in ./knowledge_base_in
+COPY support-chat.html ./support-chat.html
 
 EXPOSE 3001
 

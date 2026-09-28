@@ -1,0 +1,55 @@
+# Git and local editor state
+.git
+.gitignore
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment and local secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Python caches and tooling output
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyre/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+cover/
+
+# Virtual environments and package/build artifacts
+.venv/
+venv/
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+wheels/
+
+# Runtime data mounted by docker-compose
+database/
+models/
+log/
+knowledge_base_in/output/
+knowledge_base_in/vector_store/
+
+# Local scratch directories
+tmp/
+temp/
+tmp*/
+pytest-cache-files-*/
+
+# OS files
+.DS_Store
+Thumbs.db

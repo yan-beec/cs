@@ -182,6 +182,7 @@
        *    本地默认使用 ics_agent 的身份接口，保证 file:// 重开时仍复用同一客户和会话历史。
        * 4. PROFILE_ENDPOINT 为空时，会尝试从 URL 参数读取用户资料，方便 APP 先联调：
        *    ?userId=123&name=张三&phone=13800000000&email=user@example.com
+       *    未携带用户标识时会以匿名访客进入 Chatwoot，不会阻断客服入口。
        *    正式上线仍建议使用 PROFILE_ENDPOINT + identifier_hash。
        *
        * PROFILE_ENDPOINT 建议返回：
@@ -201,10 +202,12 @@
        * }
        */
       var CONFIG = {
-        CHATWOOT_BASE_URL: "http://localhost:3000",
+        CHATWOOT_BASE_URL: "http://192.168.110.16:3000",
         WEBSITE_TOKEN: "EEuW9UJz2w55BfWAshYxh1TY",
-        PROFILE_ENDPOINT: "http://localhost:3001/chatwoot/profile",
+        PROFILE_ENDPOINT: "http://192.168.110.16:3001/chatwoot/profile",
+        RUNTIME_CONFIG_ENDPOINT: "http://192.168.110.16:3001/support-chat/config",
         REQUIRE_IDENTIFIER_HASH: true,
+        ALLOW_ANONYMOUS_CHAT: true,
         DEFAULT_LOCALE: "zh_CN",
         PROFILE_TIMEOUT_MS: 10000,
         WIDGET_READY_TIMEOUT_MS: 15000
@@ -212,11 +215,15 @@
 
       var shell = document.getElementById("app-shell");
       var search = new URLSearchParams(window.location.search);
+      var isLocalFile = window.location.protocol === "file:";
       var runtime = {
-        chatwootBaseUrl: search.get("chatwootBaseUrl") || CONFIG.CHATWOOT_BASE_URL,
+        chatwootBaseUrl: search.get("chatwootBaseUrl") ||
+          (isLocalFile ? CONFIG.CHATWOOT_BASE_URL : window.location.origin),
         websiteToken: search.get("websiteToken") || CONFIG.WEBSITE_TOKEN,
         locale: search.get("locale") || CONFIG.DEFAULT_LOCALE,
-        authToken: search.get("appToken") || search.get("token") || search.get("authToken") || ""
+        authToken: search.get("appToken") || search.get("token") || search.get("authToken") || "",
+        profileEndpoint: search.get("profileEndpoint") ||
+          (isLocalFile ? CONFIG.PROFILE_ENDPOINT : "/chatwoot/profile")
       };
 
       function renderLoading(text) {
@@ -313,6 +320,119 @@
         return profile;
       }
 
+      function clearCookie(name) {
+        var expires = "Thu, 01 Jan 1970 00:00:00 GMT";
+        var paths = ["/", "/widget", "/api/v1/widget"];
+        var domains = ["", window.location.hostname, "." + window.location.hostname];
+
+        paths.forEach(function (path) {
+          domains.forEach(function (domain) {
+            var cookie = name + "=; expires=" + expires + "; Max-Age=0; path=" + path;
+            if (domain) {
+              cookie += "; domain=" + domain;
+            }
+            document.cookie = cookie;
+          });
+        });
+      }
+
+      function clearChatwootBrowserState() {
+        var cookieNames = ["cw_conversation", "cw_user", "cw_user_id", "cw_session"];
+        document.cookie.split(";").forEach(function (cookie) {
+          var name = cookie.split("=")[0].trim();
+          if (name.indexOf("cw_") === 0 || name.toLowerCase().indexOf("chatwoot") !== -1) {
+            cookieNames.push(name);
+          }
+        });
+
+        cookieNames.forEach(function (name) {
+          clearCookie(name);
+        });
+
+        [window.localStorage, window.sessionStorage].forEach(function (storage) {
+          if (!storage) return;
+          var keys = [];
+          for (var i = 0; i < storage.length; i++) {
+            keys.push(storage.key(i));
+          }
+          keys.forEach(function (key) {
+            var lowerKey = String(key).toLowerCase();
+            if (lowerKey.indexOf("chatwoot") !== -1 ||
+                lowerKey.indexOf("woot") !== -1 ||
+                lowerKey.indexOf("cw_") === 0) {
+              storage.removeItem(key);
+            }
+          });
+        });
+      }
+
+      function getChatwootCookieSnapshot() {
+        var snapshot = {};
+        document.cookie.split(";").forEach(function (cookie) {
+          var parts = cookie.split("=");
+          var name = parts.shift().trim();
+          var value = parts.join("=");
+          if (name.indexOf("cw_") === 0 || name.toLowerCase().indexOf("chatwoot") !== -1) {
+            snapshot[name] = value;
+          }
+        });
+        return snapshot;
+      }
+
+      function setCookie(name, value) {
+        document.cookie = name + "=" + value + "; path=/; SameSite=Lax";
+      }
+
+      function savedStateKey(identityKey) {
+        return "supportChat:browserState:" + identityKey;
+      }
+
+      function saveChatwootBrowserState(identityKey) {
+        try {
+          var snapshot = getChatwootCookieSnapshot();
+          if (Object.keys(snapshot).length > 0) {
+            window.localStorage.setItem(savedStateKey(identityKey), JSON.stringify(snapshot));
+          }
+        } catch (error) {}
+      }
+
+      function restoreChatwootBrowserState(identityKey) {
+        try {
+          var rawState = window.localStorage.getItem(savedStateKey(identityKey));
+          if (!rawState) {
+            return false;
+          }
+          var snapshot = JSON.parse(rawState);
+          Object.keys(snapshot).forEach(function (name) {
+            setCookie(name, snapshot[name]);
+          });
+          return true;
+        } catch (error) {
+          return false;
+        }
+      }
+
+      function clearChatwootStateWhenIdentityChanges() {
+        var queryProfile = getProfileFromQuery();
+        var identityKey = queryProfile && queryProfile.identifier
+          ? "user:" + queryProfile.identifier
+          : "anonymous";
+        var storageKey = "supportChat:lastIdentityKey";
+
+        try {
+          var previousIdentityKey = window.localStorage.getItem(storageKey);
+          if (previousIdentityKey && previousIdentityKey !== identityKey) {
+            saveChatwootBrowserState(previousIdentityKey);
+            clearChatwootBrowserState();
+            restoreChatwootBrowserState(identityKey);
+          } else if (!previousIdentityKey && identityKey !== "anonymous") {
+            clearChatwootBrowserState();
+            restoreChatwootBrowserState(identityKey);
+          }
+          window.localStorage.setItem(storageKey, identityKey);
+        } catch (error) {}
+      }
+
       function fetchWithTimeout(url, options, timeoutMs) {
         var controller = new AbortController();
         var timer = window.setTimeout(function () {
@@ -327,12 +447,20 @@
       }
 
       function getProfile() {
-        if (!CONFIG.PROFILE_ENDPOINT) {
+        if (!runtime.profileEndpoint) {
           return Promise.resolve(getProfileFromQuery());
         }
 
         var queryProfile = getProfileFromQuery();
-        var profileUrl = new URL(CONFIG.PROFILE_ENDPOINT, window.location.href);
+        var token = runtime.authToken || getAppTokenFromBridge();
+        if (!queryProfile && !token) {
+          if (CONFIG.ALLOW_ANONYMOUS_CHAT) {
+            return Promise.resolve(null);
+          }
+          return Promise.reject(new Error("缺少用户身份标识，请从已登录入口打开客服。"));
+        }
+
+        var profileUrl = new URL(runtime.profileEndpoint, window.location.href);
         if (queryProfile && queryProfile.identifier) {
           profileUrl.searchParams.set("identifier", queryProfile.identifier);
           if (queryProfile.name) {
@@ -349,7 +477,6 @@
           }
         }
 
-        var token = runtime.authToken || getAppTokenFromBridge();
         var headers = {
           "Accept": "application/json"
         };
@@ -554,20 +681,45 @@
         });
       }
 
-      function boot() {
-        try {
-          validateConfig();
-        } catch (error) {
-          renderError(error.message);
-          return;
+      function loadRuntimeConfig() {
+        if (isLocalFile || search.get("chatwootBaseUrl") || search.get("profileEndpoint")) {
+          return Promise.resolve();
         }
 
+        var configUrl = new URL(CONFIG.RUNTIME_CONFIG_ENDPOINT, window.location.href);
+        return fetchWithTimeout(configUrl.toString(), {
+          method: "GET",
+          credentials: "include",
+          headers: {
+            "Accept": "application/json"
+          }
+        }, CONFIG.PROFILE_TIMEOUT_MS).then(function (response) {
+          if (!response.ok) {
+            throw new Error("客服远端配置加载失败：" + response.status);
+          }
+          return response.json();
+        }).then(function (remoteConfig) {
+          if (remoteConfig.chatwoot_base_url) {
+            runtime.chatwootBaseUrl = remoteConfig.chatwoot_base_url;
+          }
+          if (remoteConfig.profile_endpoint) {
+            runtime.profileEndpoint = remoteConfig.profile_endpoint;
+          }
+        });
+      }
+
+      function boot() {
         renderLoading("正在校验用户身份。");
 
-        Promise.all([
-          getProfile(),
-          loadChatwootSdk()
-        ])
+        loadRuntimeConfig()
+          .then(function () {
+            validateConfig();
+            clearChatwootStateWhenIdentityChanges();
+            return Promise.all([
+              getProfile(),
+              loadChatwootSdk()
+            ]);
+          })
           .then(function (results) {
             var profile = results[0];
             bindChatwootEvents();

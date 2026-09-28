@@ -1,0 +1,14 @@
+services:
+  ics-agent:
+    # 本地开发时直接使用工作区源码，修改 Python 文件后自动重载。
+    volumes:
+      - ./ics_agent:/app/ics_agent:ro
+    command:
+      [
+        "python",
+        "-m",
+        "ics_agent.app.serve",
+        "--reload",
+        "--reload-dir",
+        "/app/ics_agent"
+      ]
