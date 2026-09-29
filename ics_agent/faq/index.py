@@ -8,7 +8,7 @@ from pathlib import Path
 import jieba
 from rank_bm25 import BM25Okapi
 
-from ics_agent.app.logging_config import log_event
+from ics_agent.app.core.logging_config import log_event
 
 try:
     from .models import FAQMatch, FAQSnapshot

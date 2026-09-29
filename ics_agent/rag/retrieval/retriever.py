@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Any
 
-from ics_agent.app.logging_config import log_event
+from ics_agent.app.core.logging_config import log_event
 from ics_agent.rag.config import get_rag_settings
 from .dense_search import (
     DenseSearchResult,

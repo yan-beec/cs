@@ -16,7 +16,7 @@ except ImportError:
     class PostgresError(Exception):
         """PostgreSQL 依赖安装前使用的占位类型。"""
 
-from ics_agent.app.logging_config import log_event
+from ics_agent.app.core.logging_config import log_event
 
 try:
     from .index import BM25Matcher, JiebaTokenizer

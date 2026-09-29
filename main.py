@@ -18,7 +18,7 @@ from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
-from ics_agent.app.logging_config import configure_logging
+from ics_agent.app.core.logging_config import configure_logging
 from ics_agent.rag.main import run_query
 from ics_agent.rag.memory import get_conversation_memory_manager
 

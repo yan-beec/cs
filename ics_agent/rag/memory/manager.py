@@ -8,8 +8,8 @@ import sys
 from collections.abc import Mapping
 from typing import Any
 
-from ics_agent.app.config import get_settings
-from ics_agent.app.logging_config import log_event
+from ics_agent.app.core.config import get_settings
+from ics_agent.app.core.logging_config import log_event
 from ics_agent.rag.config import get_rag_settings
 
 

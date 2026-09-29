@@ -7,7 +7,7 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 
-from ics_agent.app.logging_config import log_event
+from ics_agent.app.core.logging_config import log_event
 from ics_agent.faq.models import FAQResult
 from ics_agent.faq.service import get_faq_service
 from ics_agent.rag.graph import run_rag_graph

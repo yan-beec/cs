@@ -19,8 +19,8 @@ if __package__ in {None, ""}:
     if str(_project_root) not in sys.path:
         sys.path.insert(0, str(_project_root))
 
-from ics_agent.app.config import PROJECT_ROOT
-from ics_agent.app.logging_config import configure_logging, log_event
+from ics_agent.app.core.config import PROJECT_ROOT
+from ics_agent.app.core.logging_config import configure_logging, log_event
 from ics_agent.rag.config import RAGSettings, get_rag_settings
 
 try:

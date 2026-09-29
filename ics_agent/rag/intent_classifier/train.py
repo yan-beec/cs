@@ -22,8 +22,8 @@ else:
     from .data import load_intent_csv, split_intent_examples
     from .trainer import IntentClassifierTrainer
 
-from ics_agent.app.config import PROJECT_ROOT
-from ics_agent.app.logging_config import configure_logging, log_event
+from ics_agent.app.core.config import PROJECT_ROOT
+from ics_agent.app.core.logging_config import configure_logging, log_event
 from ics_agent.rag.config import get_rag_settings
 
 

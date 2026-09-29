@@ -8,7 +8,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from ics_agent.app.config import AppSettings, get_settings
+from ics_agent.app.core.config import AppSettings, get_settings
 
 
 class ChatwootAPIError(RuntimeError):

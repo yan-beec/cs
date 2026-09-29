@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ics_agent.app.config import PROJECT_ROOT
-from ics_agent.app.logging_config import log_event
+from ics_agent.app.core.config import PROJECT_ROOT
+from ics_agent.app.core.logging_config import log_event
 from ics_agent.rag.config import RAGSettings, get_rag_settings
 
 

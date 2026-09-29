@@ -9,8 +9,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from ics_agent.app.config import PROJECT_ROOT
-from ics_agent.app.logging_config import log_event
+from ics_agent.app.core.config import PROJECT_ROOT
+from ics_agent.app.core.logging_config import log_event
 from ics_agent.rag.config import RAGSettings, get_rag_settings
 from ics_agent.rag.intent_classifier.data import (
     build_intent_label_mapping,

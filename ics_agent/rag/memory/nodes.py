@@ -6,7 +6,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ics_agent.app.logging_config import log_event
+from ics_agent.app.core.logging_config import log_event
 from ics_agent.llm_factory import call_cloud_llm
 from ics_agent.rag.config import get_rag_settings
 

@@ -10,7 +10,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 class AppSettings(BaseSettings):
@@ -65,6 +65,9 @@ class AppSettings(BaseSettings):
     chatwoot_handoff_enabled: bool = True
     chatwoot_handoff_label: str = "handoff_required"
     chatwoot_handoff_notice_enabled: bool = True
+    chatwoot_handoff_service_timezone: str = "Asia/Shanghai"
+    chatwoot_handoff_service_start: str = "09:00"
+    chatwoot_handoff_service_end: str = "22:00"
     chatwoot_handoff_team_id: str = ""
     chatwoot_handoff_assignee_id: str = ""
     chatwoot_block_duration_seconds: int = Field(

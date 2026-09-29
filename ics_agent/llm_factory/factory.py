@@ -9,8 +9,8 @@ import weakref
 from functools import lru_cache
 from typing import Any, Sequence
 
-from ics_agent.app.config import Settings, get_settings
-from ics_agent.app.logging_config import log_event
+from ics_agent.app.core.config import Settings, get_settings
+from ics_agent.app.core.logging_config import log_event
 
 
 logger = logging.getLogger(__name__)

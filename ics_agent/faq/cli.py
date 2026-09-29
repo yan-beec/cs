@@ -17,8 +17,8 @@ import redis
 from redis.backoff import NoBackoff
 from redis.retry import Retry
 
-from ics_agent.app.config import get_settings as get_app_settings
-from ics_agent.app.logging_config import configure_logging, log_event
+from ics_agent.app.core.config import get_settings as get_app_settings
+from ics_agent.app.core.logging_config import configure_logging, log_event
 from ics_agent.faq.config import get_faq_settings
 from ics_agent.faq.index import BM25Matcher
 from ics_agent.faq.models import FAQResult, FAQSnapshot

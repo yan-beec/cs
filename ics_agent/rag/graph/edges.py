@@ -8,7 +8,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from ics_agent.app.logging_config import log_event
+from ics_agent.app.core.logging_config import log_event
 from ics_agent.rag.memory import (
     memory_finalize_node,
     memory_prepare_node,

@@ -17,8 +17,8 @@ import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from ics_agent.app.config import Settings, get_settings
-from ics_agent.app.logging_config import log_event
+from ics_agent.app.core.config import Settings, get_settings
+from ics_agent.app.core.logging_config import log_event
 from ics_agent.faq.repositories import PostgreSQLConnectionPool
 
 

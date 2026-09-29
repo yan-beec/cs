@@ -1,13 +1,14 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from ics_agent.app.chatwoot_client import ChatwootClient
-from ics_agent.app.config import AppSettings
+from ics_agent.app.chatwoot.client import ChatwootClient
+from ics_agent.app.core.config import AppSettings
 
 
 class ChatwootContactTokenTest(unittest.TestCase):
     def test_contact_operations_use_dedicated_user_token(self) -> None:
         settings = AppSettings(
+            _env_file=None,
             chatwoot_base_url="http://chatwoot.test",
             chatwoot_agent_bot_access_token="agent-bot-token",
             chatwoot_api_token="fallback-user-token",
@@ -35,6 +36,7 @@ class ChatwootContactTokenTest(unittest.TestCase):
 
     def test_contact_operations_fall_back_to_user_api_token(self) -> None:
         settings = AppSettings(
+            _env_file=None,
             chatwoot_base_url="http://chatwoot.test",
             chatwoot_agent_bot_access_token="agent-bot-token",
             chatwoot_api_token="fallback-user-token",

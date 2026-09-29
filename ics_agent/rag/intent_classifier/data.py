@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from ics_agent.app.logging_config import log_event
+from ics_agent.app.core.logging_config import log_event
 
 
 logger = logging.getLogger(__name__)

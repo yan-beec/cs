@@ -12,7 +12,7 @@ from typing import BinaryIO
 from fastapi import UploadFile
 from openpyxl import load_workbook
 
-from .config import PROJECT_ROOT, Settings, get_settings
+from ics_agent.app.core.config import PROJECT_ROOT, Settings, get_settings
 from ics_agent.faq.config import get_faq_settings
 from ics_agent.rag.config import get_rag_settings
 

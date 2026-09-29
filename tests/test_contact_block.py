@@ -2,10 +2,10 @@ import unittest
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, Mock, patch
 
-from ics_agent.app import main
-from ics_agent.app.contact_block import ContactBlockRepository
-from ics_agent.app.models import ChatwootWebhookEvent
-from ics_agent.app.webhook import (
+from ics_agent.app.chatwoot import routes as main
+from ics_agent.app.chatwoot.state import ContactBlockRepository
+from ics_agent.app.core.models import ChatwootWebhookEvent
+from ics_agent.app.chatwoot.payload import (
     contact_block_change_from_payload,
     contact_blocked_from_payload,
 )
@@ -227,7 +227,7 @@ class MutedHandoffNoticeTest(unittest.IsolatedAsyncioTestCase):
     async def test_muted_handoff_sends_notice_without_opening_conversation(
         self,
     ) -> None:
-        from ics_agent.app import main
+        from ics_agent.app.chatwoot import routes as main
 
         client = Mock()
         client.set_conversation_status = Mock(return_value={})

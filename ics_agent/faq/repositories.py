@@ -12,7 +12,7 @@ import redis
 from redis.backoff import NoBackoff
 from redis.retry import Retry
 
-from ics_agent.app.logging_config import log_event
+from ics_agent.app.core.logging_config import log_event
 
 try:
     from .models import FAQSnapshot
@@ -22,13 +22,13 @@ except ImportError:
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 try:
-    from ics_agent.app.config import get_settings as get_app_settings
+    from ics_agent.app.core.config import get_settings as get_app_settings
     from ics_agent.faq.config import get_faq_settings
 except ModuleNotFoundError:
     import sys
 
     sys.path.insert(0, str(PROJECT_ROOT))
-    from ics_agent.app.config import get_settings as get_app_settings
+    from ics_agent.app.core.config import get_settings as get_app_settings
     from ics_agent.faq.config import get_faq_settings
 
 

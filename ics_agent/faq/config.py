@@ -8,7 +8,7 @@ from functools import lru_cache
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from ics_agent.app.config import PROJECT_ROOT
+from ics_agent.app.core.config import PROJECT_ROOT
 
 
 class FAQSettings(BaseSettings):

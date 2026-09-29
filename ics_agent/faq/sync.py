@@ -13,7 +13,7 @@ from typing import Any, Iterable
 
 from openpyxl import load_workbook
 
-from ics_agent.app.logging_config import log_event
+from ics_agent.app.core.logging_config import log_event
 from ics_agent.faq.config import get_faq_settings
 
 from .repositories import (

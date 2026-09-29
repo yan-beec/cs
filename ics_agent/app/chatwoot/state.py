@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from ics_agent.faq.repositories import PostgreSQLConnectionPool
 
 
 CONVERSATION_CONTROL_TABLE = "chatwoot_conversation_control"
+CONTACT_BLOCK_TABLE = "chatwoot_contact_block"
 _CONTROL_COLUMNS = """
     account_id, conversation_id, active_thread_id,
     last_chatwoot_status,
@@ -43,6 +45,15 @@ class ConversationControl:
     handoff_note_created: bool
     handoff_assignment_applied: bool
     handoff_notice_sent: bool
+
+
+@dataclass(frozen=True)
+class ContactBlock:
+    """一个 Chatwoot 联系人的临时静音记录。"""
+
+    account_id: str
+    contact_id: str
+    blocked_until: datetime
 
 
 class ConversationControlRepository:
@@ -137,7 +148,7 @@ class ConversationControlRepository:
                             handoff_notice_sent = FALSE,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE handoff_required = TRUE
-                          AND last_chatwoot_status IN ('resolved', 'pending')
+                          AND last_chatwoot_status = 'resolved'
                         """.strip()
                     )
                 finally:
@@ -222,10 +233,10 @@ class ConversationControlRepository:
 
                     previous_status = control.last_chatwoot_status
                     release_handoff = control.handoff_required and (
-                        clean_status in {"resolved", "pending"}
+                        clean_status == "resolved"
                         or (
                             clean_status == "open"
-                            and previous_status in {"resolved", "pending"}
+                            and previous_status == "resolved"
                         )
                     )
                     cursor.execute(
@@ -443,7 +454,7 @@ class ConversationControlRepository:
                         release_handoff
                         and previous_control is not None
                         and previous_control.handoff_required
-                        and clean_status in {"resolved", "pending"}
+                        and clean_status == "resolved"
                     ):
                         self._release_handoff_cursor(
                             cursor,
@@ -477,9 +488,9 @@ class ConversationControlRepository:
             conversation_id,
         )
         clean_status = _clean_status(status)
-        if clean_status not in {"resolved", "pending"}:
+        if clean_status != "resolved":
             raise ValueError(
-                "Only resolved or pending can release a handoff."
+                "Only resolved can release a handoff."
             )
         connection = self._connections.acquire()
         try:
@@ -686,3 +697,176 @@ _REPOSITORY = ConversationControlRepository()
 def get_conversation_control_repository() -> ConversationControlRepository:
     """返回进程级会话控制仓库。"""
     return _REPOSITORY
+
+
+class ContactBlockRepository:
+    """保存 Chatwoot 静音联系人及其自动解除时间。"""
+
+    def __init__(
+        self,
+        connections: PostgreSQLConnectionPool | None = None,
+    ) -> None:
+        self._connections = connections or PostgreSQLConnectionPool()
+
+    def ensure_table(self) -> None:
+        connection = self._connections.acquire()
+        try:
+            with connection.transaction():
+                cursor = connection.cursor()
+                try:
+                    cursor.execute(
+                        f"""
+                        CREATE TABLE IF NOT EXISTS {CONTACT_BLOCK_TABLE} (
+                            account_id TEXT NOT NULL,
+                            contact_id TEXT NOT NULL,
+                            blocked_until TIMESTAMPTZ NOT NULL,
+                            active BOOLEAN NOT NULL DEFAULT TRUE,
+                            created_at TIMESTAMPTZ NOT NULL
+                                DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMPTZ NOT NULL
+                                DEFAULT CURRENT_TIMESTAMP,
+                            PRIMARY KEY (account_id, contact_id)
+                        )
+                        """.strip()
+                    )
+                    cursor.execute(
+                        f"""
+                        CREATE INDEX IF NOT EXISTS
+                        {CONTACT_BLOCK_TABLE}_due_idx
+                        ON {CONTACT_BLOCK_TABLE} (active, blocked_until)
+                        """.strip()
+                    )
+                finally:
+                    cursor.close()
+        finally:
+            connection.close()
+
+    def arm(
+        self,
+        *,
+        account_id: str,
+        contact_id: str,
+        blocked_until: datetime,
+        refresh_existing: bool = True,
+    ) -> None:
+        account_id, contact_id = _validate_contact_reference(
+            account_id,
+            contact_id,
+        )
+        connection = self._connections.acquire()
+        try:
+            with connection.transaction():
+                cursor = connection.cursor()
+                try:
+                    cursor.execute(
+                        f"""
+                        INSERT INTO {CONTACT_BLOCK_TABLE} AS current_block (
+                            account_id, contact_id, blocked_until, active
+                        )
+                        VALUES (%s, %s, %s, TRUE)
+                        ON CONFLICT (account_id, contact_id)
+                        DO UPDATE SET
+                            blocked_until = CASE
+                                WHEN current_block.active AND %s
+                                    THEN EXCLUDED.blocked_until
+                                WHEN current_block.active
+                                    THEN current_block.blocked_until
+                                ELSE EXCLUDED.blocked_until
+                            END,
+                            active = TRUE,
+                            updated_at = CURRENT_TIMESTAMP
+                        """.strip(),
+                        (
+                            account_id,
+                            contact_id,
+                            blocked_until,
+                            refresh_existing,
+                        ),
+                    )
+                finally:
+                    cursor.close()
+        finally:
+            connection.close()
+
+    def deactivate(
+        self,
+        *,
+        account_id: str,
+        contact_id: str,
+    ) -> None:
+        account_id, contact_id = _validate_contact_reference(
+            account_id,
+            contact_id,
+        )
+        connection = self._connections.acquire()
+        try:
+            with connection.transaction():
+                cursor = connection.cursor()
+                try:
+                    cursor.execute(
+                        f"""
+                        UPDATE {CONTACT_BLOCK_TABLE}
+                        SET active = FALSE,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE account_id = %s AND contact_id = %s
+                        """.strip(),
+                        (account_id, contact_id),
+                    )
+                finally:
+                    cursor.close()
+        finally:
+            connection.close()
+
+    def list_due(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+    ) -> list[ContactBlock]:
+        connection = self._connections.acquire()
+        try:
+            cursor = connection.cursor()
+            try:
+                cursor.execute(
+                    f"""
+                    SELECT account_id, contact_id, blocked_until
+                    FROM {CONTACT_BLOCK_TABLE}
+                    WHERE active = TRUE AND blocked_until <= %s
+                    ORDER BY blocked_until
+                    LIMIT %s
+                    """.strip(),
+                    (now, max(1, limit)),
+                )
+                return [
+                    ContactBlock(
+                        account_id=str(row[0]),
+                        contact_id=str(row[1]),
+                        blocked_until=row[2],
+                    )
+                    for row in cursor.fetchall()
+                ]
+            finally:
+                cursor.close()
+        finally:
+            connection.close()
+
+
+def _validate_contact_reference(
+    account_id: str,
+    contact_id: str,
+) -> tuple[str, str]:
+    account_id = str(account_id or "").strip()
+    contact_id = str(contact_id or "").strip()
+    if not account_id:
+        raise ValueError("Chatwoot account_id is required.")
+    if not contact_id:
+        raise ValueError("Chatwoot contact_id is required.")
+    return account_id, contact_id
+
+
+_CONTACT_BLOCK_REPOSITORY = ContactBlockRepository()
+
+
+def get_contact_block_repository() -> ContactBlockRepository:
+    """返回进程级联系人静音仓库。"""
+    return _CONTACT_BLOCK_REPOSITORY

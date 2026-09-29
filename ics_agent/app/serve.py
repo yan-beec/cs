@@ -10,7 +10,7 @@ import threading
 from pathlib import Path
 from typing import TextIO
 
-from .config import PROJECT_ROOT, get_settings
+from .core.config import PROJECT_ROOT, get_settings
 
 
 class RotatingTextWriter:
