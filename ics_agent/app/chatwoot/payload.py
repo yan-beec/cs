@@ -122,6 +122,18 @@ _POLITE_SUFFIXES = (
     "处理一下",
     "帮忙",
 )
+_IMAGE_ATTACHMENT_TYPES = {"image"}
+_IMAGE_MIME_PREFIX = "image/"
+_IMAGE_URL_EXTENSIONS = (
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".bmp",
+    ".webp",
+    ".tif",
+    ".tiff",
+)
 
 
 def normalize_handoff_text(value: str) -> str:
@@ -318,6 +330,52 @@ def is_emoji_only_text(value: str) -> bool:
         return False
 
     return has_emoji
+
+
+def has_image_attachment(event: ChatwootWebhookEvent) -> bool:
+    """判断 Chatwoot 消息是否包含图片附件。"""
+    payload = event.raw if isinstance(event.raw, Mapping) else {}
+    message = payload.get("message")
+    message = message if isinstance(message, Mapping) else {}
+    candidates = (
+        payload.get("attachments"),
+        message.get("attachments"),
+    )
+    for attachments in candidates:
+        if not isinstance(attachments, list):
+            continue
+        for attachment in attachments:
+            if _is_image_attachment(attachment):
+                return True
+    return False
+
+
+def _is_image_attachment(attachment: Any) -> bool:
+    if not isinstance(attachment, Mapping):
+        return False
+
+    file_type = str(attachment.get("file_type") or "").strip().lower()
+    if file_type in _IMAGE_ATTACHMENT_TYPES:
+        return True
+
+    content_type = str(
+        attachment.get("content_type")
+        or attachment.get("mime_type")
+        or attachment.get("mimetype")
+        or ""
+    ).strip().lower()
+    if content_type.startswith(_IMAGE_MIME_PREFIX):
+        return True
+
+    for key in ("data_url", "thumb_url", "download_url", "url"):
+        value = str(attachment.get(key) or "").strip().lower()
+        if value.startswith(_IMAGE_MIME_PREFIX):
+            return True
+        path = value.split("?", 1)[0]
+        if path.endswith(_IMAGE_URL_EXTENSIONS):
+            return True
+
+    return False
 
 
 def verify_signature(

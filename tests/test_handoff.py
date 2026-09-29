@@ -51,6 +51,26 @@ class HandoffIntentTest(unittest.TestCase):
 
 
 class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
+    def test_image_message_without_text_is_processed(self) -> None:
+        event = ChatwootWebhookEvent(
+            event="message_created",
+            id=1200,
+            account={"id": 1},
+            conversation={"id": 56, "account_id": 1},
+            message_type="incoming",
+            content="",
+            raw={
+                "attachments": [
+                    {
+                        "file_type": "image",
+                        "data_url": "https://example.test/photo.jpg",
+                    }
+                ]
+            },
+        )
+
+        self.assertTrue(main._should_process_webhook_event(event))
+
     async def test_active_handoff_suppresses_ai_reply(self) -> None:
         control = _control(handoff_required=True)
         repository = Mock()
@@ -135,6 +155,69 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
 
         repository.request_handoff.assert_called_once()
         complete_handoff.assert_awaited_once()
+        self.assertEqual(result["route"], "handoff")
+
+    async def test_image_message_requests_handoff_with_image_notice(self) -> None:
+        initial_control = _control(handoff_required=False)
+        handoff_control = _control(handoff_required=True)
+        repository = Mock()
+        repository.record_user_message = Mock(return_value=initial_control)
+        repository.request_handoff = Mock(return_value=(handoff_control, True))
+        event = ChatwootWebhookEvent(
+            event="message_created",
+            id=1205,
+            account={"id": 1},
+            conversation={"id": 56, "account_id": 1, "status": "pending"},
+            message_type="incoming",
+            content="",
+            raw={
+                "attachments": [
+                    {
+                        "file_type": "image",
+                        "data_url": "https://example.test/photo.jpg",
+                    }
+                ]
+            },
+        )
+        job = main.WebhookJob(event_key="test-image-handoff", event=event)
+
+        with (
+            patch.object(
+                main,
+                "conversation_control_repository",
+                repository,
+            ),
+            patch.object(
+                main,
+                "_refresh_handoff_from_chatwoot_status",
+                new=AsyncMock(return_value=initial_control),
+            ),
+            patch.object(
+                main,
+                "_chatwoot_contact_blocked",
+                new=AsyncMock(return_value=False),
+            ),
+            patch.object(
+                main,
+                "_has_available_handoff_agent",
+                new=AsyncMock(return_value=True),
+            ) as has_available_agent,
+            patch.object(
+                main,
+                "_complete_handoff",
+                new=AsyncMock(return_value={"route": "handoff"}),
+            ) as complete_handoff,
+        ):
+            result = await main._process_webhook_job_unlocked(job)
+
+        has_available_agent.assert_awaited_once()
+        request_call = repository.request_handoff.call_args.kwargs
+        self.assertEqual(request_call["reason"], "image_attachment")
+        complete_call = complete_handoff.call_args.kwargs
+        self.assertEqual(
+            complete_call["notice_message"],
+            main.IMAGE_HANDOFF_NOTICE_MESSAGE,
+        )
         self.assertEqual(result["route"], "handoff")
 
     def test_pending_status_does_not_release_handoff(self) -> None:

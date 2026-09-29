@@ -17,6 +17,7 @@ from ics_agent.app.core.context import (
     CONVERSATION_STATUS_EVENTS,
     EMOJI_ACK_MESSAGE,
     HANDOFF_NO_AGENT_MESSAGE,
+    IMAGE_HANDOFF_NOTICE_MESSAGE,
     HANDOFF_NOTICE_MESSAGE,
     HANDOFF_RELEASE_STATUSES,
     MUTED_HANDOFF_MESSAGE,
@@ -33,6 +34,7 @@ from ics_agent.app.core.models import ChatwootWebhookEvent
 from .payload import (
     contact_block_change_from_payload,
     contact_blocked_from_payload,
+    has_image_attachment,
     is_emoji_only_text,
     is_explicit_handoff_request,
     parse_event,
@@ -90,7 +92,8 @@ def _should_process_webhook_event(event: ChatwootWebhookEvent) -> bool:
         return True
     if _is_conversation_status_event(event):
         return bool(event.conversation or _conversation_status(event))
-    if not event.content or not event.content.strip():
+    has_text = bool(event.content and event.content.strip())
+    if not has_text and not has_image_attachment(event):
         return False
     if event.message_type is None:
         return True
@@ -141,6 +144,21 @@ def _webhook_conversation_reference(
         or ""
     ).strip()
     return account_id, conversation_id
+
+
+def _webhook_partition_key(event: ChatwootWebhookEvent) -> str | None:
+    """返回用于同会话串行处理的分区键。"""
+    account_id, conversation_id = _webhook_conversation_reference(event)
+    if conversation_id:
+        return f"{account_id}:{conversation_id}"
+
+    thread_id = _webhook_thread_id(event)
+    if thread_id:
+        return f"thread:{thread_id}"
+
+    if event.id is not None:
+        return f"event:{account_id}:{event.id}"
+    return None
 
 
 def _webhook_event_key(
@@ -247,7 +265,11 @@ async def _enqueue_webhook_job(
 
     try:
         webhook_queue.enqueue_nowait(
-            WebhookJob(event_key=event_key, event=event)
+            WebhookJob(
+                event_key=event_key,
+                event=event,
+                partition_key=_webhook_partition_key(event),
+            )
         )
     except WebhookQueueFull as exc:
         await asyncio.to_thread(
@@ -900,8 +922,9 @@ async def _send_chatwoot_auto_reply(
 
 async def _process_webhook_job(job: WebhookJob) -> dict[str, object]:
     """后台执行一条入站消息；结果由队列写入幂等记录。"""
-    account_id, conversation_id = _webhook_conversation_reference(job.event)
-    lock_key = f"{account_id}:{conversation_id}"
+    lock_key = _webhook_partition_key(job.event)
+    if not lock_key:
+        return await _process_webhook_job_unlocked(job)
     lock = _conversation_locks.setdefault(lock_key, asyncio.Lock())
     async with lock:
         return await _process_webhook_job_unlocked(job)
@@ -916,7 +939,9 @@ async def _process_webhook_job_unlocked(
     account_id, conversation_id = _webhook_conversation_reference(event)
     message_id = None if event.id is None else str(event.id)
     thread_id = _webhook_thread_id(event)
+    image_handoff = has_image_attachment(event)
     explicit_handoff = is_explicit_handoff_request(content)
+    handoff_requested = explicit_handoff or image_handoff
     control: ConversationControl | None = None
 
     if _is_contact_block_event(event):
@@ -966,7 +991,7 @@ async def _process_webhook_job_unlocked(
             )
             return _handoff_suppressed_result(control)
 
-        if explicit_handoff:
+        if handoff_requested:
             has_available_agent = await _has_available_handoff_agent(event)
             if not has_available_agent:
                 return await _suppress_no_agent_handoff(
@@ -986,22 +1011,26 @@ async def _process_webhook_job_unlocked(
                 # 否则 agent 会绕过 Chatwoot 的静音保护。
                 return _handoff_mute_check_unavailable_result()
 
-        if explicit_handoff:
+        if handoff_requested:
             control, _ = await asyncio.to_thread(
                 conversation_control_repository.request_handoff,
                 account_id=account_id,
                 conversation_id=conversation_id,
                 thread_id=thread_id,
-                reason="explicit_keyword",
+                reason=(
+                    "explicit_keyword"
+                    if explicit_handoff
+                    else "image_attachment"
+                ),
                 message_id=message_id,
                 chatwoot_status=_conversation_status(event),
             )
-    elif explicit_handoff:
+    elif handoff_requested:
         raise ValueError(
             "Chatwoot handoff requires account_id and conversation_id."
         )
 
-    if explicit_handoff or (control is not None and control.handoff_required):
+    if handoff_requested or (control is not None and control.handoff_required):
         if control is None:
             raise RuntimeError("Conversation control is unavailable.")
         return await _complete_handoff(
@@ -1009,6 +1038,11 @@ async def _process_webhook_job_unlocked(
             job=job,
             control=control,
             content=content,
+            notice_message=(
+                IMAGE_HANDOFF_NOTICE_MESSAGE
+                if image_handoff
+                else HANDOFF_NOTICE_MESSAGE
+            ),
         )
 
     auto_reply_enabled = _can_auto_reply(
@@ -1271,6 +1305,7 @@ async def _complete_handoff(
     job: WebhookJob,
     control: ConversationControl,
     content: str,
+    notice_message: str = HANDOFF_NOTICE_MESSAGE,
 ) -> dict[str, object]:
     """执行一次可重试、动作级幂等的 Chatwoot 人工接管。"""
     account_id, conversation_id = _webhook_conversation_reference(event)
@@ -1385,7 +1420,7 @@ async def _complete_handoff(
                 client.send_message,
                 account_id=account_id,
                 conversation_id=conversation_id,
-                content=HANDOFF_NOTICE_MESSAGE,
+                content=notice_message,
             )
             notice_message_id = _chatwoot_message_id(notice_result)
         await asyncio.to_thread(
@@ -1412,6 +1447,7 @@ async def _complete_handoff(
         control=control,
         actions=actions,
         notice_sent=notice_sent,
+        notice_message=notice_message,
     )
 
 
@@ -1469,11 +1505,12 @@ def _handoff_result(
     control: ConversationControl,
     actions: dict[str, object],
     notice_sent: bool,
+    notice_message: str = HANDOFF_NOTICE_MESSAGE,
 ) -> dict[str, object]:
     return {
         "route": "handoff",
         "faq_route": "handoff",
-        "answer": HANDOFF_NOTICE_MESSAGE if notice_sent else "",
+        "answer": notice_message if notice_sent else "",
         "intent_label": None,
         "intent_confidence": None,
         "handoff_required": True,

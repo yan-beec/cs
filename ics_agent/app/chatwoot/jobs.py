@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
@@ -330,6 +331,7 @@ class WebhookJob:
 
     event_key: str
     event: Any
+    partition_key: str | None = None
 
 
 class WebhookQueueFull(RuntimeError):
@@ -348,6 +350,9 @@ class WebhookJobQueue:
         self._repository = repository
         self._queue: asyncio.Queue[WebhookJob] | None = None
         self._workers: list[asyncio.Task[None]] = []
+        self._processing_slots: asyncio.Semaphore | None = None
+        self._job_tasks: set[asyncio.Task[None]] = set()
+        self._job_tails: dict[str, asyncio.Task[None]] = {}
         self._cleanup_task: asyncio.Task[None] | None = None
         self._stopping = False
 
@@ -357,6 +362,9 @@ class WebhookJobQueue:
         if self._queue is not None:
             return
         self._queue = asyncio.Queue(maxsize=settings.webhook_queue_max_size)
+        self._processing_slots = asyncio.Semaphore(
+            settings.webhook_worker_count
+        )
         self._stopping = False
         self._workers = [
             asyncio.create_task(
@@ -385,7 +393,7 @@ class WebhookJobQueue:
         self._stopping = True
         try:
             await asyncio.wait_for(
-                self._queue.join(),
+                self._wait_for_drain(),
                 timeout=settings.webhook_queue_shutdown_timeout_seconds,
             )
         except asyncio.TimeoutError:
@@ -394,7 +402,16 @@ class WebhookJobQueue:
                 logging.WARNING,
                 "webhook.queue.shutdown_timeout",
                 pending=self._queue.qsize(),
+                active=len(self._job_tasks),
             )
+            active_tasks = tuple(self._job_tasks)
+            for task in active_tasks:
+                task.cancel()
+            if active_tasks:
+                await asyncio.gather(
+                    *active_tasks,
+                    return_exceptions=True,
+                )
         for task in self._workers:
             task.cancel()
         if self._cleanup_task is not None:
@@ -408,6 +425,9 @@ class WebhookJobQueue:
             return_exceptions=True,
         )
         self._workers.clear()
+        self._job_tasks.clear()
+        self._job_tails.clear()
+        self._processing_slots = None
         self._cleanup_task = None
         self._queue = None
         log_event(logger, logging.INFO, "webhook.queue.stopped")
@@ -426,7 +446,7 @@ class WebhookJobQueue:
         while True:
             job = await self._queue.get()
             try:
-                await self._process_with_retry(job, worker_index)
+                self._schedule_job(job, worker_index)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -437,6 +457,90 @@ class WebhookJobQueue:
                 )
             finally:
                 self._queue.task_done()
+
+    def _schedule_job(self, job: WebhookJob, worker_index: int) -> None:
+        """调度任务链，避免 worker 阻塞等待同一会话的前序任务。"""
+        previous = (
+            self._job_tails.get(job.partition_key)
+            if job.partition_key
+            else None
+        )
+        task = asyncio.create_task(
+            self._run_scheduled_job(
+                job,
+                worker_index,
+                previous=previous,
+            ),
+            name=f"webhook-job-{job.event_key}",
+        )
+        self._job_tasks.add(task)
+        if job.partition_key:
+            self._job_tails[job.partition_key] = task
+        task.add_done_callback(
+            lambda finished: self._job_finished(
+                job.partition_key,
+                finished,
+            )
+        )
+
+    def _job_finished(
+        self,
+        partition_key: str | None,
+        task: asyncio.Task[None],
+    ) -> None:
+        self._job_tasks.discard(task)
+        if (
+            partition_key
+            and self._job_tails.get(partition_key) is task
+        ):
+            self._job_tails.pop(partition_key, None)
+        with suppress(asyncio.CancelledError):
+            try:
+                task.result()
+            except Exception:
+                logger.exception(
+                    "事件=Webhook队列.任务.未处理异常 key=%s",
+                    task.get_name(),
+                )
+
+    async def _run_scheduled_job(
+        self,
+        job: WebhookJob,
+        worker_index: int,
+        *,
+        previous: asyncio.Task[None] | None,
+    ) -> None:
+        """等待同会话前序任务，再占用一个实际处理槽位。"""
+        if previous is not None:
+            try:
+                await previous
+            except asyncio.CancelledError:
+                if self._stopping:
+                    raise
+                logger.warning(
+                    "事件=Webhook队列.前序任务被取消 key=%s",
+                    job.event_key,
+                )
+            except Exception:
+                logger.exception(
+                    "事件=Webhook队列.前序任务异常 key=%s",
+                    job.event_key,
+                )
+
+        if self._processing_slots is None:
+            raise RuntimeError("Webhook processing slots are not started.")
+        async with self._processing_slots:
+            await self._process_with_retry(job, worker_index)
+
+    async def _wait_for_drain(self) -> None:
+        assert self._queue is not None
+        await self._queue.join()
+        active_tasks = tuple(self._job_tasks)
+        if active_tasks:
+            await asyncio.gather(
+                *active_tasks,
+                return_exceptions=True,
+            )
 
     async def _process_with_retry(
         self,
