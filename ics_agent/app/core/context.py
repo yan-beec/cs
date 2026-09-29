@@ -24,9 +24,9 @@ contact_block_repository = get_contact_block_repository()
 
 EMOJI_ACK_MESSAGE = "如果有什么需要帮助，可以直接问我哦，我会尽力帮您解答的~"
 HANDOFF_NOTICE_MESSAGE = "已为您转接人工客服，请稍等..."
-HANDOFF_OFF_HOURS_MESSAGE = (
-    "当前为非人工客服时间，人工客服在线时间为每天 09:00-22:00。"
-    "您可以先描述问题，我会尽力帮您解答；如仍需人工客服，请在服务时间内再联系。"
+HANDOFF_NO_AGENT_MESSAGE = (
+    "当前人工坐席繁忙，您可以先继续描述问题，我会尽力帮您解答。"
+    "如仍需人工客服，请稍后再次尝试「转人工」。"
 )
 MUTED_HANDOFF_MESSAGE = "非常抱歉，当前人工座席繁忙，请稍后再试。"
 HANDOFF_RELEASE_STATUSES = {"resolved"}

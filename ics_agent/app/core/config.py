@@ -65,9 +65,6 @@ class AppSettings(BaseSettings):
     chatwoot_handoff_enabled: bool = True
     chatwoot_handoff_label: str = "handoff_required"
     chatwoot_handoff_notice_enabled: bool = True
-    chatwoot_handoff_service_timezone: str = "Asia/Shanghai"
-    chatwoot_handoff_service_start: str = "09:00"
-    chatwoot_handoff_service_end: str = "22:00"
     chatwoot_handoff_team_id: str = ""
     chatwoot_handoff_assignee_id: str = ""
     chatwoot_block_duration_seconds: int = Field(

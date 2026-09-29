@@ -1,5 +1,4 @@
 import unittest
-from datetime import datetime
 from unittest.mock import AsyncMock, Mock, patch
 
 from ics_agent.app.chatwoot import routes as main
@@ -123,8 +122,8 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
             ),
             patch.object(
                 main,
-                "_is_handoff_service_online",
-                return_value=True,
+                "_has_available_handoff_agent",
+                new=AsyncMock(return_value=True),
             ),
             patch.object(
                 main,
@@ -142,21 +141,20 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(main._is_handoff_release_status("pending"))
         self.assertTrue(main._is_handoff_release_status("resolved"))
 
-    def test_handoff_service_time_boundaries(self) -> None:
-        self.assertFalse(
-            main._is_handoff_service_online(datetime(2026, 9, 29, 8, 59))
-        )
+    def test_agent_availability_only_accepts_online(self) -> None:
         self.assertTrue(
-            main._is_handoff_service_online(datetime(2026, 9, 29, 9, 0))
-        )
-        self.assertTrue(
-            main._is_handoff_service_online(datetime(2026, 9, 29, 21, 59))
+            main._is_available_agent({"id": 1, "availability_status": "online"})
         )
         self.assertFalse(
-            main._is_handoff_service_online(datetime(2026, 9, 29, 22, 0))
+            main._is_available_agent({"id": 2, "availability_status": "busy"})
+        )
+        self.assertFalse(
+            main._is_available_agent({"id": 3, "availability_status": "offline"})
         )
 
-    async def test_explicit_handoff_off_hours_sends_notice_only(self) -> None:
+    async def test_explicit_handoff_without_available_agent_sends_notice_only(
+        self,
+    ) -> None:
         initial_control = _control(handoff_required=False)
         repository = Mock()
         repository.record_user_message = Mock(return_value=initial_control)
@@ -184,14 +182,14 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
             ),
             patch.object(
                 main,
-                "_is_handoff_service_online",
-                return_value=False,
+                "_has_available_handoff_agent",
+                new=AsyncMock(return_value=False),
             ),
             patch.object(
                 main,
-                "_suppress_off_hours_handoff",
-                new=AsyncMock(return_value={"route": "handoff_off_hours"}),
-            ) as off_hours_notice,
+                "_suppress_no_agent_handoff",
+                new=AsyncMock(return_value={"route": "handoff_no_available_agent"}),
+            ) as no_agent_notice,
             patch.object(
                 main,
                 "_complete_handoff",
@@ -202,10 +200,10 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
 
         repository.request_handoff.assert_not_called()
         complete_handoff.assert_not_awaited()
-        off_hours_notice.assert_awaited_once()
-        self.assertEqual(result["route"], "handoff_off_hours")
+        no_agent_notice.assert_awaited_once()
+        self.assertEqual(result["route"], "handoff_no_available_agent")
 
-    async def test_off_hours_notice_sends_service_time_message(self) -> None:
+    async def test_no_agent_notice_sends_availability_message(self) -> None:
         client = Mock()
         client.set_conversation_status = Mock(return_value={})
         client.send_message = Mock(return_value={"id": 88})
@@ -225,9 +223,10 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
                 "record_conversation_status",
             ) as record_status,
         ):
-            result = await main._suppress_off_hours_handoff(
+            result = await main._suppress_no_agent_handoff(
                 event=event,
-                event_key="test-off-hours-notice",
+                event_key="test-no-agent-notice",
+                availability_known=True,
             )
 
         client.set_conversation_status.assert_called_once_with(
@@ -238,12 +237,50 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
         client.send_message.assert_called_once_with(
             account_id="1",
             conversation_id="56",
-            content=main.HANDOFF_OFF_HOURS_MESSAGE,
+            content=main.HANDOFF_NO_AGENT_MESSAGE,
         )
         record_status.assert_called_once()
-        self.assertEqual(result["route"], "handoff_off_hours")
+        self.assertEqual(result["route"], "handoff_no_available_agent")
         self.assertFalse(result["handoff_required"])
+        self.assertEqual(result["handoff_reason"], "no_available_agent")
         self.assertEqual(result["chatwoot_reply"]["message_id"], "88")
+
+    async def test_agent_availability_is_read_from_chatwoot(self) -> None:
+        event = ChatwootWebhookEvent(
+            event="message_created",
+            account={"id": 1},
+            conversation={"id": 56, "account_id": 1, "inbox_id": 4},
+            content="转人工",
+            message_type="incoming",
+        )
+        client = Mock()
+        client.list_inbox_members = Mock(
+            return_value=[
+                {"id": 10, "availability_status": "busy"},
+                {"id": 11, "availability_status": "online"},
+            ]
+        )
+
+        with (
+            patch.object(main, "get_chatwoot_client", return_value=client),
+            patch.object(
+                main,
+                "settings",
+                main.settings.model_copy(
+                    update={
+                        "chatwoot_handoff_team_id": "",
+                        "chatwoot_handoff_assignee_id": "",
+                    }
+                ),
+            ),
+        ):
+            result = await main._has_available_handoff_agent(event)
+
+        self.assertTrue(result)
+        client.list_inbox_members.assert_called_once_with(
+            account_id="1",
+            inbox_id=4,
+        )
 
 
 def _control(*, handoff_required: bool) -> ConversationControl:

@@ -18,6 +18,7 @@ from ics_agent.rag.intent_classifier.data import (
     load_intent_csv,
 )
 from ics_agent.llm_factory import call_cloud_llm
+from ics_agent.retry import async_reconnect
 from ics_agent.rag.prompt import SYSTEM_PROMPT, build_dynamic_prompt
 from ics_agent.rag.reranker import arerank_documents
 from ics_agent.rag.retrieval import aretrieve_documents
@@ -28,6 +29,9 @@ from .state import RAGState
 logger = logging.getLogger(__name__)
 
 CHITCHAT_INTENT_LABEL = "闲聊"
+LLM_REPLY_FALLBACK_ANSWER = (
+    "当前智能客服正在维护，请您发送「转人工」申请人工客服协助！"
+)
 
 
 class IntentClassifierModel:
@@ -382,16 +386,40 @@ def _response_content(response: Any) -> str:
     return str(content)
 
 
+@async_reconnect(
+    delays=(1.0, 3.0),
+    logger=logger,
+    operation="rag.llm_reply",
+)
+async def _call_llm_reply(prompt: str) -> Any:
+    """调用云端 LLM 生成最终回复，失败时由装饰器重连。"""
+    return await call_cloud_llm(
+        prompt,
+        system_prompt=SYSTEM_PROMPT,
+    )
+
+
 async def llm_reply_node(state: RAGState) -> dict[str, Any]:
     """调用云端 LLM 生成回复，兼容 RAG 和闲聊两条上游路径。"""
     query = state.get("query", "").strip()
     if not query:
         raise ValueError("RAG state query cannot be empty.")
 
-    response = await call_cloud_llm(
-        build_dynamic_prompt(state),
-        system_prompt=SYSTEM_PROMPT,
-    )
+    try:
+        response = await _call_llm_reply(build_dynamic_prompt(state))
+    except Exception as exc:
+        log_event(
+            logger,
+            logging.ERROR,
+            "rag.graph.node.llm_reply.fallback",
+            error_type=type(exc).__name__,
+        )
+        return {
+            "llm_response": None,
+            "answer": LLM_REPLY_FALLBACK_ANSWER,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
     answer = _response_content(response)
     log_event(
         logger,

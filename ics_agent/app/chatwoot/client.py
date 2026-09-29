@@ -122,6 +122,66 @@ class ChatwootClient:
             access_token=self._contact_api_token(),
         )
 
+    def list_agents(
+        self,
+        *,
+        account_id: str,
+    ) -> list[dict[str, Any]]:
+        """列出账号下的 Chatwoot 坐席及其可用状态。"""
+        account_id = str(account_id or "").strip()
+        if not account_id:
+            raise ChatwootAPIError("Chatwoot account_id is missing.")
+        result = self._request_json(
+            "GET",
+            f"/api/v1/accounts/{quote(account_id, safe='')}/agents",
+            access_token=self._user_api_token("Chatwoot agent operations"),
+        )
+        return self._response_items(result)
+
+    def list_team_members(
+        self,
+        *,
+        account_id: str,
+        team_id: int,
+    ) -> list[dict[str, Any]]:
+        """列出指定 Team 下的 Chatwoot 坐席及其可用状态。"""
+        account_id = str(account_id or "").strip()
+        if not account_id:
+            raise ChatwootAPIError("Chatwoot account_id is missing.")
+        if team_id <= 0:
+            raise ChatwootAPIError("Chatwoot team_id is invalid.")
+        result = self._request_json(
+            "GET",
+            (
+                f"/api/v1/accounts/{quote(account_id, safe='')}"
+                f"/teams/{quote(str(team_id), safe='')}/team_members"
+            ),
+            access_token=self._user_api_token("Chatwoot team operations"),
+        )
+        return self._response_items(result)
+
+    def list_inbox_members(
+        self,
+        *,
+        account_id: str,
+        inbox_id: int,
+    ) -> list[dict[str, Any]]:
+        """列出指定 Inbox 下的 Chatwoot 坐席及其可用状态。"""
+        account_id = str(account_id or "").strip()
+        if not account_id:
+            raise ChatwootAPIError("Chatwoot account_id is missing.")
+        if inbox_id <= 0:
+            raise ChatwootAPIError("Chatwoot inbox_id is invalid.")
+        result = self._request_json(
+            "GET",
+            (
+                f"/api/v1/accounts/{quote(account_id, safe='')}"
+                f"/inbox_members/{quote(str(inbox_id), safe='')}"
+            ),
+            access_token=self._user_api_token("Chatwoot inbox operations"),
+        )
+        return self._response_items(result)
+
     def set_contact_blocked(
         self,
         *,
@@ -381,17 +441,35 @@ class ChatwootClient:
             return {"raw_response": raw_response.decode("utf-8", errors="replace")}
         return result if isinstance(result, dict) else {"data": result}
 
-    def _contact_api_token(self) -> str:
+    @staticmethod
+    def _response_items(result: dict[str, Any]) -> list[dict[str, Any]]:
+        candidates = result.get("data")
+        if candidates is None:
+            candidates = result.get("payload")
+        if candidates is None and "id" in result:
+            candidates = [result]
+        if not isinstance(candidates, list):
+            return []
+        return [
+            item
+            for item in candidates
+            if isinstance(item, dict)
+        ]
+
+    def _user_api_token(self, operation: str) -> str:
         token = (
             self._settings.chatwoot_contact_api_token.strip()
             or self._settings.chatwoot_api_token.strip()
         )
         if not token:
             raise ChatwootAPIError(
-                "CHATWOOT_CONTACT_API_TOKEN or CHATWOOT_API_TOKEN "
-                "is required for Chatwoot contact operations."
+                f"CHATWOOT_CONTACT_API_TOKEN or CHATWOOT_API_TOKEN "
+                f"is required for {operation}."
             )
         return token
+
+    def _contact_api_token(self) -> str:
+        return self._user_api_token("Chatwoot contact operations")
 
 
 _CLIENT = ChatwootClient()

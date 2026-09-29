@@ -5,8 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import suppress
-from datetime import datetime, time as datetime_time, timedelta, timezone
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -17,8 +16,8 @@ from ics_agent.app.core.context import (
     CONTACT_BLOCK_EVENTS,
     CONVERSATION_STATUS_EVENTS,
     EMOJI_ACK_MESSAGE,
+    HANDOFF_NO_AGENT_MESSAGE,
     HANDOFF_NOTICE_MESSAGE,
-    HANDOFF_OFF_HOURS_MESSAGE,
     HANDOFF_RELEASE_STATUSES,
     MUTED_HANDOFF_MESSAGE,
     contact_block_repository,
@@ -307,6 +306,19 @@ def _webhook_account_id(event: ChatwootWebhookEvent) -> str:
         or settings.chatwoot_account_id
         or ""
     ).strip()
+
+
+def _webhook_inbox_id(event: ChatwootWebhookEvent) -> int | None:
+    conversation = event.conversation or {}
+    value = (
+        conversation.get("inbox_id")
+        or event.raw.get("inbox_id")
+        or (event.raw.get("inbox") or {}).get("id")
+    )
+    try:
+        return _optional_chatwoot_id(str(value or ""))
+    except ValueError:
+        return None
 
 
 async def _chatwoot_contact_blocked(
@@ -955,10 +967,12 @@ async def _process_webhook_job_unlocked(
             return _handoff_suppressed_result(control)
 
         if explicit_handoff:
-            if not _is_handoff_service_online():
-                return await _suppress_off_hours_handoff(
+            has_available_agent = await _has_available_handoff_agent(event)
+            if not has_available_agent:
+                return await _suppress_no_agent_handoff(
                     event=event,
                     event_key=job.event_key,
+                    availability_known=has_available_agent is not None,
                 )
 
             blocked = await _chatwoot_contact_blocked(event)
@@ -1075,53 +1089,110 @@ async def _process_webhook_job_unlocked(
     }
 
 
-def _handoff_service_timezone() -> timezone:
-    timezone_name = settings.chatwoot_handoff_service_timezone.strip()
+def _chatwoot_agent_id(agent: dict[str, object]) -> str | None:
+    agent_id = agent.get("id") or agent.get("user_id")
+    value = str(agent_id or "").strip()
+    return value or None
+
+
+def _is_available_agent(agent: dict[str, object]) -> bool:
+    """Chatwoot 中 online 表示当前可接待；busy/offline 不接转人工。"""
+    status = str(
+        agent.get("availability_status")
+        or agent.get("availability")
+        or ""
+    ).strip().lower()
+    return status == "online"
+
+
+async def _has_available_handoff_agent(
+    event: ChatwootWebhookEvent,
+) -> bool | None:
+    """实时读取 Chatwoot，判断是否存在在线空闲坐席。"""
+    account_id, _ = _webhook_conversation_reference(event)
+    if not account_id:
+        return None
+
+    team_id = _optional_chatwoot_id(settings.chatwoot_handoff_team_id)
+    assignee_id = _optional_chatwoot_id(settings.chatwoot_handoff_assignee_id)
+    inbox_id = _webhook_inbox_id(event)
+    client = get_chatwoot_client()
     try:
-        return ZoneInfo(timezone_name or "Asia/Shanghai")
-    except ZoneInfoNotFoundError:
-        fallback_timezone = datetime.now().astimezone().tzinfo
-        return fallback_timezone or timezone.utc
+        if inbox_id is not None:
+            agents = await asyncio.to_thread(
+                client.list_inbox_members,
+                account_id=account_id,
+                inbox_id=inbox_id,
+            )
+        elif team_id is not None:
+            agents = await asyncio.to_thread(
+                client.list_team_members,
+                account_id=account_id,
+                team_id=team_id,
+            )
+        else:
+            agents = await asyncio.to_thread(
+                client.list_agents,
+                account_id=account_id,
+            )
+        if inbox_id is not None and team_id is not None:
+            team_agents = await asyncio.to_thread(
+                client.list_team_members,
+                account_id=account_id,
+                team_id=team_id,
+            )
+            team_agent_ids = {
+                agent_id
+                for agent in team_agents
+                if (agent_id := _chatwoot_agent_id(agent)) is not None
+            }
+            agents = [
+                agent
+                for agent in agents
+                if _chatwoot_agent_id(agent) in team_agent_ids
+            ]
+    except ChatwootAPIError as exc:
+        log_event(
+            logger,
+            logging.WARNING,
+            "webhook.handoff.agent_availability_lookup_failed",
+            account_id=account_id,
+            inbox_id=inbox_id,
+            team_id=team_id,
+            status_code=exc.status_code,
+        )
+        return None
 
+    if assignee_id is not None:
+        assignee_text = str(assignee_id)
+        agents = [
+            agent
+            for agent in agents
+            if _chatwoot_agent_id(agent) == assignee_text
+        ]
 
-def _parse_handoff_service_time(
-    value: str,
-    fallback: datetime_time,
-) -> datetime_time:
-    try:
-        hour_text, minute_text = value.strip().split(":", 1)
-        hour = int(hour_text)
-        minute = int(minute_text)
-        if 0 <= hour <= 23 and 0 <= minute <= 59:
-            return datetime_time(hour, minute)
-    except (AttributeError, TypeError, ValueError):
-        pass
-    return fallback
-
-
-def _is_handoff_service_online(now: datetime | None = None) -> bool:
-    """人工客服在线时间：每天 09:00 <= 当前时间 < 22:00。"""
-    current = now or datetime.now(_handoff_service_timezone())
-    current_time = current.time().replace(tzinfo=None)
-    start_time = _parse_handoff_service_time(
-        settings.chatwoot_handoff_service_start,
-        datetime_time(9, 0),
+    available_count = sum(1 for agent in agents if _is_available_agent(agent))
+    log_event(
+        logger,
+        logging.INFO,
+        "webhook.handoff.agent_availability_checked",
+        account_id=account_id,
+        inbox_id=inbox_id,
+        team_id=team_id,
+        assignee_id=assignee_id,
+        candidate_count=len(agents),
+        available_count=available_count,
     )
-    end_time = _parse_handoff_service_time(
-        settings.chatwoot_handoff_service_end,
-        datetime_time(22, 0),
-    )
-    if start_time <= end_time:
-        return start_time <= current_time < end_time
-    return current_time >= start_time or current_time < end_time
+    return available_count > 0
 
 
-async def _suppress_off_hours_handoff(
+async def _suppress_no_agent_handoff(
     *,
     event: ChatwootWebhookEvent,
     event_key: str,
+    availability_known: bool,
 ) -> dict[str, object]:
-    """非人工服务时间只发送友好提示，不进入人工接管状态。"""
+    """没有在线空闲坐席时只提示，不进入人工接管状态。"""
     account_id, conversation_id = _webhook_conversation_reference(event)
     status_synced = False
     notice_sent = False
@@ -1144,7 +1215,7 @@ async def _suppress_off_hours_handoff(
                 get_chatwoot_client().send_message,
                 account_id=account_id,
                 conversation_id=conversation_id,
-                content=HANDOFF_OFF_HOURS_MESSAGE,
+                content=HANDOFF_NO_AGENT_MESSAGE,
             )
             notice_sent = True
             notice_message_id = _chatwoot_message_id(sent_message)
@@ -1152,35 +1223,40 @@ async def _suppress_off_hours_handoff(
             log_event(
                 logger,
                 logging.WARNING,
-                "webhook.handoff.off_hours_notice_failed",
+                "webhook.handoff.no_agent_notice_failed",
                 event_key=event_key,
                 status_code=exc.status_code,
             )
         except Exception as exc:
             logger.warning(
-                "事件=Webhook转人工.非服务时间提示.发送失败 错误类型=%s",
+                "事件=Webhook转人工.无在线空闲坐席提示.发送失败 错误类型=%s",
                 type(exc).__name__,
             )
 
     log_event(
         logger,
         logging.INFO,
-        "webhook.handoff.suppressed_off_hours",
+        "webhook.handoff.suppressed_no_available_agent",
         event_key=event_key,
         account_id=account_id,
         conversation_id=conversation_id,
+        availability_known=availability_known,
         status_synced=status_synced,
         notice_sent=notice_sent,
         notice_message_id=notice_message_id,
     )
     return {
-        "route": "handoff_off_hours",
-        "faq_route": "handoff_off_hours",
-        "answer": HANDOFF_OFF_HOURS_MESSAGE,
+        "route": "handoff_no_available_agent",
+        "faq_route": "handoff_no_available_agent",
+        "answer": HANDOFF_NO_AGENT_MESSAGE,
         "intent_label": None,
         "intent_confidence": None,
         "handoff_required": False,
-        "handoff_reason": "off_hours",
+        "handoff_reason": (
+            "no_available_agent"
+            if availability_known
+            else "agent_availability_unavailable"
+        ),
         "chatwoot_reply": {
             "enabled": settings.chatwoot_handoff_notice_enabled,
             "sent": notice_sent,

@@ -224,6 +224,11 @@ Webhook 只处理带文本的入站消息：
 - 默认只记录答案，不主动回复 Chatwoot。
 - 普通 AI 处理期间会将 Chatwoot 会话保持为 `pending`，不会以 `open` 状态出现在人工座席待接管队列。
 - 用户明确输入“人工”或“转人工”时，会先关闭该会话的 AI 回复开关，再执行 Chatwoot 人工接管。
+- 转人工前会优先读取当前会话 Inbox 的坐席可用状态；如果配置了 Team/Agent，
+  还会按对应范围过滤。仅当目标范围中存在 `availability_status=online` 的坐席
+  时才转人工，不再按固定 09:00-22:00 时间段判断。`busy`、`offline` 或无法读取
+  坐席状态时不会打开人工会话，
+  会向用户提示当前暂无在线空闲坐席并保持 AI 会话可继续承接。
 - 人工接管会打开会话、添加 `handoff_required` 标签、写入私有备注，并按配置分配 Team/Agent。
 - 人工接管后，当前 Chatwoot 对话在坐席结束本轮处理前不会再自动回复。
 - 坐席在 Chatwoot 中点击“已解决”或“待处理”后，下一条用户消息会重新进入 AI。
@@ -249,9 +254,12 @@ CHATWOOT_AUTO_REPLY_ENABLED=true
 CHATWOOT_HANDOFF_ENABLED=true
 CHATWOOT_HANDOFF_LABEL=handoff_required
 CHATWOOT_HANDOFF_NOTICE_ENABLED=true
-# 可选；不配置时使用 Chatwoot 自身的自动分配规则。
+# 可选；配置后转人工前只检查该 Team 下的在线坐席。
 CHATWOOT_HANDOFF_TEAM_ID=
+# 可选；配置后只在该坐席在线时转人工。
 CHATWOOT_HANDOFF_ASSIGNEE_ID=
+# 读取坐席在线状态需要用户级 API Token，不能只配置 AgentBot Token。
+# CHATWOOT_CONTACT_API_TOKEN 未配置时回退使用 CHATWOOT_API_TOKEN。
 # Chatwoot 静音联系人默认 7 天后自动解除；单位为秒。
 CHATWOOT_BLOCK_DURATION_SECONDS=604800
 CHATWOOT_BLOCK_REAPER_INTERVAL_SECONDS=60
