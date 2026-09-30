@@ -1,4 +1,4 @@
-# 模块职责：编排 FAQ 初始化、异步后台更新、BM25 匹配、PostgreSQL 取答和 RAG 降级。
+# 模块职责：编排 FAQ 初始化、异步后台更新、内存 BM25 匹配和 RAG 降级。
 
 import asyncio
 import logging
@@ -7,8 +7,6 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-
-import redis
 
 try:
     from psycopg import Error as PostgresError
@@ -22,24 +20,18 @@ try:
     from .index import BM25Matcher, JiebaTokenizer
     from .models import FAQResult, FAQSnapshot
     from .repositories import (
-        FAQAnswerCache,
         FAQRepository,
         PostgresDependencyError,
         PostgresPoolExhausted,
-        RedisCircuitOpen,
-        RedisFAQSnapshotRepository,
         ensure_faq_table,
     )
 except ImportError:
     from index import BM25Matcher, JiebaTokenizer
     from models import FAQResult, FAQSnapshot
     from repositories import (
-        FAQAnswerCache,
         FAQRepository,
         PostgresDependencyError,
         PostgresPoolExhausted,
-        RedisCircuitOpen,
-        RedisFAQSnapshotRepository,
         ensure_faq_table,
     )
 
@@ -75,44 +67,24 @@ class _FAQRuntimeVersion:
     """在下一次原子切换前供查询使用的不可变 FAQ 版本。"""
 
     matcher: BM25Matcher
-    answers: dict[int, str] | None
+    answers: dict[int, str]
     source_hash: str | None
-    answer_cache: FAQAnswerCache
 
 
 class FAQSnapshotSynchronizer:
     def __init__(
         self,
         faq_repository: FAQRepository | None = None,
-        snapshot_repository: RedisFAQSnapshotRepository | None = None,
         tokenizer: JiebaTokenizer | None = None,
     ) -> None:
         self.faq_repository = faq_repository or FAQRepository()
-        self.snapshot_repository = (
-            snapshot_repository or RedisFAQSnapshotRepository()
-        )
         self.tokenizer = tokenizer or JiebaTokenizer()
-        self.last_redis_save_succeeded = False
 
     def build_snapshot(self, rows: list[tuple[int, str]]) -> FAQSnapshot:
         question_ids = [row[0] for row in rows]
         questions = [row[1] for row in rows]
         tokens = self.tokenizer.tokenize_many(questions)
         return FAQSnapshot.from_lists(question_ids, questions, tokens)
-
-    def save_snapshot(self, snapshot: FAQSnapshot) -> FAQSnapshot:
-        self.last_redis_save_succeeded = False
-        try:
-            self.snapshot_repository.save(snapshot)
-            self.last_redis_save_succeeded = True
-        except redis.RedisError as exc:
-            log_event(
-                logger,
-                logging.WARNING,
-                "faq.snapshot.sync.redis_write_failed",
-                error_type=type(exc).__name__,
-            )
-        return snapshot
 
     def sync(self, include_disabled: bool = False) -> FAQSnapshot:
         log_event(
@@ -123,7 +95,6 @@ class FAQSnapshotSynchronizer:
         )
         rows = self.faq_repository.fetch_questions(include_disabled)
         snapshot = self.build_snapshot(rows)
-        self.save_snapshot(snapshot)
         log_event(
             logger,
             logging.INFO,
@@ -137,8 +108,6 @@ class FAQService:
     def __init__(
         self,
         faq_repository: FAQRepository | None = None,
-        snapshot_repository: RedisFAQSnapshotRepository | None = None,
-        answer_cache: FAQAnswerCache | None = None,
         tokenizer: JiebaTokenizer | None = None,
         synchronizer: FAQSnapshotSynchronizer | None = None,
     ) -> None:
@@ -151,18 +120,9 @@ class FAQService:
         self._update_statuses: dict[str, str] = {}
         self._initialized = False
         self._faq_repository = faq_repository or FAQRepository()
-        self._snapshot_repository = (
-            snapshot_repository or RedisFAQSnapshotRepository()
-        )
-        redis_circuit = getattr(self._snapshot_repository, "circuit", None)
-        self._answer_cache = answer_cache or FAQAnswerCache(
-            self._snapshot_repository.client,
-            circuit=redis_circuit,
-        )
         self._tokenizer = tokenizer or JiebaTokenizer()
         self._synchronizer = synchronizer or FAQSnapshotSynchronizer(
             faq_repository=self._faq_repository,
-            snapshot_repository=self._snapshot_repository,
             tokenizer=self._tokenizer,
         )
         self._matcher: BM25Matcher | None = None
@@ -188,19 +148,13 @@ class FAQService:
         self,
         snapshot: FAQSnapshot,
         *,
-        answers: dict[int, str] | None = None,
+        answers: dict[int, str],
         source_hash: str | None = None,
     ) -> _FAQRuntimeVersion:
-        redis_circuit = getattr(self._snapshot_repository, "circuit", None)
         return _FAQRuntimeVersion(
             matcher=BM25Matcher(snapshot),
             answers=answers,
             source_hash=source_hash,
-            answer_cache=FAQAnswerCache(
-                self._snapshot_repository.client,
-                circuit=redis_circuit,
-                namespace=source_hash or uuid.uuid4().hex,
-            ),
         )
 
     def _activate_runtime_version(
@@ -209,33 +163,16 @@ class FAQService:
     ) -> None:
         """通过一次指针切换发布一个完整 FAQ 版本。"""
         with self._version_lock:
-            previous_version = self._runtime_version
             self._runtime_version = runtime_version
             self._matcher = runtime_version.matcher
-            self._answer_cache = runtime_version.answer_cache
             self._initialization_error = None
             self._initialized = True
-
-        if (
-            previous_version is not None
-            and previous_version.answer_cache.key
-            != runtime_version.answer_cache.key
-        ):
-            try:
-                previous_version.answer_cache.clear()
-            except (RedisCircuitOpen, redis.RedisError) as exc:
-                log_event(
-                    logger,
-                    logging.WARNING,
-                    "faq.runtime.previous_cache.clear_failed",
-                    error_type=type(exc).__name__,
-                )
 
     def reload_snapshot(
         self,
         snapshot: FAQSnapshot,
         *,
-        answers: dict[int, str] | None = None,
+        answers: dict[int, str],
         source_hash: str | None = None,
     ) -> "FAQService":
         """原子发布已经准备好的 FAQ 运行时版本。"""
@@ -261,68 +198,27 @@ class FAQService:
             if self._initialized and not force:
                 return self
 
-            settings = get_faq_settings()
             log_event(
                 logger,
                 logging.INFO,
                 "faq.service.initialize.start",
-                sync_on_startup=settings.faq_sync_on_startup,
             )
             try:
-                runtime_answers: dict[int, str] | None = None
-                if settings.faq_sync_on_startup:
-                    try:
-                        ensure_faq_table()
-                        snapshot = self._synchronizer.sync()
-                        try:
-                            loaded_answers = self._faq_repository.fetch_answers(
-                                snapshot.question_ids
-                            )
-                            if len(loaded_answers) == len(snapshot.documents):
-                                runtime_answers = loaded_answers
-                            else:
-                                log_event(
-                                    logger,
-                                    logging.WARNING,
-                                    "faq.service.initialize.answers_incomplete",
-                                    expected_count=len(snapshot.documents),
-                                    loaded_count=len(loaded_answers),
-                                )
-                        except (
-                            PostgresError,
-                            PostgresDependencyError,
-                            PostgresPoolExhausted,
-                            OSError,
-                            TimeoutError,
-                        ) as exc:
-                            log_event(
-                                logger,
-                                logging.WARNING,
-                                "faq.service.initialize.answers_load_failed",
-                                error_type=type(exc).__name__,
-                            )
-                    except (
-                        PostgresError,
-                        PostgresDependencyError,
-                        PostgresPoolExhausted,
-                        OSError,
-                        TimeoutError,
-                    ) as exc:
-                        log_event(
-                            logger,
-                            logging.WARNING,
-                            "faq.service.initialize.postgres_sync_failed",
-                            error_type=type(exc).__name__,
-                        )
-                        snapshot = self._snapshot_repository.load()
-                        log_event(
-                            logger,
-                            logging.INFO,
-                            "faq.service.initialize.redis_snapshot_fallback",
-                            count=len(snapshot.documents),
-                        )
-                else:
-                    snapshot = self._snapshot_repository.load()
+                ensure_faq_table()
+                snapshot = self._synchronizer.sync()
+                runtime_answers = self._faq_repository.fetch_answers(
+                    snapshot.question_ids
+                )
+                if len(runtime_answers) != len(snapshot.documents):
+                    missing_ids = [
+                        question_id
+                        for question_id in snapshot.question_ids
+                        if question_id not in runtime_answers
+                    ]
+                    raise LookupError(
+                        "FAQ answers are incomplete for question ids: "
+                        + ", ".join(str(question_id) for question_id in missing_ids)
+                    )
                 if (
                     not force
                     and self._initialized
@@ -341,17 +237,17 @@ class FAQService:
                     "faq.service.initialize.success",
                     count=len(snapshot.documents),
                     vocabulary_size=runtime_version.matcher.vocabulary_size,
-                    answers_in_memory=runtime_answers is not None,
+                    answers_in_memory=True,
                 )
             except (
                 PostgresError,
                 PostgresDependencyError,
                 PostgresPoolExhausted,
+                LookupError,
                 OSError,
                 TimeoutError,
                 KeyError,
                 ValueError,
-                redis.RedisError,
             ) as exc:
                 self._matcher = None
                 self._runtime_version = None
@@ -404,40 +300,6 @@ class FAQService:
             )
             return FAQResult(route="rag", query=query, rag_query=query)
 
-        try:
-            cached_answer = runtime_version.answer_cache.get(query)
-        except RedisCircuitOpen:
-            log_event(
-                logger,
-                logging.DEBUG,
-                "faq.query.redis_cache_read_skipped",
-                reason="circuit_open",
-            )
-            cached_answer = None
-        except redis.RedisError as exc:
-            log_event(
-                logger,
-                logging.WARNING,
-                "faq.query.redis_cache_read_failed",
-                error_type=type(exc).__name__,
-            )
-            cached_answer = None
-
-        if cached_answer is not None:
-            log_event(
-                logger,
-                logging.INFO,
-                "faq.query.route",
-                route="cache",
-                elapsed_ms=int((time.perf_counter() - started_at) * 1000),
-            )
-            return FAQResult(
-                route="cache",
-                query=query,
-                answer=cached_answer,
-                cache_key=runtime_version.answer_cache.key,
-            )
-
         tokens = self._tokenizer.tokenize(query)
         if not tokens:
             log_event(
@@ -474,82 +336,25 @@ class FAQService:
                 rag_query=query,
             )
 
-        postgres_query: str | None = None
-        if runtime_version.answers is not None:
-            answer = runtime_version.answers.get(match.document.question_id)
-            if answer is None:
-                log_event(
-                    logger,
-                    logging.WARNING,
-                    "faq.query.route",
-                    route="rag",
-                    reason="answer_missing_from_runtime_version",
-                    question_id=match.document.question_id,
-                    elapsed_ms=int((time.perf_counter() - started_at) * 1000),
-                )
-                return FAQResult(
-                    route="rag",
-                    query=query,
-                    matched_question=match.document.question,
-                    question_id=match.document.question_id,
-                    bm25_score=match.bm25_score,
-                    match_degree=match.match_degree,
-                    rag_query=query,
-                )
-            answer_source = "memory"
-        else:
-            try:
-                _, answer = self._faq_repository.fetch_answer(
-                    match.document.question_id
-                )
-                postgres_query = (
-                    f"{self._faq_repository.answer_sql()}  "
-                    f"params=({match.document.question_id},)"
-                )
-                answer_source = "postgres"
-            except (
-                PostgresError,
-                PostgresDependencyError,
-                PostgresPoolExhausted,
-                LookupError,
-                OSError,
-                TimeoutError,
-            ) as exc:
-                log_event(
-                    logger,
-                    logging.WARNING,
-                    "faq.query.route",
-                    route="rag",
-                    reason="postgres_answer_failed",
-                    question_id=match.document.question_id,
-                    error_type=type(exc).__name__,
-                    elapsed_ms=int((time.perf_counter() - started_at) * 1000),
-                )
-                return FAQResult(
-                    route="rag",
-                    query=query,
-                    matched_question=match.document.question,
-                    question_id=match.document.question_id,
-                    bm25_score=match.bm25_score,
-                    match_degree=match.match_degree,
-                    rag_query=query,
-                )
-
-        try:
-            runtime_version.answer_cache.set(query, answer)
-        except RedisCircuitOpen:
-            log_event(
-                logger,
-                logging.DEBUG,
-                "faq.query.redis_cache_write_skipped",
-                reason="circuit_open",
-            )
-        except redis.RedisError as exc:
+        answer = runtime_version.answers.get(match.document.question_id)
+        if answer is None:
             log_event(
                 logger,
                 logging.WARNING,
-                "faq.query.redis_cache_write_failed",
-                error_type=type(exc).__name__,
+                "faq.query.route",
+                route="rag",
+                reason="answer_missing_from_runtime_version",
+                question_id=match.document.question_id,
+                elapsed_ms=int((time.perf_counter() - started_at) * 1000),
+            )
+            return FAQResult(
+                route="rag",
+                query=query,
+                matched_question=match.document.question,
+                question_id=match.document.question_id,
+                bm25_score=match.bm25_score,
+                match_degree=match.match_degree,
+                rag_query=query,
             )
 
         log_event(
@@ -558,7 +363,7 @@ class FAQService:
             "faq.query.route",
             route="faq",
             question_id=match.document.question_id,
-            answer_source=answer_source,
+            answer_source="memory",
             match_degree=round(match.match_degree, 4),
             elapsed_ms=int((time.perf_counter() - started_at) * 1000),
         )
@@ -570,8 +375,6 @@ class FAQService:
             question_id=match.document.question_id,
             bm25_score=match.bm25_score,
             match_degree=match.match_degree,
-            postgres_query=postgres_query,
-            cache_key=runtime_version.answer_cache.key,
         )
 
     def _apply_excel_refresh_sync(
@@ -627,10 +430,6 @@ class FAQService:
             source_hash=source_hash,
         )
 
-        # 数据库替换完成后，再通过一次指针切换发布新的运行时版本。
-        snapshot = self._synchronizer.save_snapshot(snapshot)
-        redis_snapshot_written = self._synchronizer.last_redis_save_succeeded
-
         current_version = self._get_runtime_version()
         should_activate = (
             database_result.changed
@@ -646,9 +445,6 @@ class FAQService:
             source_row_count=database_result.source_row_count,
             upserted_row_count=database_result.source_row_count,
             deleted_row_count=database_result.deleted_row_count,
-            redis_snapshot_count=len(snapshot.documents),
-            redis_snapshot_written=redis_snapshot_written,
-            redis_cache_keys_removed=None,
             bm25_document_count=len(snapshot.documents),
             bm25_reloaded=should_activate,
             changed=database_result.changed,

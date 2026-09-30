@@ -6,7 +6,7 @@
 
 ```text
 用户问题
-  -> FAQ 缓存 / BM25 匹配
+  -> 进程内 FAQ / BM25 匹配
   -> FAQ 未命中
   -> 意图识别
   -> ChromaDB + BGE-M3 向量召回
@@ -18,7 +18,7 @@
 
 - Chatwoot Webhook 接收、签名校验、幂等处理和后台队列。
 - PostgreSQL 对话记忆和 FAQ 数据存储。
-- Redis FAQ 快照、查询缓存和运行时 BM25 索引。
+- 进程内 FAQ BM25 索引，命中后直接返回内存答案。
 - 管理后台，用于维护知识库、FAQ Excel 和查看日志。
 - 本地文档解析、OCR、向量库重建和意图分类模型训练工具。
 
@@ -46,12 +46,12 @@ models/
 
 其中 `intent_classifier_bert` 是项目运行时使用的意图分类模型，可以通过后文的训练命令生成。模型文件不包含在 Git 仓库中。
 
-### 2. 启动 PostgreSQL 和 Redis
+### 2. 启动 PostgreSQL
 
 如果使用项目自带的 Compose：
 
 ```powershell
-docker compose up -d postgres redis redisinsight
+docker compose up -d postgres
 ```
 
 未通过 `.env` 覆盖时的默认映射端口：
@@ -59,10 +59,8 @@ docker compose up -d postgres redis redisinsight
 | 服务 | 地址 |
 | --- | --- |
 | PostgreSQL | `127.0.0.1:5432` |
-| Redis | `127.0.0.1:6380` |
-| RedisInsight | `http://127.0.0.1:5540` |
 
-复制 `.env.example` 后，`POSTGRES_HOST_PORT` 会覆盖 Compose 默认值为 `5433`，Redis 会映射到 `6380`。请根据实际启动方式统一修改 `POSTGRES_PORT`、`POSTGRES_HOST_PORT` 和 `REDIS_URL`。
+复制 `.env.example` 后，`POSTGRES_HOST_PORT` 会覆盖 Compose 默认值为 `5433`。请根据实际启动方式统一修改 `POSTGRES_PORT` 和 `POSTGRES_HOST_PORT`。
 
 ### 3. 启动服务
 
@@ -115,7 +113,7 @@ docker compose up -d --build
 ```
 
 Compose 项目名称固定为 `cs`，容器和数据卷会自动使用 `cs` 命名空间，
-例如 `cs-postgres-1`、`cs-redis-1` 和 `cs_postgres_data`，避免与服务器上其他
+例如 `cs-postgres-1` 和 `cs_postgres_data`，避免与服务器上其他
 Compose 项目使用相同名称。
 
 默认的 `docker-compose.override.yml` 会额外挂载 `ics_agent/` 源码目录，并启用热重载。
@@ -157,10 +155,8 @@ LLM_BASE_URL=https://api.deepseek.com
 | 配置 | 作用 |
 | --- | --- |
 | `POSTGRES_*` / `POSTGRES_DSN` | PostgreSQL 连接 |
-| `REDIS_URL` | Redis 连接 |
 | `LLM_MODEL`、`LLM_MODEL_PROVIDER`、`LLM_API_KEY`、`LLM_BASE_URL` | 云端 LLM |
 | `RAG_WARM_UP_ON_STARTUP`、`RAG_INTENT_DATASET_PATH` | 是否在启动时加载本地模型、意图分类 CSV 路径 |
-| `FAQ_SYNC_ON_STARTUP` | 是否在启动时刷新 FAQ Redis 快照 |
 | `CHATWOOT_*` | Chatwoot Webhook 和自动回复 |
 | `ADMIN_*` | 管理员认证 |
 | `KNOWLEDGE_BASE_*` | 文档解析、Embedding 和向量库 |
@@ -231,7 +227,7 @@ Webhook 只处理带文本的入站消息：
   会向用户提示当前暂无在线空闲坐席并保持 AI 会话可继续承接。
 - 人工接管会打开会话、添加 `handoff_required` 标签、写入私有备注，并按配置分配 Team/Agent。
 - 人工接管后，当前 Chatwoot 对话在坐席结束本轮处理前不会再自动回复。
-- 坐席在 Chatwoot 中点击“已解决”或“待处理”后，下一条用户消息会重新进入 AI。
+- 坐席在 Chatwoot 中点击“已解决”后，下一条用户消息会重新进入 AI。
 - 同一个 Chatwoot 对话会继续复用长期历史，不需要新建窗口或切换 `thread_id`。
 - 会话状态类 Webhook 的幂等键包含请求体哈希，避免同一会话第二次标记
   `resolved`、`pending` 或 `open` 时被旧事件记录误判为重复。
@@ -247,18 +243,21 @@ CHATWOOT_WEBHOOK_SECRET=
 # 当前推荐使用 AgentBot Webhook；普通 Account Webhook 不使用时保持为空。
 # AgentBot 设置中的 Secret；使用 AgentBot Webhook 时必须配置
 CHATWOOT_AGENT_BOT_SECRET=Chatwoot AgentBot Secret
-# AgentBot 的 Access Token 和 ID，让回复以 AgentBot 身份写回
+# AgentBot 的 Access Token 和 ID，让自动回复以 AgentBot 身份写回
 CHATWOOT_AGENT_BOT_ACCESS_TOKEN=Chatwoot AgentBot Access Token
 CHATWOOT_AGENT_BOT_ID=Chatwoot AgentBot ID
 CHATWOOT_AUTO_REPLY_ENABLED=true
 CHATWOOT_HANDOFF_ENABLED=true
 CHATWOOT_HANDOFF_LABEL=handoff_required
 CHATWOOT_HANDOFF_NOTICE_ENABLED=true
+# 转人工和坐席轮询都使用 Webhook 事件中的当前 Inbox；服务不执行跨 Inbox 迁移。
 # 可选；配置后转人工前只检查该 Team 下的在线坐席。
 CHATWOOT_HANDOFF_TEAM_ID=
 # 可选；配置后只在该坐席在线时转人工。
 CHATWOOT_HANDOFF_ASSIGNEE_ID=
-# 读取坐席在线状态需要用户级 API Token，不能只配置 AgentBot Token。
+# 每位在线坐席最多同时承接的 open 人工会话数，默认 5。
+CHATWOOT_HANDOFF_MAX_ACTIVE_CONVERSATIONS=5
+# 读取坐席在线状态、open 会话数，以及更新状态/分配都需要用户级 API Token，不能只配置 AgentBot Token。
 # CHATWOOT_CONTACT_API_TOKEN 未配置时回退使用 CHATWOOT_API_TOKEN。
 # Chatwoot 静音联系人默认 7 天后自动解除；单位为秒。
 CHATWOOT_BLOCK_DURATION_SECONDS=604800
@@ -266,16 +265,24 @@ CHATWOOT_BLOCK_REAPER_INTERVAL_SECONDS=60
 CHATWOOT_BLOCK_REAPER_BATCH_SIZE=100
 ```
 
+### 人工接管与同 Inbox 轮询
+
+当前版本不会通过 API 把 Website 会话迁移到另一个 Inbox，也不会在人工结束后把会话回流到 AI Inbox。转人工时，服务只读取 Webhook 事件中当前 Inbox 的在线坐席，并按轮询和每人最多 5 个 open 会话的限制分配；配置 `CHATWOOT_HANDOFF_TEAM_ID` 时会再取 Team 与当前 Inbox 的交集。
+
+如果要使用 ics-agent 的自动轮询，请把人工坐席加入 Website Widget 所在的 Inbox，并保持该 Inbox 的 AgentBot 配置不变。人工结束并将会话标记为 `resolved` 后，服务只释放本地人工接管状态，会话仍留在原 Inbox；下一次用户消息是否重新进入 AI 流程由该 Inbox 的 AgentBot/Webhook 配置决定。
+
+如果必须让 AI Inbox 完全不包含人工坐席，再把会话交给独立的人工 Inbox，需要先在实际 Chatwoot 版本中验证该渠道支持的迁移方式和 Widget 连续性，再启用独立迁移流程；不要仅凭 `PATCH .../conversations/:id` 的成功响应判断迁移完成。
+
 转人工由同一个 `POST /webhooks/chatwoot` 入口触发，不需要把
 Chatwoot API Token 暴露给前端。服务会调用 Chatwoot API 完成会话状态更新、标签、
 私有备注、分配和一次性公开提示；Webhook
 重试时这些动作按本地 PostgreSQL 会话状态逐项幂等处理。服务需要接收
 Chatwoot 的会话状态变更 Webhook，至少覆盖坐席将会话标记为
-`resolved` 或 `pending` 的事件；如果没有状态事件，服务会尝试读取当前状态，
+`resolved` 的事件；如果没有状态事件，服务会尝试读取当前状态，
 同时普通用户消息触发的 Chatwoot `open` 会在 AI 处理开始和回复完成后尽力同步回
 `pending`；状态同步失败不会阻断 RAG 或已生成的 AI 回复，只有明确转人工路径会保持
 `open`。如果历史状态中残留
-`handoff_required=true` 但最后已知状态已经是 `resolved` 或 `pending`，服务启动
+`handoff_required=true` 但最后已知状态已经是 `resolved`，服务启动
 和下一条用户消息都会自愈释放该人工轮次。
 
 Chatwoot 的 Mute 会将联系人标记为 `blocked`，但不会阻止外部 AgentBot
@@ -368,19 +375,13 @@ FAQ 源文件默认是：
 database/最新问答对.xlsx
 ```
 
-FAQ 数据会同步到 PostgreSQL 的 `faq_qna_optimized` 表，再生成 Redis 快照和进程内 BM25 索引。达到匹配阈值时直接返回 FAQ 答案，否则进入 RAG。
+FAQ 数据会同步到 PostgreSQL 的 `faq_qna_optimized` 表，并在服务进程内生成 BM25 索引和答案字典。达到匹配阈值时直接返回内存中的 FAQ 答案，否则进入 RAG。
 
 命令行同步：
 
 ```powershell
-# Excel -> PostgreSQL -> Redis，并刷新运行时 FAQ
+# Excel -> PostgreSQL
 python -m ics_agent.faq sync-excel
-
-# PostgreSQL -> Redis
-python -m ics_agent.faq sync-redis
-
-# 从 Redis 快照构建 BM25
-python -m ics_agent.faq build-index
 
 # 查询 FAQ；未命中时返回 rag 路由
 python -m ics_agent.faq query "怎么充值"
@@ -395,7 +396,7 @@ need_human
 enabled
 ```
 
-管理员后台更新和命令行同步都会执行全量替换。FAQ 更新失败时，服务会尽量使用已有 Redis 快照或降级到 RAG。
+管理员后台更新和命令行同步都会执行全量替换。FAQ 运行时初始化失败时，服务会降级到 RAG。
 
 ## 知识库和向量库
 
@@ -512,7 +513,7 @@ python main.py `
 ```text
 ics_agent/
 ├── app/                    FastAPI、认证、Webhook、管理后台
-├── faq/                    FAQ 同步、Redis 快照、BM25 查询
+├── faq/                    FAQ 同步、内存 BM25 查询
 ├── rag/
 │   ├── graph/              LangGraph 查询流程
 │   ├── retrieval/          BGE-M3 + ChromaDB 检索

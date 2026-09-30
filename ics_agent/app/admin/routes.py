@@ -194,11 +194,8 @@ async def admin_stream_knowledge_preview(
     return FileResponse(
         file_path,
         media_type=file_media_type(file_path),
-        headers={
-            "Content-Disposition": (
-                f'inline; filename="{file_path.name}"'
-            )
-        },
+        filename=file_path.name,
+        content_disposition_type="inline",
     )
 
 

@@ -84,6 +84,74 @@ def _clear_collection(collection: Any, *, batch_size: int = 1000) -> int:
     return len(existing_ids)
 
 
+def _active_collection_pointer_path(
+    target_dir: Path,
+    target_collection: str,
+) -> Path:
+    """Return the small file that points a logical collection to its data.
+
+    Chroma does not expose a collection rename/replace operation.  Rebuilds
+    therefore write a uniquely named staging collection and atomically update
+    this pointer only after the staging collection is complete.  Older stores
+    without a pointer continue to use ``target_collection`` directly.
+    """
+
+    return target_dir / f".{target_collection}.active.json"
+
+
+def _read_active_collection_name(
+    target_dir: Path,
+    target_collection: str,
+) -> str:
+    pointer_path = _active_collection_pointer_path(target_dir, target_collection)
+    try:
+        payload = json.loads(pointer_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return target_collection
+        active_name = str(payload.get("collection", "")).strip()
+    except (OSError, ValueError, TypeError):
+        return target_collection
+    return active_name or target_collection
+
+
+def _write_active_collection_name(
+    target_dir: Path,
+    target_collection: str,
+    active_collection: str,
+) -> None:
+    """Atomically publish a new active collection pointer."""
+
+    pointer_path = _active_collection_pointer_path(target_dir, target_collection)
+    temporary_path = pointer_path.with_name(
+        f"{pointer_path.name}.{uuid.uuid4().hex}.tmp"
+    )
+    temporary_path.write_text(
+        json.dumps(
+            {"collection": active_collection},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    try:
+        os.replace(temporary_path, pointer_path)
+    except Exception:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _staging_collection_name(target_collection: str) -> str:
+    """Create a Chroma-safe, unique name for a rebuild staging collection."""
+
+    suffix = f"__staging_{uuid.uuid4().hex[:16]}"
+    # Chroma collection names are limited to 63 characters.  Keep the suffix
+    # intact so concurrent/retried rebuilds can never collide.
+    base = target_collection[: max(3, 63 - len(suffix))]
+    return f"{base}{suffix}"
+
+
 def _load_active_segment_ids(sqlite_path: Path) -> set[str] | None:
     """读取仍被 Chroma 引用的 segment 目录名。"""
     if not sqlite_path.is_file():
@@ -547,51 +615,60 @@ def build_chromadb(
         path=str(target_dir),
         settings=build_chroma_settings(ChromaSettings),
     )
-    collection = client.get_or_create_collection(
-        name=target_collection,
-        metadata={
-            "hnsw:space": "cosine",
-            "embedding_model": str(embedding_model_dir),
-            "retrieval_mode": "dense",
-            "source_chunks": str(source_path),
-        },
+    metadata = {
+        "hnsw:space": "cosine",
+        "embedding_model": str(embedding_model_dir),
+        "retrieval_mode": "dense",
+        "source_chunks": str(source_path),
+    }
+    previous_collection_name = _read_active_collection_name(
+        target_dir,
+        target_collection,
     )
-    embedder = BGEM3Embedder(
-        embedding_model_dir,
-        max_length=effective_embedding_max_length,
-        batch_size=effective_embedding_batch_size,
-        cpu_threads=effective_embedding_cpu_threads,
-        cpu_interop_threads=effective_embedding_cpu_interop_threads,
+    # A reset is built into an isolated collection.  The active pointer is
+    # changed only after every embedding and write has succeeded, so failures
+    # leave the currently serving collection untouched.
+    build_collection_name = (
+        _staging_collection_name(target_collection)
+        if reset_collection
+        else previous_collection_name
     )
+    staging_collection_created = False
+    published = False
+    collection = None
+    try:
+        collection = client.get_or_create_collection(
+            name=build_collection_name,
+            metadata=metadata,
+        )
+        staging_collection_created = reset_collection
+        embedder = BGEM3Embedder(
+            embedding_model_dir,
+            max_length=effective_embedding_max_length,
+            batch_size=effective_embedding_batch_size,
+            cpu_threads=effective_embedding_cpu_threads,
+            cpu_interop_threads=effective_embedding_cpu_interop_threads,
+        )
 
-    upserted_count = 0
-    embedding_dimension: int | None = None
-    with vector_store_lock:
-        if reset_collection:
-            cleared_count = _clear_collection(collection)
-            if cleared_count:
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "knowledge_base.vector.collection.cleared",
-                    collection=target_collection,
-                    cleared=cleared_count,
-                )
-
+        upserted_count = 0
+        embedding_dimension: int | None = None
         for batch in _batched(records, effective_upsert_batch_size):
             texts = [record.text for record in batch]
             embeddings = embedder.embed(texts)
             if embeddings:
                 embedding_dimension = len(embeddings[0])
-            collection.upsert(
-                ids=[record.chunk_id for record in batch],
-                documents=texts,
-                embeddings=embeddings,
-                metadatas=[
-                    _normalise_metadata(record.metadata)
-                    for record in batch
-                ],
-            )
+            # Keep online retrieval available while embeddings are computed;
+            # only the short Chroma write is serialized with searches.
+            with vector_store_lock:
+                collection.upsert(
+                    ids=[record.chunk_id for record in batch],
+                    documents=texts,
+                    embeddings=embeddings,
+                    metadatas=[
+                        _normalise_metadata(record.metadata)
+                        for record in batch
+                    ],
+                )
             upserted_count += len(batch)
             log_event(
                 logger,
@@ -607,11 +684,27 @@ def build_chromadb(
             ):
                 time.sleep(effective_batch_pause_seconds)
 
+        with vector_store_lock:
+            collection_count = collection.count()
+        if collection_count != len(records):
+            raise RuntimeError(
+                "Vector collection verification failed: expected "
+                f"{len(records)} records, found {collection_count}."
+            )
+
+        with vector_store_lock:
+            storage_maintenance = _compact_chroma_storage(
+                client,
+                collection,
+                target_dir,
+            )
+
         manifest = {
             "retrieval_mode": "dense",
             "chunks_path": str(source_path),
             "persist_dir": str(target_dir),
             "collection": target_collection,
+            "active_collection": build_collection_name,
             "embedding_model_dir": str(embedding_model_dir),
             "embedding_batch_size": effective_embedding_batch_size,
             "embedding_max_length": effective_embedding_max_length,
@@ -622,13 +715,44 @@ def build_chromadb(
             "reset_collection": reset_collection,
             "record_count": len(records),
             "embedding_dimension": embedding_dimension,
-            "collection_count": collection.count(),
-            "storage_maintenance": _compact_chroma_storage(
-                client,
-                collection,
-                target_dir,
-            ),
+            "collection_count": collection_count,
+            "storage_maintenance": storage_maintenance,
         }
+
+        if reset_collection:
+            with vector_store_lock:
+                _write_active_collection_name(
+                    target_dir,
+                    target_collection,
+                    build_collection_name,
+                )
+                published = True
+                if previous_collection_name != build_collection_name:
+                    try:
+                        client.delete_collection(name=previous_collection_name)
+                    except Exception as exc:
+                        # A stale previous collection only costs disk space;
+                        # the new pointer is already serving valid data.
+                        log_event(
+                            logger,
+                            logging.WARNING,
+                            "knowledge_base.vector.previous_collection_cleanup_failed",
+                            collection=previous_collection_name,
+                            error_type=type(exc).__name__,
+                        )
+    except Exception:
+        if reset_collection and staging_collection_created and not published:
+            try:
+                client.delete_collection(name=build_collection_name)
+            except Exception as exc:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "knowledge_base.vector.staging_collection_cleanup_failed",
+                    collection=build_collection_name,
+                    error_type=type(exc).__name__,
+                )
+        raise
     manifest_path = target_dir / f"{target_collection}.manifest.json"
     manifest_path.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2),

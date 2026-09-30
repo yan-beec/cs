@@ -1,4 +1,4 @@
-# 模块职责：读取 FAQ Excel 问答对，事务化同步 PostgreSQL/Redis，并刷新运行时。
+# 模块职责：读取 FAQ Excel 问答对，事务化同步 PostgreSQL，并刷新运行时。
 
 from __future__ import annotations
 
@@ -17,9 +17,8 @@ from ics_agent.app.core.logging_config import log_event
 from ics_agent.faq.config import get_faq_settings
 
 from .repositories import (
-    FAQAnswerCache,
+    FAQRepository,
     PostgreSQLConnectionPool,
-    RedisFAQSnapshotRepository,
 )
 from .service import FAQService, FAQSnapshotSynchronizer, get_faq_service
 
@@ -62,9 +61,6 @@ class FAQSyncResult:
     source_row_count: int
     upserted_row_count: int
     deleted_row_count: int
-    redis_snapshot_count: int | None = None
-    redis_snapshot_written: bool = False
-    redis_cache_keys_removed: int | None = None
     bm25_document_count: int | None = None
     bm25_reloaded: bool = False
     changed: bool = True
@@ -414,94 +410,33 @@ def sync_qna_from_excel(
     workbook_path: str | Path | None = None,
     *,
     sheet_name: str | None = None,
-    sync_redis: bool = True,
-    clear_answer_cache: bool | None = None,
     refresh_bm25: bool = False,
     faq_service: FAQService | None = None,
 ) -> FAQSyncResult:
-    """同步 PostgreSQL、Redis FAQ 状态，并按需刷新实时 BM25 匹配器。"""
-    settings = get_faq_settings()
+    """同步 PostgreSQL FAQ 状态，并按需刷新实时 BM25 匹配器。"""
     source_path = _resolve_project_path(
-        workbook_path or settings.faq_source_xlsx_path
+        workbook_path or get_faq_settings().faq_source_xlsx_path
     )
     records = FAQExcelReader().read(source_path, sheet_name=sheet_name)
     database_result = FAQQnaSynchronizer().sync(records)
     upserted_count = database_result.source_row_count
     deleted_count = database_result.deleted_row_count
 
-    redis_count: int | None = None
-    redis_snapshot_written = False
-    redis_cache_keys_removed: int | None = None
     bm25_document_count: int | None = None
     bm25_reloaded = False
     snapshot = None
-    if sync_redis:
-        snapshot_repository = RedisFAQSnapshotRepository()
-        snapshot_synchronizer = FAQSnapshotSynchronizer(
-            snapshot_repository=snapshot_repository,
-        )
-        try:
-            snapshot = snapshot_synchronizer.sync()
-            redis_count = len(snapshot.documents)
-            redis_snapshot_written = (
-                snapshot_synchronizer.last_redis_save_succeeded
-            )
-            log_event(
-                logger,
-                logging.INFO,
-                "faq.redis.snapshot.refresh.success",
-                count=redis_count,
-                written=redis_snapshot_written,
-            )
-        except Exception as exc:
-            # PostgreSQL 是事实来源，Redis 待恢复可用后由常规 FAQ 初始化流程刷新。
-            log_event(
-                logger,
-                logging.WARNING,
-                "faq.redis.snapshot.refresh.failed",
-                error_type=type(exc).__name__,
-            )
-
-        should_clear_cache = (
-            settings.faq_clear_answer_cache_on_sync
-            if clear_answer_cache is None
-            else clear_answer_cache
-        )
-        if should_clear_cache and redis_snapshot_written:
-            try:
-                redis_cache_keys_removed = FAQAnswerCache(
-                    snapshot_repository.client,
-                    circuit=snapshot_repository.circuit,
-                ).clear()
-            except Exception as exc:
-                log_event(
-                    logger,
-                    logging.WARNING,
-                    "faq.redis.answer_cache.clear.failed",
-                    error_type=type(exc).__name__,
-                )
-        elif should_clear_cache and redis_count is not None:
-            log_event(
-                logger,
-                logging.WARNING,
-                "faq.redis.answer_cache.clear.skipped",
-                reason="snapshot_not_written",
-            )
-        elif not should_clear_cache:
-            log_event(
-                logger,
-                logging.INFO,
-                "faq.redis.answer_cache.clear.skipped",
-                reason="disabled_by_configuration",
-            )
 
     if refresh_bm25:
-        if snapshot is None:
-            raise RuntimeError(
-                "refresh_bm25 requires a successful FAQ snapshot build."
-            )
+        snapshot = FAQSnapshotSynchronizer().sync()
+        answers = FAQRepository().fetch_answers(snapshot.question_ids)
+        if len(answers) != len(snapshot.documents):
+            raise RuntimeError("FAQ answers are incomplete after sync.")
         runtime_service = faq_service or get_faq_service()
-        runtime_service.reload_snapshot(snapshot)
+        runtime_service.reload_snapshot(
+            snapshot,
+            answers=answers,
+            source_hash=database_result.source_hash,
+        )
         bm25_document_count = len(snapshot.documents)
         bm25_reloaded = True
 
@@ -510,9 +445,6 @@ def sync_qna_from_excel(
         source_row_count=len(records),
         upserted_row_count=upserted_count,
         deleted_row_count=deleted_count,
-        redis_snapshot_count=redis_count,
-        redis_snapshot_written=redis_snapshot_written,
-        redis_cache_keys_removed=redis_cache_keys_removed,
         bm25_document_count=bm25_document_count,
         bm25_reloaded=bm25_reloaded,
         changed=database_result.changed,
@@ -524,8 +456,6 @@ async def async_sync_qna_from_excel(
     workbook_path: str | Path | None = None,
     *,
     sheet_name: str | None = None,
-    sync_redis: bool = True,
-    clear_answer_cache: bool | None = None,
     refresh_bm25: bool = False,
     faq_service: FAQService | None = None,
 ) -> FAQSyncResult:
@@ -534,8 +464,6 @@ async def async_sync_qna_from_excel(
         sync_qna_from_excel,
         workbook_path,
         sheet_name=sheet_name,
-        sync_redis=sync_redis,
-        clear_answer_cache=clear_answer_cache,
         refresh_bm25=refresh_bm25,
         faq_service=faq_service,
     )
@@ -545,15 +473,12 @@ def refresh_faq_runtime_from_excel(
     workbook_path: str | Path | None = None,
     *,
     sheet_name: str | None = None,
-    clear_answer_cache: bool | None = None,
     faq_service: FAQService | None = None,
 ) -> FAQSyncResult:
     """为上传的工作簿提供后端可直接调用的一站式 FAQ 刷新。"""
     return sync_qna_from_excel(
         workbook_path,
         sheet_name=sheet_name,
-        sync_redis=True,
-        clear_answer_cache=clear_answer_cache,
         refresh_bm25=True,
         faq_service=faq_service,
     )

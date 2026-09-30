@@ -4,10 +4,8 @@ from .config import FAQSettings, get_faq_settings
 from .index import BM25Matcher, JiebaTokenizer
 from .models import FAQDocument, FAQMatch, FAQResult, FAQSnapshot
 from .repositories import (
-    FAQAnswerCache,
     FAQRepository,
     PostgreSQLConnectionPool,
-    RedisFAQSnapshotRepository,
     ensure_faq_table,
 )
 from .service import (
@@ -34,7 +32,6 @@ from .sync import (
 __all__ = [
     "BM25Matcher",
     "FAQDocument",
-    "FAQAnswerCache",
     "FAQExcelReader",
     "FAQMatch",
     "FAQRepository",
@@ -51,7 +48,6 @@ __all__ = [
     "FAQQnaSynchronizer",
     "JiebaTokenizer",
     "PostgreSQLConnectionPool",
-    "RedisFAQSnapshotRepository",
     "ensure_faq_table",
     "execute_faq_query",
     "get_faq_settings",

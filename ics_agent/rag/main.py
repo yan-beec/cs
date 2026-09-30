@@ -88,7 +88,7 @@ def _attach_faq_fields(
     """附加 FAQ 诊断信息，同时不暴露 RAG 内部对象。"""
     faq_diagnostics = {
         "route": faq_result.route,
-        "matched": faq_result.route in {"cache", "faq"},
+        "matched": faq_result.route == "faq",
         "query": faq_result.query,
         "answer": faq_result.answer,
         "matched_question": faq_result.matched_question,
@@ -101,7 +101,7 @@ def _attach_faq_fields(
         {
             "faq": faq_diagnostics,
             "faq_route": faq_result.route,
-            "faq_matched": faq_result.route in {"cache", "faq"},
+            "faq_matched": faq_result.route == "faq",
             "matched_question": faq_result.matched_question,
             "question_id": faq_result.question_id,
             "bm25_score": faq_result.bm25_score,
@@ -140,8 +140,7 @@ async def run_query(
 
     公开字段约定：
     - ``route`` is the final answer route: ``faq``, ``chitchat`` or ``rag``.
-    - ``faq_route`` preserves the FAQ service route: ``cache``, ``faq`` or
-      ``rag``.
+    - ``faq_route`` preserves the FAQ service route: ``faq`` or ``rag``.
     - ``answer`` is always the answer returned to the caller.
     - ``faq`` contains the public FAQ match diagnostics.
     - ``rag_query`` is the query passed to the RAG graph, or ``None`` when
@@ -153,7 +152,7 @@ async def run_query(
 
     faq_result = await _query_faq(normalized_query)
     if (
-        faq_result.route in {"cache", "faq"}
+        faq_result.route == "faq"
         and faq_result.answer is not None
     ):
         if thread_id:

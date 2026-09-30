@@ -1,23 +1,11 @@
-# 模块职责：实现 PostgreSQL 连接池、FAQ 数据访问、Redis 快照和答案缓存。
+# 模块职责：实现 PostgreSQL 连接池和 FAQ 数据访问。
 
-import json
 import logging
 import threading
-import time
-import unicodedata
 from pathlib import Path
-from typing import Any, Callable
-
-import redis
-from redis.backoff import NoBackoff
-from redis.retry import Retry
+from typing import Any
 
 from ics_agent.app.core.logging_config import log_event
-
-try:
-    from .models import FAQSnapshot
-except ImportError:
-    from models import FAQSnapshot
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -57,69 +45,6 @@ def _postgres_kwargs() -> dict[str, Any]:
     return kwargs
 
 
-class RedisCircuitOpen(redis.RedisError):
-    """Redis 连接失败后暂时跳过 Redis 操作时抛出。"""
-
-
-class RedisFailureCircuit:
-    def __init__(self, cooldown_seconds: float | None = None) -> None:
-        settings = get_app_settings()
-        self._cooldown_seconds = (
-            settings.redis_failure_cooldown_seconds
-            if cooldown_seconds is None
-            else cooldown_seconds
-        )
-        self._open_until = 0.0
-        self._lock = threading.Lock()
-
-    def before_call(self) -> None:
-        with self._lock:
-            remaining = self._open_until - time.monotonic()
-            if remaining > 0:
-                log_event(
-                    logger,
-                    logging.DEBUG,
-                    "redis.circuit.skip",
-                    cooldown_remaining_ms=int(remaining * 1000),
-                )
-                raise RedisCircuitOpen(
-                    "Redis circuit is open; skipping Redis operation."
-                )
-
-    def record_failure(self, exc: redis.RedisError) -> None:
-        unavailable_errors = (
-            redis.ConnectionError,
-            redis.TimeoutError,
-            TimeoutError,
-        )
-        if not isinstance(exc, unavailable_errors):
-            return
-        with self._lock:
-            self._open_until = time.monotonic() + self._cooldown_seconds
-        log_event(
-            logger,
-            logging.WARNING,
-            "redis.circuit.open",
-            error_type=type(exc).__name__,
-            cooldown_seconds=self._cooldown_seconds,
-        )
-
-    def record_success(self) -> None:
-        with self._lock:
-            self._open_until = 0.0
-
-    def execute(self, operation: Callable[[], Any]) -> Any:
-        self.before_call()
-        try:
-            result = operation()
-        except redis.RedisError as exc:
-            self.record_failure(exc)
-            raise
-        else:
-            self.record_success()
-            return result
-
-
 class _PooledPostgresConnection:
     """调用 ``close`` 时将 psycopg 连接归还连接池。"""
 
@@ -136,17 +61,36 @@ class _PooledPostgresConnection:
             return
         self._returned = True
         broken = bool(getattr(self._connection, "broken", False))
-        if not broken and not bool(getattr(self._connection, "closed", False)):
+        closed = bool(getattr(self._connection, "closed", False))
+        if not broken and not closed:
             try:
                 # 只读 psycopg 操作仍会开启事务。归还连接前重置事务，
                 # 避免连接池警告以及事务状态泄漏到下一个请求。
                 self._connection.rollback()
             except Exception:
                 broken = True
-        if broken:
-            self._connection.close()
-            return
-        self._pool.putconn(self._connection)
+
+        if broken and not closed:
+            # 先释放损坏连接占用的底层资源，再通过 putconn() 告知连接池
+            # 该名额已经归还，以便连接池创建替代连接。
+            try:
+                self._connection.close()
+            except Exception:
+                # 即使底层 close 失败，也要继续 putconn() 释放池名额。
+                pass
+
+        # 坏连接也必须交还给连接池。psycopg_pool 会在 putconn() 时识别
+        # transaction status 为 UNKNOWN 的连接，将其关闭并异步补充新连接；
+        # 直接调用 connection.close() 会让池一直认为该名额仍在使用中。
+        try:
+            self._pool.putconn(self._connection)
+        except Exception:
+            # putconn() 失败时尽力关闭底层连接，避免泄漏资源。原始异常
+            # 仍然向调用方传播，便于定位连接池本身的故障。
+            try:
+                self._connection.close()
+            finally:
+                raise
 
 
 class PostgreSQLConnectionPool:
@@ -154,8 +98,7 @@ class PostgreSQLConnectionPool:
     _pool_lock = threading.Lock()
 
     def __init__(self) -> None:
-        # 延迟到确实需要执行 PostgreSQL 操作时再打开连接池，
-        # 这样 PostgreSQL 不可用时 FAQ 启动仍可使用 Redis。
+        # 延迟到确实需要执行 PostgreSQL 操作时再打开连接池。
         self._pool: Any | None = None
 
     def acquire(self):
@@ -523,301 +466,6 @@ class FAQRepository:
         """.strip()
 
 
-def _json_value(client: redis.Redis, key: str) -> Any:
-    raw_value = client.get(key)
-    if raw_value is None:
-        raise KeyError(f"Redis key does not exist: {key}")
-    try:
-        return json.loads(raw_value)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Redis key does not contain valid JSON: {key}") from exc
-
-
-class RedisFAQSnapshotRepository:
-    def __init__(
-        self,
-        client: redis.Redis | None = None,
-        circuit: RedisFailureCircuit | None = None,
-    ) -> None:
-        app_settings = get_app_settings()
-        self.circuit = circuit or RedisFailureCircuit()
-        self.client = client or redis.from_url(
-            app_settings.redis_url,
-            decode_responses=True,
-            socket_connect_timeout=app_settings.redis_connect_timeout,
-            socket_timeout=app_settings.redis_socket_timeout,
-            retry=Retry(NoBackoff(), retries=0),
-        )
-        self._prefix = app_settings.redis_key_prefix
-
-    def _key(self, suffix: str) -> str:
-        return f"{self._prefix}{suffix}"
-
-    def load(self) -> FAQSnapshot:
-        settings = get_faq_settings()
-        log_event(logger, logging.DEBUG, "redis.snapshot.load.start")
-        question_ids = self.circuit.execute(
-            lambda: _json_value(
-                self.client,
-                self._key(settings.faq_question_ids_key),
-            )
-        )
-        questions = self.circuit.execute(
-            lambda: _json_value(
-                self.client,
-                self._key(settings.faq_questions_key),
-            )
-        )
-        tokenized_questions = self.circuit.execute(
-            lambda: _json_value(
-                self.client,
-                self._key(settings.faq_question_tokens_key),
-            )
-        )
-        if not isinstance(question_ids, list) or not all(
-            isinstance(value, int) and not isinstance(value, bool)
-            for value in question_ids
-        ):
-            raise ValueError("Redis question ids must be a JSON list of integers.")
-        if not isinstance(questions, list) or not all(
-            isinstance(value, str) for value in questions
-        ):
-            raise ValueError("Redis questions must be a JSON list of strings.")
-        if not isinstance(tokenized_questions, list) or not all(
-            isinstance(value, list) for value in tokenized_questions
-        ):
-            raise ValueError(
-                "Redis question tokens must be a JSON list of token lists."
-            )
-        snapshot = FAQSnapshot.from_lists(
-            question_ids,
-            questions,
-            tokenized_questions,
-        )
-        log_event(
-            logger,
-            logging.INFO,
-            "redis.snapshot.load.success",
-            count=len(snapshot.documents),
-        )
-        return snapshot
-
-    def save(self, snapshot: FAQSnapshot) -> dict[str, str]:
-        settings = get_faq_settings()
-        keys = {
-            "ids": self._key(settings.faq_question_ids_key),
-            "questions": self._key(settings.faq_questions_key),
-            "tokens": self._key(settings.faq_question_tokens_key),
-            "meta": self._key(settings.faq_questions_meta_key),
-        }
-        meta = {
-            "count": len(snapshot.documents),
-            "terms": list(settings.faq_terms_list),
-            "source_table": settings.faq_table_name,
-        }
-        def save_snapshot() -> None:
-            pipe = self.client.pipeline()
-            pipe.set(
-                keys["ids"],
-                json.dumps(snapshot.question_ids, ensure_ascii=False),
-            )
-            pipe.set(
-                keys["questions"],
-                json.dumps(snapshot.questions, ensure_ascii=False),
-            )
-            pipe.set(
-                keys["tokens"],
-                json.dumps(snapshot.tokenized_questions, ensure_ascii=False),
-            )
-            pipe.set(keys["meta"], json.dumps(meta, ensure_ascii=False))
-            pipe.execute()
-
-        self.circuit.execute(save_snapshot)
-        log_event(
-            logger,
-            logging.INFO,
-            "redis.snapshot.save.success",
-            count=len(snapshot.documents),
-        )
-        return keys
-
-
-_CACHE_GET_SCRIPT = """
-local cache_key = KEYS[1]
-local index_key = KEYS[2]
-local field = ARGV[1]
-local now = tonumber(ARGV[2])
-local ttl = tonumber(ARGV[3])
-local last_access = redis.call("ZSCORE", index_key, field)
-if not last_access then
-    local legacy_value = redis.call("HGET", cache_key, field)
-    if not legacy_value then return false end
-    redis.call("ZADD", index_key, now, field)
-    return legacy_value
-end
-if now - tonumber(last_access) >= ttl then
-    redis.call("HDEL", cache_key, field)
-    redis.call("ZREM", index_key, field)
-    return false
-end
-local value = redis.call("HGET", cache_key, field)
-if not value then
-    redis.call("ZREM", index_key, field)
-    return false
-end
-redis.call("ZADD", index_key, now, field)
-return value
-"""
-
-_CACHE_SET_SCRIPT = """
-local cache_key = KEYS[1]
-local index_key = KEYS[2]
-local field = ARGV[1]
-local value = ARGV[2]
-local now = tonumber(ARGV[3])
-local ttl = tonumber(ARGV[4])
-local max_entries = tonumber(ARGV[5])
-local expire_before = now - ttl
-redis.call("HSET", cache_key, field, value)
-redis.call("ZADD", index_key, now, field)
-local expired_fields = redis.call("ZRANGEBYSCORE", index_key, "-inf", expire_before)
-for _, expired_field in ipairs(expired_fields) do
-    redis.call("HDEL", cache_key, expired_field)
-    redis.call("ZREM", index_key, expired_field)
-end
-local count = redis.call("ZCARD", index_key)
-if count > max_entries then
-    local overflow = count - max_entries
-    local oldest_fields = redis.call("ZRANGE", index_key, 0, overflow - 1)
-    for _, oldest_field in ipairs(oldest_fields) do
-        redis.call("HDEL", cache_key, oldest_field)
-        redis.call("ZREM", index_key, oldest_field)
-    end
-end
-return true
-"""
-
-
-def normalize_query(query: str) -> str:
-    normalized = unicodedata.normalize("NFKC", query).casefold()
-    normalized = "".join(
-        " " if unicodedata.category(char).startswith(("P", "Z")) else char
-        for char in normalized
-    )
-    return " ".join(normalized.split())
-
-
-class FAQAnswerCache:
-    def __init__(
-        self,
-        client: redis.Redis | None = None,
-        circuit: RedisFailureCircuit | None = None,
-        namespace: str | None = None,
-    ) -> None:
-        app_settings = get_app_settings()
-        faq_settings = get_faq_settings()
-        self.circuit = circuit or RedisFailureCircuit()
-        self.client = client or redis.from_url(
-            app_settings.redis_url,
-            decode_responses=True,
-            socket_connect_timeout=app_settings.redis_connect_timeout,
-            socket_timeout=app_settings.redis_socket_timeout,
-            retry=Retry(NoBackoff(), retries=0),
-        )
-        namespace_suffix = f":{namespace}" if namespace else ""
-        self._cache_key = (
-            f"{app_settings.redis_key_prefix}{faq_settings.faq_query_answers_key}"
-            f"{namespace_suffix}"
-        )
-        self._index_key = (
-            f"{app_settings.redis_key_prefix}{faq_settings.faq_cache_index_key}"
-            f"{namespace_suffix}"
-        )
-
-    def get(self, query: str, ttl_seconds: int | None = None) -> str | None:
-        normalized_query = normalize_query(query)
-        if not normalized_query:
-            return None
-        settings = get_faq_settings()
-        ttl = (
-            settings.faq_cache_ttl_seconds
-            if ttl_seconds is None
-            else ttl_seconds
-        )
-        value = self.circuit.execute(
-            lambda: self.client.eval(
-                _CACHE_GET_SCRIPT,
-                2,
-                self._cache_key,
-                self._index_key,
-                normalized_query,
-                str(time.time()),
-                str(ttl),
-            )
-        )
-        log_event(
-            logger,
-            logging.DEBUG,
-            "redis.answer_cache.read",
-            result="hit" if value is not None else "miss",
-        )
-        return value if value is not None else None
-
-    def set(
-        self,
-        query: str,
-        answer: str,
-        ttl_seconds: int | None = None,
-        max_entries: int | None = None,
-    ) -> None:
-        normalized_query = normalize_query(query)
-        if not normalized_query:
-            return
-        settings = get_faq_settings()
-        ttl = (
-            settings.faq_cache_ttl_seconds
-            if ttl_seconds is None
-            else ttl_seconds
-        )
-        limit = (
-            settings.faq_cache_max_entries
-            if max_entries is None
-            else max_entries
-        )
-        self.circuit.execute(
-            lambda: self.client.eval(
-                _CACHE_SET_SCRIPT,
-                2,
-                self._cache_key,
-                self._index_key,
-                normalized_query,
-                answer,
-                str(time.time()),
-                str(ttl),
-                str(limit),
-            )
-        )
-        log_event(logger, logging.DEBUG, "redis.answer_cache.write.success")
-
-    def clear(self) -> int:
-        """仅删除 FAQ 查询答案缓存及其访问索引。"""
-        removed_keys = self.circuit.execute(
-            lambda: self.client.unlink(self._cache_key, self._index_key)
-        )
-        removed_count = int(removed_keys or 0)
-        log_event(
-            logger,
-            logging.INFO,
-            "redis.answer_cache.clear.success",
-            removed_keys=removed_count,
-        )
-        return removed_count
-
-    @property
-    def key(self) -> str:
-        return self._cache_key
-
-
 def postgres_config() -> dict[str, Any]:
     """返回配置数据库使用的 psycopg 关键字参数。"""
     return _postgres_kwargs()
@@ -826,49 +474,3 @@ def postgres_config() -> dict[str, Any]:
 def get_postgres_connection():
     """获取一个连接池中的 PostgreSQL 连接。"""
     return PostgreSQLConnectionPool().acquire()
-
-
-def get_cached_answer(
-    client: redis.Redis,
-    query: str,
-    ttl_seconds: int | None = None,
-) -> str | None:
-    """从 FAQ 缓存读取一个答案。"""
-    return FAQAnswerCache(client).get(query, ttl_seconds=ttl_seconds)
-
-
-def set_cached_answer(
-    client: redis.Redis,
-    query: str,
-    answer: str,
-    ttl_seconds: int | None = None,
-    max_entries: int | None = None,
-) -> bool:
-    """向 FAQ 缓存写入一个答案。"""
-    FAQAnswerCache(client).set(
-        query,
-        answer,
-        ttl_seconds=ttl_seconds,
-        max_entries=max_entries,
-    )
-    return True
-
-
-def cache_key() -> str:
-    """返回 FAQ 答案缓存条目使用的配置 Redis key。"""
-    app_settings = get_app_settings()
-    faq_settings = get_faq_settings()
-    return (
-        f"{app_settings.redis_key_prefix}"
-        f"{faq_settings.faq_query_answers_key}"
-    )
-
-
-def cache_index_key() -> str:
-    """返回 FAQ 缓存访问时间戳使用的配置 Redis key。"""
-    app_settings = get_app_settings()
-    faq_settings = get_faq_settings()
-    return (
-        f"{app_settings.redis_key_prefix}"
-        f"{faq_settings.faq_cache_index_key}"
-    )

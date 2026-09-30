@@ -87,6 +87,22 @@ class ConversationMemoryManager:
                 self._checkpointer = checkpointer
                 await self._ensure_thread_table(pool)
                 await self.cleanup_expired()
+            except asyncio.CancelledError:
+                # A per-message RAG deadline can cancel startup while the
+                # pool is opening.  CancelledError bypasses ``except
+                # Exception``; explicitly close the partially opened pool so
+                # a timed-out conversation does not leak a connection pool.
+                if pool is not None:
+                    try:
+                        await pool.close()
+                    except Exception:
+                        logger.debug(
+                            "RAG memory pool cleanup failed after cancellation",
+                            exc_info=True,
+                        )
+                self._pool = None
+                self._checkpointer = None
+                raise
             except Exception:
                 if pool is not None:
                     await pool.close()

@@ -170,7 +170,7 @@ FAQ 数据继续使用当前项目的 `question`、`answer`、`need_human`、`en
 4. 固定 RAG 的回答边界，禁止模型编造产品规则、处理结果和人工已完成的操作。
 5. 增加无法回答、敏感问题和需要账号核验问题的人工引导策略。
 6. 增加 FAQ、RAG、意图分类、检索失败和模型失败的测试样例。
-7. 验证 PostgreSQL 不可用、Redis 不可用、模型加载失败时的降级行为。
+7. 验证 PostgreSQL 不可用、FAQ 初始化失败、模型加载失败时的降级行为。
 8. 验证会话记忆不会串会话，`thread_id` 按 Chatwoot 对话稳定生成，保证同一窗口历史持续。
 9. 为转人工策略预留统一的结果字段，例如：
 
@@ -492,7 +492,7 @@ Identity Validation 的 HMAC Secret 只能放在后端，不能写入 H5、APP �
 
 ## 7. 部署和环境
 
-当前项目使用独立 Docker Compose 运行 PostgreSQL、Redis 和 `ics-agent`。Chatwoot 可以保持独立 Compose 项目，但必须解决两个 Compose 之间的网络访问。
+当前项目使用独立 Docker Compose 运行 PostgreSQL 和 `ics-agent`。Chatwoot 可以保持独立 Compose 项目，但必须解决两个 Compose 之间的网络访问。
 
 推荐先使用以下拓扑完成第二阶段：
 
@@ -510,7 +510,7 @@ ics-agent Compose
 3. Webhook 签名密钥两端一致。
 4. `CHATWOOT_ACCOUNT_ID` 与测试 Account 一致。
 5. Chatwoot API Token 没有过期且权限足够。
-6. PostgreSQL 和 Redis 的容器内地址与宿主机地址没有混用。
+6. PostgreSQL 的容器内地址与宿主机地址没有混用。
 7. 端口、防火墙和反向代理不会拦截 Webhook。
 
 ## 8. 测试和观测

@@ -122,9 +122,13 @@ async def run_rag_graph(
     checkpointer = None
     if thread_id:
         try:
-            checkpointer = await memory_manager.startup()
+            # 只有完整完成 startup、清理任务和线程触碰后，才把 checkpoint
+            # 传入图。touch_thread 失败时，startup 返回的连接可能已经失效；
+            # 若继续使用它，FAQ 命中路径也会因 checkpoint 写入失败而失败。
+            candidate_checkpointer = await memory_manager.startup()
             await memory_manager.start_cleanup_task()
             await memory_manager.touch_thread(thread_id)
+            checkpointer = candidate_checkpointer
         except Exception as exc:
             log_event(
                 logger,
@@ -132,6 +136,17 @@ async def run_rag_graph(
                 "rag.memory.unavailable",
                 error_type=type(exc).__name__,
             )
+            # 清理可能已建立但不可用的连接池，避免后续请求反复复用
+            # 同一故障连接。shutdown 本身失败时仍应继续无记忆模式。
+            try:
+                await memory_manager.shutdown()
+            except Exception as shutdown_exc:
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "rag.memory.cleanup_failed",
+                    error_type=type(shutdown_exc).__name__,
+                )
 
     memory_enabled = checkpointer is not None and bool(thread_id)
     graph_input: dict[str, Any] = {

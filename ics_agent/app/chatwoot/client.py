@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from ics_agent.app.core.config import AppSettings, get_settings
@@ -67,6 +68,9 @@ class ChatwootClient:
             self._conversation_path(account_id, conversation_id)
             + "/toggle_typing_status",
             {"typing_status": clean_status},
+            access_token=self._user_api_token(
+                "Chatwoot typing status operations"
+            ),
         )
 
     def create_private_note(
@@ -82,6 +86,9 @@ class ChatwootClient:
             conversation_id=conversation_id,
             content=content,
             private=True,
+            access_token=self._user_api_token(
+                "Chatwoot private note operations"
+            ),
         )
 
     def get_conversation(
@@ -182,6 +189,231 @@ class ChatwootClient:
         )
         return self._response_items(result)
 
+    def count_open_conversations(
+        self,
+        *,
+        account_id: str,
+        assignee_id: int,
+        inbox_id: int | None = None,
+        team_id: int | None = None,
+    ) -> int:
+        """统计指定坐席在当前 handoff scope 内负责的 open 会话数。
+
+        Chatwoot 的会话列表响应在不同版本中可能是顶层 ``payload``、
+        ``data.payload`` 或直接 ``data`` 列表；这里统一兼容三种形式。
+        ``inbox_id`` 和 ``team_id`` 会传给 Chatwoot，避免跨 Inbox/Team
+        把同一坐席的其他会话计入当前 handoff scope。
+        """
+        account_id = str(account_id or "").strip()
+        if not account_id:
+            raise ChatwootAPIError("Chatwoot account_id is missing.")
+        if assignee_id <= 0:
+            raise ChatwootAPIError("Chatwoot assignee_id is invalid.")
+        if inbox_id is not None and inbox_id <= 0:
+            raise ChatwootAPIError("Chatwoot inbox_id is invalid.")
+        if team_id is not None and team_id <= 0:
+            raise ChatwootAPIError("Chatwoot team_id is invalid.")
+
+        # Chatwoot 的会话列表接口支持按 assigned/open/inbox/team 筛选，
+        # 但没有稳定的 assignee_id 查询参数，因此仍按返回的
+        # meta.assignee.id 计数。
+        page = 1
+        total = 0
+        while page <= 100:
+            query_params: dict[str, object] = {
+                "assignee_type": "assigned",
+                "status": "open",
+                "page": page,
+            }
+            if inbox_id is not None:
+                query_params["inbox_id"] = inbox_id
+            if team_id is not None:
+                query_params["team_id"] = team_id
+            query = urlencode(query_params)
+            result = self._request_json(
+                "GET",
+                (
+                    f"/api/v1/accounts/{quote(account_id, safe='')}"
+                    f"/conversations?{query}"
+                ),
+                access_token=self._user_api_token(
+                    "Chatwoot conversation load operations"
+                ),
+            )
+            payload = result.get("payload")
+            data = result.get("data")
+            if isinstance(data, dict):
+                payload = data.get("payload", payload)
+            elif isinstance(data, list):
+                payload = data
+            if not isinstance(payload, list):
+                return total
+
+            batch_count = 0
+            for conversation in payload:
+                if not isinstance(conversation, dict):
+                    continue
+                if inbox_id is not None:
+                    conversation_inbox_id = conversation.get("inbox_id")
+                    inbox = conversation.get("inbox")
+                    if conversation_inbox_id is None and isinstance(inbox, dict):
+                        conversation_inbox_id = inbox.get("id")
+                    if (
+                        conversation_inbox_id is not None
+                        and str(conversation_inbox_id) != str(inbox_id)
+                    ):
+                        continue
+                if team_id is not None:
+                    conversation_team_id = conversation.get("team_id")
+                    meta = conversation.get("meta")
+                    team = conversation.get("team")
+                    if conversation_team_id is None and isinstance(team, dict):
+                        conversation_team_id = team.get("id")
+                    if conversation_team_id is None and isinstance(meta, dict):
+                        meta_team = meta.get("team")
+                        if isinstance(meta_team, dict):
+                            conversation_team_id = meta_team.get("id")
+                    if (
+                        conversation_team_id is not None
+                        and str(conversation_team_id) != str(team_id)
+                    ):
+                        continue
+                meta = conversation.get("meta")
+                assignee = meta.get("assignee") if isinstance(meta, dict) else None
+                current_id = assignee.get("id") if isinstance(assignee, dict) else None
+                if str(current_id or "").strip() == str(assignee_id):
+                    batch_count += 1
+            total += batch_count
+            if len(payload) == 0:
+                break
+            page += 1
+        return total
+
+    def list_open_conversation_assignments(
+        self,
+        *,
+        account_id: str,
+    ) -> dict[str, set[str]]:
+        """一次扫描账号全部 open 会话，返回各坐席的会话 display ID 集合。
+
+        人工容量按账号计算，不能按 Inbox/Team 分别放宽。只有完整读取到
+        终止页才能使用结果；未知响应、分页截断和超时均阻止本次分配。
+        """
+        account_id = str(account_id or "").strip()
+        if not account_id:
+            raise ChatwootAPIError("Chatwoot account_id is missing.")
+        token = self._user_api_token("Chatwoot conversation load operations")
+        deadline = time.monotonic() + 45.0
+        assignments: dict[str, set[str]] = {}
+        seen: dict[str, str | None] = {}
+        expected_count = 0
+
+        for page in range(1, 101):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ChatwootAPIError("Chatwoot conversation load scan timed out.")
+            query = urlencode(
+                {"assignee_type": "all", "status": "open", "page": page}
+            )
+            try:
+                result = self._request_json(
+                    "GET",
+                    f"/api/v1/accounts/{quote(account_id, safe='')}/conversations?{query}",
+                    access_token=token,
+                    timeout_seconds=min(self._settings.chatwoot_api_timeout, remaining),
+                )
+            except StopIteration as exc:
+                # A test double or an exhausted paginated response must never
+                # turn a valid prefix into a silently partial load.
+                raise ChatwootAPIError(
+                    "Chatwoot conversation list ended before a terminal page."
+                ) from exc
+            if time.monotonic() >= deadline:
+                raise ChatwootAPIError("Chatwoot conversation load scan timed out.")
+            if not isinstance(result, dict):
+                raise ChatwootAPIError("Chatwoot conversation list is invalid.")
+
+            data = result.get("data")
+            envelope = data if isinstance(data, dict) else result
+            payload = data if isinstance(data, list) else envelope.get("payload")
+            if payload is None:
+                payload = result.get("payload")
+            if not isinstance(payload, list):
+                raise ChatwootAPIError("Chatwoot conversation list is missing.")
+            # all_count 对应 assignee_type=all 的结果，包括未分配会话。
+            # 兼容不提供计数的版本，但有计数时不能把提前空页当成完成。
+            for metadata in (result.get("meta"), envelope.get("meta")):
+                if not isinstance(metadata, dict):
+                    continue
+                for key in ("all_count", "total_count"):
+                    if key not in metadata:
+                        continue
+                    value = metadata[key]
+                    if isinstance(value, bool) or not str(value).isdigit():
+                        raise ChatwootAPIError(
+                            "Chatwoot conversation total count is invalid."
+                        )
+                    expected_count = max(expected_count, int(value))
+
+            if not payload:
+                if len(seen) < expected_count:
+                    raise ChatwootAPIError(
+                        "Chatwoot conversation list ended before the advertised total."
+                    )
+                return assignments
+
+            previous_size = len(seen)
+            for conversation in payload:
+                if not isinstance(conversation, dict):
+                    raise ChatwootAPIError("Chatwoot conversation entry is invalid.")
+                conversation_id = self._load_identifier(
+                    conversation.get("display_id") or conversation.get("id"),
+                    "conversation display",
+                )
+                meta = conversation.get("meta")
+                if isinstance(meta, dict) and "assignee" in meta:
+                    assignee = meta["assignee"]
+                    if assignee is None:
+                        assignee_id = None
+                    elif isinstance(assignee, dict):
+                        assignee_id = self._load_identifier(assignee.get("id"), "assignee")
+                    else:
+                        raise ChatwootAPIError("Chatwoot conversation assignee is invalid.")
+                elif "assignee" in conversation:
+                    assignee = conversation["assignee"]
+                    if assignee is None:
+                        assignee_id = None
+                    elif isinstance(assignee, dict):
+                        assignee_id = self._load_identifier(assignee.get("id"), "assignee")
+                    else:
+                        raise ChatwootAPIError("Chatwoot conversation assignee is invalid.")
+                elif "assignee_id" in conversation:
+                    value = conversation["assignee_id"]
+                    assignee_id = (
+                        None if value is None else self._load_identifier(value, "assignee")
+                    )
+                else:
+                    raise ChatwootAPIError("Chatwoot conversation assignee is missing.")
+                if conversation_id in seen and seen[conversation_id] != assignee_id:
+                    raise ChatwootAPIError(
+                        "Chatwoot conversation assignment changed during pagination."
+                    )
+                seen[conversation_id] = assignee_id
+                if assignee_id is not None:
+                    assignments.setdefault(assignee_id, set()).add(conversation_id)
+            if len(seen) == previous_size:
+                raise ChatwootAPIError("Chatwoot conversation pagination did not advance.")
+
+        raise ChatwootAPIError("Chatwoot conversation list exceeded 100 pages.")
+
+    @staticmethod
+    def _load_identifier(value: Any, label: str) -> str:
+        """容量查询中的标识不可缺失，否则无法可靠去重或计算坐席负载。"""
+        text = str(value).strip()
+        if isinstance(value, bool) or not text.isascii() or not text.isdigit() or int(text) <= 0:
+            raise ChatwootAPIError(f"Chatwoot {label} id is missing or invalid.")
+        return str(int(text))
+
     def set_contact_blocked(
         self,
         *,
@@ -231,6 +463,7 @@ class ChatwootClient:
             "POST",
             self._conversation_path(account_id, conversation_id) + "/labels",
             {"labels": clean_labels},
+            access_token=self._user_api_token("Chatwoot conversation label operations"),
         )
 
     def update_conversation(
@@ -248,7 +481,10 @@ class ChatwootClient:
             conversation_id,
         )
         if status is not None:
-            if assignee_id is not None or team_id is not None:
+            if (
+                assignee_id is not None
+                or team_id is not None
+            ):
                 raise ChatwootAPIError(
                     "Chatwoot status and assignment must be updated separately."
                 )
@@ -268,6 +504,9 @@ class ChatwootClient:
             "PATCH",
             self._conversation_path(account_id, conversation_id),
             payload,
+            access_token=self._user_api_token(
+                "Chatwoot conversation assignment operations"
+            ),
         )
 
     def set_conversation_status(
@@ -290,6 +529,9 @@ class ChatwootClient:
             self._conversation_path(account_id, conversation_id)
             + "/toggle_status",
             {"status": clean_status},
+            access_token=self._user_api_token(
+                "Chatwoot conversation status operations"
+            ),
         )
 
     def assign_conversation(
@@ -317,6 +559,9 @@ class ChatwootClient:
             self._conversation_path(account_id, conversation_id)
             + "/assignments",
             payload,
+            access_token=self._user_api_token(
+                "Chatwoot conversation assignment operations"
+            ),
         )
 
     def _create_message(
@@ -326,6 +571,7 @@ class ChatwootClient:
         conversation_id: str,
         content: str,
         private: bool,
+        access_token: str | None = None,
     ) -> dict[str, Any]:
         account_id, conversation_id = self._validate_conversation(
             account_id,
@@ -347,6 +593,7 @@ class ChatwootClient:
             "POST",
             self._conversation_path(account_id, conversation_id) + "/messages",
             payload,
+            access_token=access_token,
         )
 
     def _conversation_path(
@@ -379,6 +626,7 @@ class ChatwootClient:
         payload: dict[str, Any] | None = None,
         *,
         access_token: str | None = None,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         token = (access_token or "").strip() or (
             self._settings.chatwoot_agent_bot_access_token.strip()
@@ -411,7 +659,11 @@ class ChatwootClient:
         try:
             with urlopen(
                 request,
-                timeout=max(1.0, self._settings.chatwoot_api_timeout),
+                timeout=(
+                    max(1.0, self._settings.chatwoot_api_timeout)
+                    if timeout_seconds is None
+                    else max(0.001, timeout_seconds)
+                ),
             ) as response:
                 raw_response = response.read()
                 status_code = int(response.status)

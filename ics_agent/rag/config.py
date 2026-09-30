@@ -33,7 +33,17 @@ class RAGSettings(BaseSettings):
     rag_memory_cleanup_batch_size: int = Field(default=500, ge=1, le=5000)
     webhook_worker_count: int = Field(default=2, ge=1, le=16)
     webhook_queue_max_size: int = Field(default=1000, ge=1, le=10000)
-    webhook_processing_timeout_seconds: float = Field(default=60.0, gt=0)
+    # The RAG LLM call may use the provider's initial attempt plus two
+    # internal retries, and the reply node itself reconnects twice with 1 s
+    # and 3 s delays. With the default 30 s provider timeout, the complete
+    # fallback path can therefore approach five minutes; keep the outer
+    # deadline above that window so llm_reply_node can return its fallback
+    # answer instead of being cancelled first.
+    # Keep the per-message RAG deadline below the outer webhook deadline so a
+    # stalled retrieval/model call can produce a fallback answer and release
+    # the conversation partition instead of blocking later messages.
+    webhook_rag_timeout_seconds: float = Field(default=120.0, gt=0)
+    webhook_processing_timeout_seconds: float = Field(default=300.0, gt=0)
     webhook_max_retries: int = Field(default=3, ge=0, le=10)
     webhook_retry_initial_delay_seconds: float = Field(default=2.0, gt=0)
     webhook_retry_backoff_multiplier: float = Field(default=2.0, ge=1.0)

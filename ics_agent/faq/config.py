@@ -1,4 +1,4 @@
-# 模块职责：集中定义 FAQ、BM25、Redis 快照和 FAQ 缓存的模块配置。
+# 模块职责：集中定义 FAQ、BM25 和数据源配置。
 
 from __future__ import annotations
 
@@ -17,19 +17,9 @@ class FAQSettings(BaseSettings):
     faq_match_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
     faq_bm25_k1: float = Field(default=1.5, gt=0.0)
     faq_bm25_b: float = Field(default=0.75, ge=0.0, le=1.0)
-    faq_sync_on_startup: bool = True
     faq_source_table: str = "faq_qna_optimized"
     faq_source_xlsx_path: str = "database/最新问答对.xlsx"
-    faq_clear_answer_cache_on_sync: bool = True
     faq_terms: str = "兴聊,言聊,星盈通"
-    faq_question_ids_key: str = "faq:question_ids"
-    faq_questions_key: str = "faq:questions"
-    faq_question_tokens_key: str = "faq:question_tokens"
-    faq_questions_meta_key: str = "faq:questions_meta"
-    faq_query_answers_key: str = "faq:query_answers"
-    faq_cache_index_key: str = "faq:query_answers:index"
-    faq_cache_ttl_seconds: int = Field(default=864000, ge=1)
-    faq_cache_max_entries: int = Field(default=10000, ge=1, le=10000)
 
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",

@@ -349,6 +349,12 @@ class WebhookJobQueue:
         self._processor = processor
         self._repository = repository
         self._queue: asyncio.Queue[WebhookJob] | None = None
+        # ``asyncio.Queue`` only counts items waiting for a worker. Workers
+        # hand jobs off to independent tasks immediately, so queue.qsize()
+        # alone would allow an unbounded number of in-flight jobs. Keep an
+        # admission count for every job that has not finished yet.
+        self._pending_jobs = 0
+        self._max_pending_jobs = 0
         self._workers: list[asyncio.Task[None]] = []
         self._processing_slots: asyncio.Semaphore | None = None
         self._job_tasks: set[asyncio.Task[None]] = set()
@@ -362,6 +368,8 @@ class WebhookJobQueue:
         if self._queue is not None:
             return
         self._queue = asyncio.Queue(maxsize=settings.webhook_queue_max_size)
+        self._max_pending_jobs = settings.webhook_queue_max_size
+        self._pending_jobs = 0
         self._processing_slots = asyncio.Semaphore(
             settings.webhook_worker_count
         )
@@ -427,6 +435,8 @@ class WebhookJobQueue:
         self._workers.clear()
         self._job_tasks.clear()
         self._job_tails.clear()
+        self._pending_jobs = 0
+        self._max_pending_jobs = 0
         self._processing_slots = None
         self._cleanup_task = None
         self._queue = None
@@ -436,9 +446,15 @@ class WebhookJobQueue:
         """将任务放入队列；队列满时由调用方返回可重试响应。"""
         if self._queue is None or self._stopping:
             raise WebhookQueueFull("Webhook queue is not accepting jobs.")
+        if self._pending_jobs >= self._max_pending_jobs:
+            raise WebhookQueueFull("Webhook queue is full.")
+        # enqueue_nowait is called on the event loop thread, so the admission
+        # check and increment are atomic with respect to other callers.
+        self._pending_jobs += 1
         try:
             self._queue.put_nowait(job)
         except asyncio.QueueFull as exc:
+            self._pending_jobs -= 1
             raise WebhookQueueFull("Webhook queue is full.") from exc
 
     async def _worker_loop(self, worker_index: int) -> None:
@@ -450,6 +466,7 @@ class WebhookJobQueue:
             except asyncio.CancelledError:
                 raise
             except Exception:
+                self._pending_jobs = max(0, self._pending_jobs - 1)
                 logger.exception(
                     "事件=Webhook队列.任务.未处理异常 worker=%s key=%s",
                     worker_index,
@@ -489,6 +506,7 @@ class WebhookJobQueue:
         task: asyncio.Task[None],
     ) -> None:
         self._job_tasks.discard(task)
+        self._pending_jobs = max(0, self._pending_jobs - 1)
         if (
             partition_key
             and self._job_tails.get(partition_key) is task

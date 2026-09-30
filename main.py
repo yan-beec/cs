@@ -7,7 +7,7 @@
                -> 闲聊 -> LLM 回复
                -> 其他意图 -> 检索 -> 精排 -> LLM 回复
 
-依赖的 PostgreSQL 和 Redis 需要提前启动。
+依赖的 PostgreSQL 需要提前启动。
 """
 
 from __future__ import annotations

@@ -42,7 +42,7 @@ class AppSettings(BaseSettings):
     # 浏览器访问 Website Widget 时使用的公网地址；不应填写容器内地址。
     chatwoot_public_base_url: str = ""
     chatwoot_api_token: str = ""
-    # 联系人查询和 blocked 更新不能使用 AgentBot Token。
+    # 坐席查询、会话状态/分配和联系人 blocked 更新不能使用 AgentBot Token。
     chatwoot_contact_api_token: str = ""
     chatwoot_account_id: str = ""
     chatwoot_hmac_token: str = ""
@@ -67,6 +67,12 @@ class AppSettings(BaseSettings):
     chatwoot_handoff_notice_enabled: bool = True
     chatwoot_handoff_team_id: str = ""
     chatwoot_handoff_assignee_id: str = ""
+    # 每位在线坐席最多同时承接的 open 人工会话数。
+    chatwoot_handoff_max_active_conversations: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+    )
     chatwoot_block_duration_seconds: int = Field(
         default=7 * 24 * 60 * 60,
         ge=60,
@@ -100,13 +106,6 @@ class AppSettings(BaseSettings):
     postgres_pool_size: int = Field(default=10, ge=1, le=20)
     postgres_connection_timeout: int = Field(default=5, ge=1)
     postgres_pool_acquire_timeout: float = Field(default=0.05, gt=0)
-
-    # Redis 连接和故障降级配置。
-    redis_url: str = "redis://127.0.0.1:6380/0"
-    redis_key_prefix: str = "ics_agent:"
-    redis_connect_timeout: float = Field(default=0.5, gt=0)
-    redis_socket_timeout: float = Field(default=0.5, gt=0)
-    redis_failure_cooldown_seconds: float = Field(default=30.0, gt=0)
 
     # 云端 LLM 提供商连接和运行时限制。
     llm_model: str = "deepseek-flash"

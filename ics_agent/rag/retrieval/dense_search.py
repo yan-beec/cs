@@ -23,6 +23,7 @@ from ics_agent.rag.config import RAGSettings, get_rag_settings
 from knowledge_base_in.build_chromadb import (
     BGEM3Embedder,
     _load_chromadb,
+    _read_active_collection_name,
     _resolve_project_path,
 )
 from knowledge_base_in.vector_store_lock import vector_store_lock
@@ -81,13 +82,21 @@ class DenseRetriever:
             path=str(self.persist_dir),
             settings=build_chroma_settings(ChromaSettings),
         )
-        try:
-            self.collection = client.get_collection(name=self.collection_name)
-        except ValueError as exc:
-            raise RuntimeError(
-                "Dense ChromaDB collection is unavailable. Build the vector "
-                "index before searching."
-            ) from exc
+        self._client = client
+        with vector_store_lock:
+            self.active_collection_name = _read_active_collection_name(
+                self.persist_dir,
+                self.collection_name,
+            )
+            try:
+                self.collection = client.get_collection(
+                    name=self.active_collection_name,
+                )
+            except ValueError as exc:
+                raise RuntimeError(
+                    "Dense ChromaDB collection is unavailable. Build the vector "
+                    "index before searching."
+                ) from exc
 
         self.embedder = BGEM3Embedder(
             model_dir or self.settings.knowledge_base_embedding_model_dir,
@@ -133,6 +142,18 @@ class DenseRetriever:
 
         query_embedding = self.embedder.embed([normalized_query])[0]
         with vector_store_lock:
+            active_collection_name = _read_active_collection_name(
+                self.persist_dir,
+                self.collection_name,
+            )
+            if active_collection_name != self.active_collection_name:
+                # A rebuild publishes a new collection by atomically updating
+                # the pointer file.  Refresh this long-lived retriever before
+                # touching the collection so it can follow that switch.
+                self.collection = self._client.get_collection(
+                    name=active_collection_name,
+                )
+                self.active_collection_name = active_collection_name
             collection_count = self.collection.count()
             if collection_count < 1:
                 raise RuntimeError(

@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from ics_agent.faq.repositories import PostgreSQLConnectionPool
 
 
 CONVERSATION_CONTROL_TABLE = "chatwoot_conversation_control"
 CONTACT_BLOCK_TABLE = "chatwoot_contact_block"
+HANDOFF_CURSOR_TABLE = "chatwoot_handoff_round_robin"
+HANDOFF_RESERVATION_TABLE = "chatwoot_handoff_reservation"
 _CONTROL_COLUMNS = """
     account_id, conversation_id, active_thread_id,
     last_chatwoot_status,
@@ -19,7 +21,7 @@ _CONTROL_COLUMNS = """
     last_ai_message_id, last_handoff_message_id,
     handoff_conversation_updated, handoff_label_applied,
     handoff_note_created, handoff_assignment_applied,
-    handoff_notice_sent
+    handoff_notice_sent, handoff_trigger_message_id
 """.strip()
 
 
@@ -45,6 +47,8 @@ class ConversationControl:
     handoff_note_created: bool
     handoff_assignment_applied: bool
     handoff_notice_sent: bool
+    # 触发当前人工轮次的入站消息；用于队列重试续跑未完成动作。
+    handoff_trigger_message_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +99,7 @@ class ConversationControlRepository:
                             handoff_assignment_applied BOOLEAN NOT NULL
                                 DEFAULT FALSE,
                             handoff_notice_sent BOOLEAN NOT NULL DEFAULT FALSE,
+                            handoff_trigger_message_id TEXT,
                             created_at TIMESTAMPTZ NOT NULL
                                 DEFAULT CURRENT_TIMESTAMP,
                             updated_at TIMESTAMPTZ NOT NULL
@@ -117,6 +122,12 @@ class ConversationControlRepository:
                     )
                     cursor.execute(
                         f"""
+                        ALTER TABLE {CONVERSATION_CONTROL_TABLE}
+                        ADD COLUMN IF NOT EXISTS handoff_trigger_message_id TEXT
+                        """.strip()
+                    )
+                    cursor.execute(
+                        f"""
                         UPDATE {CONVERSATION_CONTROL_TABLE}
                         SET active_thread_id = (
                             'chatwoot:' || account_id || ':' || conversation_id
@@ -134,18 +145,68 @@ class ConversationControlRepository:
                     )
                     cursor.execute(
                         f"""
+                        CREATE TABLE IF NOT EXISTS {HANDOFF_CURSOR_TABLE} (
+                            scope_key TEXT PRIMARY KEY,
+                            last_agent_id TEXT,
+                            updated_at TIMESTAMPTZ NOT NULL
+                                DEFAULT CURRENT_TIMESTAMP
+                        )
+                        """.strip()
+                    )
+                    cursor.execute(
+                        f"""
+                        CREATE TABLE IF NOT EXISTS {HANDOFF_RESERVATION_TABLE} (
+                            account_id TEXT NOT NULL,
+                            conversation_id TEXT NOT NULL,
+                            scope_key TEXT NOT NULL,
+                            agent_id TEXT NOT NULL,
+                            active BOOLEAN NOT NULL DEFAULT TRUE,
+                            created_at TIMESTAMPTZ NOT NULL
+                                DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMPTZ NOT NULL
+                                DEFAULT CURRENT_TIMESTAMP,
+                            PRIMARY KEY (account_id, conversation_id)
+                        )
+                        """.strip()
+                    )
+                    cursor.execute(
+                        f"""
+                        CREATE INDEX IF NOT EXISTS
+                        {HANDOFF_RESERVATION_TABLE}_scope_agent_idx
+                        ON {HANDOFF_RESERVATION_TABLE}
+                            (scope_key, agent_id, active)
+                        """.strip()
+                    )
+                    # 旧版本升级或服务重启时，已结束的会话不应继续占用
+                    # 人工容量；此时 reservation 表已经存在。
+                    cursor.execute(
+                        f"""
+                        UPDATE {HANDOFF_RESERVATION_TABLE} AS reservation
+                        SET active = FALSE,
+                            updated_at = CURRENT_TIMESTAMP
+                        FROM {CONVERSATION_CONTROL_TABLE} AS control
+                        WHERE reservation.account_id = control.account_id
+                          AND reservation.conversation_id = control.conversation_id
+                          AND control.last_chatwoot_status = 'resolved'
+                        """.strip()
+                    )
+                    cursor.execute(
+                        f"""
                         UPDATE {CONVERSATION_CONTROL_TABLE}
                         SET
                             ai_enabled = TRUE,
                             handoff_required = FALSE,
                             handoff_reason = NULL,
                             handoff_at = NULL,
+                            assigned_team_id = NULL,
+                            assigned_agent_id = NULL,
                             last_handoff_message_id = NULL,
                             handoff_conversation_updated = FALSE,
                             handoff_label_applied = FALSE,
                             handoff_note_created = FALSE,
                             handoff_assignment_applied = FALSE,
                             handoff_notice_sent = FALSE,
+                            handoff_trigger_message_id = NULL,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE handoff_required = TRUE
                           AND last_chatwoot_status = 'resolved'
@@ -307,16 +368,21 @@ class ConversationControlRepository:
                 cursor = connection.cursor()
                 try:
                     cursor.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                        (f"chatwoot:handoff:account={account_id}",),
+                    )
+                    cursor.execute(
                         f"""
                         INSERT INTO {CONVERSATION_CONTROL_TABLE} (
                             account_id, conversation_id, active_thread_id,
                             last_chatwoot_status, ai_enabled,
                             handoff_required, handoff_reason,
-                            handoff_at, last_user_message_id
+                            handoff_at, last_user_message_id,
+                            handoff_trigger_message_id
                         )
                         VALUES (
                             %s, %s, %s, %s, FALSE, TRUE, %s,
-                            CURRENT_TIMESTAMP, %s
+                            CURRENT_TIMESTAMP, %s, %s
                         )
                         ON CONFLICT (account_id, conversation_id)
                         DO NOTHING
@@ -327,6 +393,7 @@ class ConversationControlRepository:
                             clean_thread_id,
                             clean_status,
                             clean_reason,
+                            message_id,
                             message_id,
                         ),
                     )
@@ -374,6 +441,8 @@ class ConversationControlRepository:
                                 ai_enabled = FALSE,
                                 handoff_required = TRUE,
                                 handoff_reason = %s,
+                                assigned_team_id = NULL,
+                                assigned_agent_id = NULL,
                                 last_chatwoot_status = COALESCE(
                                     %s, last_chatwoot_status
                                 ),
@@ -383,6 +452,9 @@ class ConversationControlRepository:
                                 last_user_message_id = COALESCE(
                                     %s, last_user_message_id
                                 ),
+                                handoff_trigger_message_id = COALESCE(
+                                    handoff_trigger_message_id, %s
+                                ),
                                 updated_at = CURRENT_TIMESTAMP
                             WHERE account_id = %s AND conversation_id = %s
                             """.strip(),
@@ -390,11 +462,31 @@ class ConversationControlRepository:
                                 clean_reason,
                                 clean_status,
                                 message_id,
+                                message_id,
                                 account_id,
                                 conversation_id,
                             ),
                         )
                         transitioned = True
+
+                    # 预留可以发生在首次 request_handoff 之前；将预留的
+                    # 坐席绑定到控制行，后续动作重试即可复用该坐席。
+                    cursor.execute(
+                        f"""
+                        UPDATE {CONVERSATION_CONTROL_TABLE} AS control
+                        SET assigned_agent_id = COALESCE(
+                                control.assigned_agent_id, reservation.agent_id
+                            ),
+                            updated_at = CURRENT_TIMESTAMP
+                        FROM {HANDOFF_RESERVATION_TABLE} AS reservation
+                        WHERE control.account_id = %s
+                          AND control.conversation_id = %s
+                          AND reservation.account_id = control.account_id
+                          AND reservation.conversation_id = control.conversation_id
+                          AND reservation.active = TRUE
+                        """.strip(),
+                        (account_id, conversation_id),
+                    )
 
                     control = self._fetch(
                         cursor,
@@ -430,6 +522,11 @@ class ConversationControlRepository:
             with connection.transaction():
                 cursor = connection.cursor()
                 try:
+                    if release_handoff and clean_status == "resolved":
+                        cursor.execute(
+                            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                            (f"chatwoot:handoff:account={account_id}",),
+                        )
                     previous_control = self._fetch(
                         cursor,
                         account_id=account_id,
@@ -513,6 +610,239 @@ class ConversationControlRepository:
         finally:
             connection.close()
         return control
+
+    def reserve_handoff_agent(
+        self,
+        *,
+        account_id: str,
+        conversation_id: str,
+        scope_key: str,
+        candidate_agent_ids: list[str],
+        load_open_assignments: Callable[[], dict[str, set[str]]],
+        max_active_conversations: int = 5,
+        assigned_team_id: str | None = None,
+    ) -> str | None:
+        """在一个接管范围内按轮询顺序预留一个坐席。
+
+        游标按 Inbox/Team 分开，容量按账号内坐席的全部 open 会话计算。
+        在账号事务锁内获取最新负载，并将未完成转接的预留按会话去重。
+        释放预留也获取同一把锁，防止旧负载快照漏掉刚完成的转接。
+        """
+        account_id, conversation_id = _validate_reference(
+            account_id,
+            conversation_id,
+        )
+        scope_key = str(scope_key or "").strip()
+        if not scope_key:
+            raise ValueError("Chatwoot handoff scope_key is required.")
+        candidates = sorted(
+            {str(agent_id).strip() for agent_id in candidate_agent_ids if str(agent_id).strip()},
+            key=lambda value: (
+                0,
+                int(value),
+            )
+            if value.isdigit()
+            else (1, value),
+        )
+        if not candidates:
+            return None
+        capacity = int(max_active_conversations)
+        if capacity < 1:
+            raise ValueError("Chatwoot handoff capacity must be positive.")
+        connection = self._connections.acquire()
+        try:
+            with connection.transaction():
+                cursor = connection.cursor()
+                try:
+                    # 不同 Inbox 可能共享同一坐席，必须按账号串行检查容量。
+                    cursor.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                        (f"chatwoot:handoff:account={account_id}",),
+                    )
+                    # request_handoff 与 reservation 不在同一个事务中：若
+                    # 控制行写入失败，临时预留可能留下。下一次分配前清理
+                    # 没有进行中的人工接管的记录，避免幽灵容量长期占用。
+                    cursor.execute(
+                        f"""
+                        UPDATE {HANDOFF_RESERVATION_TABLE} AS reservation
+                        SET active = FALSE,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE reservation.account_id = %s
+                          AND reservation.active = TRUE
+                          AND reservation.updated_at < CURRENT_TIMESTAMP
+                              - INTERVAL '15 minutes'
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM {CONVERSATION_CONTROL_TABLE} AS control
+                              WHERE control.account_id = reservation.account_id
+                                AND control.conversation_id = reservation.conversation_id
+                                AND control.handoff_required = TRUE
+                          )
+                        """.strip(),
+                        (account_id,),
+                    )
+                    cursor.execute(
+                        f"""
+                        SELECT agent_id
+                        FROM {HANDOFF_RESERVATION_TABLE}
+                        WHERE account_id = %s AND conversation_id = %s
+                          AND active = TRUE
+                        FOR UPDATE
+                        """.strip(),
+                        (account_id, conversation_id),
+                    )
+                    existing = cursor.fetchone()
+                    if existing and existing[0] is not None:
+                        return str(existing[0])
+
+                    # 必须在获得锁之后取快照。锁外先查后预留会在并发完成
+                    # open 并释放预留时漏算名额。
+                    assigned = load_open_assignments()
+                    loads = {
+                        str(agent_id): set(conversation_ids)
+                        for agent_id, conversation_ids in assigned.items()
+                    }
+
+                    cursor.execute(
+                        f"""
+                        SELECT last_agent_id
+                        FROM {HANDOFF_CURSOR_TABLE}
+                        WHERE scope_key = %s
+                        FOR UPDATE
+                        """.strip(),
+                        (scope_key,),
+                    )
+                    cursor_row = cursor.fetchone()
+                    last_agent_id = (
+                        None
+                        if not cursor_row or cursor_row[0] is None
+                        else str(cursor_row[0])
+                    )
+                    if cursor_row is None:
+                        cursor.execute(
+                            f"""
+                            INSERT INTO {HANDOFF_CURSOR_TABLE} (scope_key)
+                            VALUES (%s)
+                            ON CONFLICT (scope_key) DO NOTHING
+                            """.strip(),
+                            (scope_key,),
+                        )
+
+                    start = 0
+                    if last_agent_id in candidates:
+                        start = (candidates.index(last_agent_id) + 1) % len(candidates)
+                    ordered = candidates[start:] + candidates[:start]
+
+                    cursor.execute(
+                        f"""
+                        SELECT agent_id, conversation_id
+                        FROM {HANDOFF_RESERVATION_TABLE}
+                        WHERE account_id = %s AND active = TRUE
+                        """.strip(),
+                        (account_id,),
+                    )
+                    for agent_id, reserved_conversation_id in cursor.fetchall():
+                        loads.setdefault(str(agent_id), set()).add(
+                            str(reserved_conversation_id)
+                        )
+                    selected: str | None = None
+                    for agent_id in ordered:
+                        # 当前会话可能已有历史 assignee；重新分配本身不额外
+                        # 消耗该会话自己的名额。
+                        used = len(loads.get(agent_id, set()) - {conversation_id})
+                        if used < capacity:
+                            selected = agent_id
+                            break
+                    if selected is None:
+                        return None
+
+                    cursor.execute(
+                        f"""
+                        INSERT INTO {HANDOFF_RESERVATION_TABLE} (
+                            account_id, conversation_id, scope_key, agent_id,
+                            active
+                        )
+                        VALUES (%s, %s, %s, %s, TRUE)
+                        ON CONFLICT (account_id, conversation_id)
+                        DO UPDATE SET
+                            scope_key = EXCLUDED.scope_key,
+                            agent_id = EXCLUDED.agent_id,
+                            active = TRUE,
+                            updated_at = CURRENT_TIMESTAMP
+                        """.strip(),
+                        (account_id, conversation_id, scope_key, selected),
+                    )
+                    cursor.execute(
+                        f"""
+                        UPDATE {HANDOFF_CURSOR_TABLE}
+                        SET last_agent_id = %s,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE scope_key = %s
+                        """.strip(),
+                        (selected, scope_key),
+                    )
+                    cursor.execute(
+                        f"""
+                        UPDATE {CONVERSATION_CONTROL_TABLE}
+                        SET assigned_agent_id = %s,
+                            assigned_team_id = %s,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE account_id = %s AND conversation_id = %s
+                        """.strip(),
+                        (selected, assigned_team_id, account_id, conversation_id),
+                    )
+                    return selected
+                finally:
+                    cursor.close()
+        finally:
+            connection.close()
+
+    def release_handoff_reservation(
+        self,
+        *,
+        account_id: str,
+        conversation_id: str,
+        only_if_not_started: bool = False,
+    ) -> None:
+        """在 Chatwoot 已打开人工会话后释放本地容量预留。
+
+        与取负载/预留使用同一账号锁。request_handoff 写入失败时可只
+        取消尚未开始接管的预留，避免错误释放已进入人工流程的容量。
+        """
+        account_id, conversation_id = _validate_reference(
+            account_id,
+            conversation_id,
+        )
+        connection = self._connections.acquire()
+        try:
+            with connection.transaction():
+                cursor = connection.cursor()
+                try:
+                    cursor.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                        (f"chatwoot:handoff:account={account_id}",),
+                    )
+                    cursor.execute(
+                        f"""
+                        UPDATE {HANDOFF_RESERVATION_TABLE} AS reservation
+                        SET active = FALSE,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE account_id = %s AND conversation_id = %s
+                          AND (
+                              %s = FALSE OR NOT EXISTS (
+                                  SELECT 1 FROM {CONVERSATION_CONTROL_TABLE} AS control
+                                  WHERE control.account_id = reservation.account_id
+                                    AND control.conversation_id = reservation.conversation_id
+                                    AND control.handoff_required = TRUE
+                              )
+                          )
+                        """.strip(),
+                        (account_id, conversation_id, only_if_not_started),
+                    )
+                finally:
+                    cursor.close()
+        finally:
+            connection.close()
 
     def mark_handoff_action(
         self,
@@ -620,6 +950,10 @@ class ConversationControlRepository:
         status: str,
     ) -> None:
         cursor.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+            (f"chatwoot:handoff:account={account_id}",),
+        )
+        cursor.execute(
             f"""
             UPDATE {CONVERSATION_CONTROL_TABLE}
             SET
@@ -628,16 +962,28 @@ class ConversationControlRepository:
                 handoff_reason = NULL,
                 handoff_at = NULL,
                 last_chatwoot_status = %s,
+                assigned_team_id = NULL,
+                assigned_agent_id = NULL,
                 last_handoff_message_id = NULL,
                 handoff_conversation_updated = FALSE,
                 handoff_label_applied = FALSE,
                 handoff_note_created = FALSE,
                 handoff_assignment_applied = FALSE,
                 handoff_notice_sent = FALSE,
+                handoff_trigger_message_id = NULL,
                 updated_at = CURRENT_TIMESTAMP
             WHERE account_id = %s AND conversation_id = %s
             """.strip(),
             (status, account_id, conversation_id),
+        )
+        cursor.execute(
+            f"""
+            UPDATE {HANDOFF_RESERVATION_TABLE}
+            SET active = FALSE,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE account_id = %s AND conversation_id = %s
+            """.strip(),
+            (account_id, conversation_id),
         )
 
 
@@ -688,6 +1034,9 @@ def _control_from_row(row: Any) -> ConversationControl | None:
         handoff_note_created=bool(row[15]),
         handoff_assignment_applied=bool(row[16]),
         handoff_notice_sent=bool(row[17]),
+        handoff_trigger_message_id=(
+            None if len(row) <= 18 or row[18] is None else str(row[18])
+        ),
     )
 
 

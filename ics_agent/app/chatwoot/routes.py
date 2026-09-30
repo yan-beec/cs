@@ -41,6 +41,7 @@ from .payload import (
     verify_signature,
 )
 from ics_agent.app.services.rag import _run_rag_query
+from ics_agent.rag.graph.nodes import LLM_REPLY_FALLBACK_ANSWER
 from .jobs import (
     WebhookJob,
     WebhookJobQueue,
@@ -844,10 +845,40 @@ async def _build_webhook_answer(
             "intent_label": None,
             "intent_confidence": None,
         }
-    return await _run_rag_query(
-        content,
-        thread_id=thread_id,
-    )
+    try:
+        return await asyncio.wait_for(
+            _run_rag_query(
+                content,
+                thread_id=thread_id,
+            ),
+            timeout=rag_settings.webhook_rag_timeout_seconds,
+        )
+    except asyncio.CancelledError:
+        # Worker shutdown and the queue's processing deadline must still be
+        # able to cancel an in-flight RAG request.
+        raise
+    except Exception as exc:
+        # An exception before ``llm_reply_node`` (for example, intent model,
+        # retrieval, reranker, or conversation-memory failure) used to escape
+        # to WebhookJobQueue.  The queue then retried the same partition up to
+        # four times, while every later message in that conversation waited
+        # for the failed task.  Return the same maintenance answer used by the
+        # LLM node so this webhook can complete and release the partition.
+        log_event(
+            logger,
+            logging.ERROR,
+            "webhook.rag.failed_fallback",
+            event_key=event_key,
+            error_type=type(exc).__name__,
+        )
+        return {
+            "route": "rag_fallback",
+            "faq_route": "rag_fallback",
+            "answer": LLM_REPLY_FALLBACK_ANSWER,
+            "intent_label": None,
+            "intent_confidence": None,
+            "rag_error": f"{type(exc).__name__}: {exc}",
+        }
 
 
 async def _stop_typing_task(
@@ -964,6 +995,8 @@ async def _process_webhook_job_unlocked(
             "intent_confidence": None,
             "chatwoot_status": status,
             "handoff_released": _is_handoff_release_status(status),
+            # 跨 Inbox 回流未启用；保留字段兼容旧的状态响应调用方。
+            "returned_to_ai_inbox": False,
         }
 
     if account_id and conversation_id:
@@ -980,7 +1013,23 @@ async def _process_webhook_job_unlocked(
             control=control,
         )
 
-        if control.handoff_required:
+        # 同一触发消息的队列重试需要继续完成未完成的接管动作；
+        # 其他人工轮次中的新消息仍保持静默，避免重复转接。
+        handoff_action_retry = (
+            control.handoff_required
+            and message_id is not None
+            and control.handoff_trigger_message_id == message_id
+            and not all(
+                (
+                    control.handoff_conversation_updated,
+                    control.handoff_label_applied,
+                    control.handoff_note_created,
+                    control.handoff_assignment_applied,
+                    control.handoff_notice_sent,
+                )
+            )
+        )
+        if control.handoff_required and not handoff_action_retry:
             log_event(
                 logger,
                 logging.INFO,
@@ -991,15 +1040,34 @@ async def _process_webhook_job_unlocked(
             )
             return _handoff_suppressed_result(control)
 
-        if handoff_requested:
-            has_available_agent = await _has_available_handoff_agent(event)
-            if not has_available_agent:
-                return await _suppress_no_agent_handoff(
-                    event=event,
-                    event_key=job.event_key,
-                    availability_known=has_available_agent is not None,
-                )
+        if handoff_requested and not settings.chatwoot_handoff_enabled:
+            # 功能关闭时不要预留坐席或写入 handoff_required；直接返回关闭结果。
+            return await _complete_handoff(
+                event=event,
+                job=job,
+                control=control,
+                content=content,
+                notice_message=(
+                    IMAGE_HANDOFF_NOTICE_MESSAGE
+                    if image_handoff
+                    else HANDOFF_NOTICE_MESSAGE
+                ),
+            )
 
+        if handoff_requested:
+            # 已经写入 handoff_required 的同一 Webhook 重试必须继续原动作，
+            # 即使原坐席此刻离线或已满，也不能重新检查在线状态后换人。
+            existing_assignment_retry = (
+                handoff_action_retry and bool(control.assigned_agent_id)
+            )
+            if not existing_assignment_retry:
+                has_available_agent = await _has_available_handoff_agent(event)
+                if not has_available_agent:
+                    return await _suppress_no_agent_handoff(
+                        event=event,
+                        event_key=job.event_key,
+                        availability_known=has_available_agent is not None,
+                    )
             blocked = await _chatwoot_contact_blocked(event)
             if blocked is True:
                 return await _suppress_muted_handoff(
@@ -1010,6 +1078,16 @@ async def _process_webhook_job_unlocked(
                 # 不能确认静音状态时禁止执行 set status=open，
                 # 否则 agent 会绕过 Chatwoot 的静音保护。
                 return _handoff_mute_check_unavailable_result()
+            if not existing_assignment_retry:
+                # 在写入 handoff_required 前完成容量预留；否则容量竞争时
+                # request_handoff 已经关闭 AI，后续失败重试会被静默分支吞掉。
+                selected_agent_id = await _select_handoff_agent(event)
+                if selected_agent_id is None:
+                    return await _suppress_no_agent_handoff(
+                        event=event,
+                        event_key=job.event_key,
+                        availability_known=True,
+                    )
 
         if handoff_requested:
             control, _ = await asyncio.to_thread(
@@ -1139,17 +1217,27 @@ def _is_available_agent(agent: dict[str, object]) -> bool:
     return status == "online"
 
 
-async def _has_available_handoff_agent(
+async def _load_handoff_agents(
     event: ChatwootWebhookEvent,
-) -> bool | None:
-    """实时读取 Chatwoot，判断是否存在在线空闲坐席。"""
+) -> tuple[str, int | None, int | None, list[dict[str, object]]] | None:
+    """读取人工目标 Inbox/Team 范围内的坐席，并只保留在线坐席。"""
     account_id, _ = _webhook_conversation_reference(event)
     if not account_id:
         return None
 
     team_id = _optional_chatwoot_id(settings.chatwoot_handoff_team_id)
     assignee_id = _optional_chatwoot_id(settings.chatwoot_handoff_assignee_id)
+    # 人工轮询只在当前会话所在 Inbox 内进行。跨 Inbox 迁移会改变
+    # Website Widget 的会话归属，当前版本不主动执行未验证的迁移。
     inbox_id = _webhook_inbox_id(event)
+    if inbox_id is None:
+        log_event(
+            logger,
+            logging.WARNING,
+            "webhook.handoff.inbox_missing",
+            account_id=account_id,
+        )
+        return None
     client = get_chatwoot_client()
     try:
         if inbox_id is not None:
@@ -1205,7 +1293,7 @@ async def _has_available_handoff_agent(
             if _chatwoot_agent_id(agent) == assignee_text
         ]
 
-    available_count = sum(1 for agent in agents if _is_available_agent(agent))
+    agents = [agent for agent in agents if _is_available_agent(agent)]
     log_event(
         logger,
         logging.INFO,
@@ -1215,9 +1303,70 @@ async def _has_available_handoff_agent(
         team_id=team_id,
         assignee_id=assignee_id,
         candidate_count=len(agents),
-        available_count=available_count,
+        available_count=len(agents),
     )
-    return available_count > 0
+    return account_id, inbox_id, team_id, agents
+
+
+async def _has_available_handoff_agent(
+    event: ChatwootWebhookEvent,
+) -> bool | None:
+    """实时读取 Chatwoot，判断是否存在在线空闲坐席。"""
+    loaded = await _load_handoff_agents(event)
+    if loaded is None:
+        return None
+    return bool(loaded[3])
+
+
+async def _select_handoff_agent(
+    event: ChatwootWebhookEvent,
+) -> str | None:
+    """从在线坐席中按轮询游标预留一个容量未满的坐席。"""
+    loaded = await _load_handoff_agents(event)
+    if loaded is None:
+        return None
+    account_id, inbox_id, team_id, agents = loaded
+    candidate_ids = [
+        agent_id
+        for agent in agents
+        if (agent_id := _chatwoot_agent_id(agent)) is not None
+    ]
+    if not candidate_ids:
+        return None
+
+    client = get_chatwoot_client()
+    scope_key = ":".join(
+        (
+            f"account={account_id}",
+            f"inbox={inbox_id or 0}",
+            f"team={team_id or 0}",
+        )
+    )
+    capacity = getattr(settings, "chatwoot_handoff_max_active_conversations", 5)
+    try:
+        return await asyncio.to_thread(
+            conversation_control_repository.reserve_handoff_agent,
+            account_id=account_id,
+            conversation_id=_webhook_conversation_reference(event)[1],
+            scope_key=scope_key,
+            candidate_agent_ids=candidate_ids,
+            load_open_assignments=lambda: client.list_open_conversation_assignments(
+                account_id=account_id
+            ),
+            max_active_conversations=int(capacity),
+            assigned_team_id=(str(team_id) if team_id is not None else None),
+        )
+    except (ValueError, TypeError, RuntimeError) as exc:
+        log_event(
+            logger,
+            logging.WARNING,
+            "webhook.handoff.agent_reservation_failed",
+            account_id=account_id,
+            inbox_id=inbox_id,
+            team_id=team_id,
+            error_type=type(exc).__name__,
+        )
+        return None
 
 
 async def _suppress_no_agent_handoff(
@@ -1330,26 +1479,27 @@ async def _complete_handoff(
     client = get_chatwoot_client()
     actions: dict[str, object] = {"enabled": True}
 
-    if not control.handoff_conversation_updated:
-        await asyncio.to_thread(
-            client.set_conversation_status,
-            account_id=account_id,
-            conversation_id=conversation_id,
-            status="open",
-        )
-        await asyncio.to_thread(
-            conversation_control_repository.record_conversation_status,
-            account_id=account_id,
-            conversation_id=conversation_id,
-            status="open",
-        )
-        await asyncio.to_thread(
-            conversation_control_repository.mark_handoff_action,
-            account_id=account_id,
-            conversation_id=conversation_id,
-            action="conversation_updated",
-        )
-    actions["conversation_updated"] = True
+    # 仅在尚未完成接管动作时预留坐席。预留写入数据库并带有轮询游标，
+    # 因此同一 Webhook 重试会复用原坐席，不会消耗下一位。
+    selected_assignee_id: int | None = None
+    if not control.handoff_assignment_applied:
+        if control.assigned_agent_id:
+            selected_assignee_id = _optional_chatwoot_id(
+                control.assigned_agent_id
+            )
+        else:
+            selected = await _select_handoff_agent(event)
+            if selected is None:
+                # 先失败关闭，避免容量查询失败时把会话打开给随机坐席；队列重试
+                # 或下一次用户转人工时会重新读取在线状态和容量。
+                raise ChatwootAPIError(
+                    "No online Chatwoot handoff agent is available."
+                )
+            selected_assignee_id = _optional_chatwoot_id(selected)
+        if selected_assignee_id is None:
+            raise ChatwootAPIError(
+                "Chatwoot handoff agent id is invalid."
+            )
 
     handoff_label = settings.chatwoot_handoff_label.strip()
     if not control.handoff_label_applied:
@@ -1390,7 +1540,7 @@ async def _complete_handoff(
     actions["note_created"] = True
 
     team_id = _optional_chatwoot_id(settings.chatwoot_handoff_team_id)
-    assignee_id = _optional_chatwoot_id(
+    assignee_id = selected_assignee_id or _optional_chatwoot_id(
         settings.chatwoot_handoff_assignee_id
     )
     if not control.handoff_assignment_applied:
@@ -1410,6 +1560,36 @@ async def _complete_handoff(
         )
     actions["assignment_applied"] = (
         team_id is not None or assignee_id is not None
+    )
+
+    # 先完成 assignment，再打开会话，避免 Chatwoot 在 open 瞬间把消息
+    # 通知给旧坐席或自动分配到错误的坐席。
+    if not control.handoff_conversation_updated:
+        await asyncio.to_thread(
+            client.set_conversation_status,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            status="open",
+        )
+        await asyncio.to_thread(
+            conversation_control_repository.record_conversation_status,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            status="open",
+        )
+        await asyncio.to_thread(
+            conversation_control_repository.mark_handoff_action,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            action="conversation_updated",
+        )
+    actions["conversation_updated"] = True
+    # assignment 成功后仍保留预留，直到 Chatwoot 真正 open；这样并发
+    # 转人工不会在状态切换的窗口内突破每位坐席的容量上限。
+    await asyncio.to_thread(
+        conversation_control_repository.release_handoff_reservation,
+        account_id=account_id,
+        conversation_id=conversation_id,
     )
 
     notice_sent = control.handoff_notice_sent

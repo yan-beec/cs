@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 
-Route = Literal["cache", "faq", "rag"]
+Route = Literal["faq", "rag"]
 
 
 @dataclass(frozen=True)
@@ -88,12 +88,11 @@ class FAQResult:
     match_degree: float | None = None
     rag_query: str | None = None
     postgres_query: str | None = None
-    cache_key: str | None = None
 
     def to_dict(self) -> dict:
         return {
             "route": self.route,
-            "matched": self.route in {"cache", "faq"},
+            "matched": self.route == "faq",
             "query": self.query,
             "answer": self.answer,
             "matched_question": self.matched_question,
@@ -102,5 +101,4 @@ class FAQResult:
             "match_degree": self.match_degree,
             "rag_query": self.rag_query,
             "postgres_query": self.postgres_query,
-            "cache_key": self.cache_key,
         }

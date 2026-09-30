@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 from unittest.mock import AsyncMock, Mock, patch
 
 from ics_agent.app.chatwoot import routes as main
@@ -108,6 +109,103 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["route"], "handoff_suppressed")
         self.assertFalse(result["chatwoot_reply"]["sent"])
 
+    async def test_same_handoff_retry_reuses_assignee_when_agent_is_unavailable(
+        self,
+    ) -> None:
+        # assignment 之后的队列重试不能因坐席暂时离线而重新轮询换人。
+        control = replace(
+            _control(handoff_required=True),
+            assigned_agent_id="11",
+            handoff_trigger_message_id="1210",
+            handoff_assignment_applied=False,
+            handoff_notice_sent=False,
+        )
+        repository = Mock()
+        repository.record_user_message = Mock(return_value=control)
+        repository.request_handoff = Mock(return_value=(control, False))
+        event = ChatwootWebhookEvent(
+            event="message_created",
+            id=1210,
+            account={"id": 1},
+            conversation={"id": 56, "account_id": 1, "status": "pending"},
+            message_type="incoming",
+            content="转人工",
+        )
+        job = main.WebhookJob(event_key="test-handoff-retry", event=event)
+
+        with (
+            patch.object(main, "conversation_control_repository", repository),
+            patch.object(
+                main,
+                "_refresh_handoff_from_chatwoot_status",
+                new=AsyncMock(return_value=control),
+            ),
+            patch.object(
+                main,
+                "_has_available_handoff_agent",
+                new=AsyncMock(return_value=False),
+            ) as has_available,
+            patch.object(
+                main,
+                "_chatwoot_contact_blocked",
+                new=AsyncMock(return_value=False),
+            ),
+            patch.object(
+                main,
+                "_complete_handoff",
+                new=AsyncMock(return_value={"route": "handoff"}),
+            ) as complete_handoff,
+        ):
+            result = await main._process_webhook_job_unlocked(job)
+
+        has_available.assert_not_awaited()
+        complete_handoff.assert_awaited_once()
+        self.assertEqual(result["route"], "handoff")
+
+    async def test_disabled_handoff_does_not_reserve_or_write_control(self) -> None:
+        control = _control(handoff_required=False)
+        repository = Mock()
+        repository.record_user_message = Mock(return_value=control)
+        event = ChatwootWebhookEvent(
+            event="message_created",
+            id=1212,
+            account={"id": 1},
+            conversation={"id": 56, "account_id": 1, "status": "pending"},
+            message_type="incoming",
+            content="转人工",
+        )
+        job = main.WebhookJob(event_key="test-disabled-handoff", event=event)
+
+        with (
+            patch.object(main, "conversation_control_repository", repository),
+            patch.object(
+                main,
+                "_refresh_handoff_from_chatwoot_status",
+                new=AsyncMock(return_value=control),
+            ),
+            patch.object(
+                main,
+                "_has_available_handoff_agent",
+                new=AsyncMock(),
+            ) as has_available,
+            patch.object(
+                main,
+                "_complete_handoff",
+                new=AsyncMock(return_value={"route": "handoff_disabled"}),
+            ) as complete_handoff,
+            patch.object(
+                main,
+                "settings",
+                main.settings.model_copy(update={"chatwoot_handoff_enabled": False}),
+            ),
+        ):
+            result = await main._process_webhook_job_unlocked(job)
+
+        has_available.assert_not_awaited()
+        repository.request_handoff.assert_not_called()
+        complete_handoff.assert_awaited_once()
+        self.assertEqual(result["route"], "handoff_disabled")
+
     async def test_explicit_handoff_completes_in_worker(self) -> None:
         initial_control = _control(handoff_required=False)
         handoff_control = _control(handoff_required=True)
@@ -144,6 +242,11 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
                 main,
                 "_has_available_handoff_agent",
                 new=AsyncMock(return_value=True),
+            ),
+            patch.object(
+                main,
+                "_select_handoff_agent",
+                new=AsyncMock(return_value="11"),
             ),
             patch.object(
                 main,
@@ -204,6 +307,11 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
             ) as has_available_agent,
             patch.object(
                 main,
+                "_select_handoff_agent",
+                new=AsyncMock(return_value="11"),
+            ),
+            patch.object(
+                main,
                 "_complete_handoff",
                 new=AsyncMock(return_value={"route": "handoff"}),
             ) as complete_handoff,
@@ -217,6 +325,82 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             complete_call["notice_message"],
             main.IMAGE_HANDOFF_NOTICE_MESSAGE,
+        )
+        self.assertEqual(result["route"], "handoff")
+
+    async def test_complete_handoff_assigns_before_open_and_releases_reservation(
+        self,
+    ) -> None:
+        control = replace(
+            _control(handoff_required=True),
+            assigned_agent_id=None,
+            handoff_conversation_updated=False,
+            handoff_label_applied=False,
+            handoff_note_created=False,
+            handoff_assignment_applied=False,
+            handoff_notice_sent=False,
+        )
+        event = ChatwootWebhookEvent(
+            event="message_created",
+            id=1211,
+            account={"id": 1},
+            conversation={"id": 56, "account_id": 1, "status": "pending"},
+            message_type="incoming",
+            content="转人工",
+        )
+        job = main.WebhookJob(event_key="test-complete-handoff", event=event)
+        client = Mock()
+        client.create_private_note.return_value = {"id": 91}
+        repository = Mock()
+
+        with (
+            patch.object(main, "get_chatwoot_client", return_value=client),
+            patch.object(main, "conversation_control_repository", repository),
+            patch.object(
+                main,
+                "_select_handoff_agent",
+                new=AsyncMock(return_value="11"),
+            ) as select_agent,
+            patch.object(
+                main,
+                "settings",
+                main.settings.model_copy(
+                    update={
+                        "chatwoot_handoff_label": "handoff_required",
+                        "chatwoot_handoff_notice_enabled": False,
+                        "chatwoot_handoff_team_id": "",
+                        "chatwoot_handoff_assignee_id": "",
+                    }
+                ),
+            ),
+        ):
+            result = await main._complete_handoff(
+                event=event,
+                job=job,
+                control=control,
+                content="转人工",
+            )
+
+        select_agent.assert_awaited_once_with(event)
+        client.assign_conversation.assert_called_once_with(
+            account_id="1",
+            conversation_id="56",
+            team_id=None,
+            assignee_id=11,
+        )
+        client.set_conversation_status.assert_called_once_with(
+            account_id="1",
+            conversation_id="56",
+            status="open",
+        )
+        method_names = [call[0] for call in client.method_calls]
+        self.assertLess(
+            method_names.index("assign_conversation"),
+            method_names.index("set_conversation_status"),
+        )
+        repository.release_handoff_reservation.assert_called_once_with(
+            account_id="1",
+            conversation_id="56",
         )
         self.assertEqual(result["route"], "handoff")
 
@@ -364,6 +548,68 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
             account_id="1",
             inbox_id=4,
         )
+
+    async def test_agent_availability_uses_event_inbox(self) -> None:
+        event = ChatwootWebhookEvent(
+            event="message_created",
+            account={"id": 1},
+            conversation={"id": 56, "account_id": 1, "inbox_id": 3},
+            content="转人工",
+            message_type="incoming",
+        )
+        client = Mock()
+        client.list_inbox_members = Mock(
+            return_value=[{"id": 11, "availability_status": "online"}]
+        )
+
+        with (
+            patch.object(main, "get_chatwoot_client", return_value=client),
+            patch.object(
+                main,
+                "settings",
+                main.settings.model_copy(
+                    update={
+                        "chatwoot_handoff_team_id": "",
+                        "chatwoot_handoff_assignee_id": "",
+                    }
+                ),
+            ),
+        ):
+            result = await main._has_available_handoff_agent(event)
+
+        self.assertTrue(result)
+        client.list_inbox_members.assert_called_once_with(
+            account_id="1",
+            inbox_id=3,
+        )
+
+    async def test_released_handoff_does_not_move_inbox(self) -> None:
+        event = ChatwootWebhookEvent(
+            event="conversation_updated",
+            id=56,
+            account={"id": 1},
+            conversation={
+                "id": 56,
+                "account_id": 1,
+                "inbox_id": 4,
+                "status": "resolved",
+            },
+            message_type="incoming",
+            content="",
+        )
+        repository = Mock()
+        repository.record_conversation_status = Mock(
+            return_value=_control(handoff_required=False)
+        )
+        client = Mock()
+
+        with patch.object(main, "conversation_control_repository", repository):
+            result = await main._process_webhook_job_unlocked(
+                main.WebhookJob(event_key="test-resolved-no-inbox-move", event=event)
+            )
+
+        client.update_conversation.assert_not_called()
+        self.assertFalse(result["returned_to_ai_inbox"])
 
 
 def _control(*, handoff_required: bool) -> ConversationControl:

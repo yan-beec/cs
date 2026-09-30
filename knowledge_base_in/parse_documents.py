@@ -1034,6 +1034,27 @@ async def parse_and_update_vector_store(
             "vector_store": None,
         }
 
+    failed_file_count = int(parse_manifest.get("failed_file_count", 0) or 0)
+    if failed_file_count < 1:
+        errors = parse_manifest.get("errors")
+        if isinstance(errors, list):
+            failed_file_count = len(errors)
+    if failed_file_count:
+        # The parser writes a manifest and the successfully parsed records for
+        # diagnostics, but those records are not a complete knowledge base.
+        # Publishing them would silently delete vectors for every failed file.
+        log_event(
+            logger,
+            logging.ERROR,
+            "knowledge_base.vector.rebuild.skipped_parse_failures",
+            chunks_path=parse_manifest.get("output_path"),
+            failed_file_count=failed_file_count,
+        )
+        raise RuntimeError(
+            "Knowledge-base parsing failed for "
+            f"{failed_file_count} file(s); vector store was not rebuilt."
+        )
+
     log_event(
         logger,
         logging.INFO,
