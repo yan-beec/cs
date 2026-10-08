@@ -18,11 +18,12 @@ server {
         proxy_pass http://127.0.0.1:3001;
     }
 
-    location ~ ^/(health|support-chat|support-chat\.html|support-chat/config)$ {
+    location = /health {
         limit_except GET { deny all; }
         proxy_pass http://127.0.0.1:3001;
     }
 
+    # 复用已有前端，机器人不对外提供 /support-chat 页面。
     # /admin、/auth、/rag/query、/docs、/chatwoot/profile 等不直接向公网开放。
     # 管理和调试通过 SSH 隧道访问应用的本地 3001 端口。
     location / {

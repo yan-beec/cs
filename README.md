@@ -2,7 +2,7 @@
 
 基于 FastAPI 的智能客服服务，面向 Chatwoot 提供 FAQ 优先、RAG 兜底的自动问答能力。
 
-首次部署到 Ubuntu 服务器并连接已有 Chatwoot，请按[服务器首次部署测试手册](docs/server-first-deployment.md)操作；其中包含 Windows 上传、数据库和模型初始化、Chatwoot 绑定、HTTPS/无域名测试、验收与排错，以及可复制的服务器配置模板。
+首次部署到 Ubuntu 服务器并连接已有 Chatwoot，请按[服务器首次部署测试手册](docs/server-first-deployment.md)操作；推荐 Git 同步后端、模型单独上传，也保留模型与后端分包上传方式。手册包含复用已有前端、数据库和模型初始化、Chatwoot 绑定、内网/HTTPS 测试、验收与排错，以及可复制的服务器配置模板。
 
 一次查询的处理顺序如下：
 

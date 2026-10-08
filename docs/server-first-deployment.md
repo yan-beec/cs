@@ -4,6 +4,8 @@
 
 本文按你已确认的环境编写：**Ubuntu 22.04 LTS、x86_64，已有服务器端 Chatwoot，本次只部署机器人并接入 Chatwoot。** Ubuntu 24.04 可按相同步骤操作。未登录你的远端服务器执行部署；本文命令依据当前项目源码、Compose 配置及本地已验证的 Chatwoot 接口核对。
 
+当前 Chatwoot 根地址为 **`http://172.20.48.12:3000`，使用内网，没有公网域名**。前端已经单独部署，本次复用该前端。推荐通过 **Git 同步后端源码和配置模板，只单独上传模型包 `cs-models.tar.gz`**；服务器不能访问仓库时，仍可使用模型包与后端部署包 `cs-app.tar.gz` 分开上传的方案。
+
 服务器登录信息显示系统盘约 49.10 GB、已用 15.1%，约有 41.7 GB 可用。`172.20.48.12` 是私网地址。CPU 核数、内存总量、公网 IP、域名及 Chatwoot 是否与机器人同机，仍需按第 2 节确认。
 
 ## 0. 先看部署目标和操作约定
@@ -26,19 +28,20 @@
 - **不重装 Chatwoot，不修改它的数据库。** 机器人使用自己独立的 PostgreSQL 数据卷。
 - 主流程使用 Docker。服务器不需要安装 Anaconda，也不需要搬运 Windows 的 `cs` 环境；镜像内使用 Python 3.10.21。本文如有本机 Python 操作，使用你指定的 `C:\Users\lenovo\Anaconda3\envs\cs\python.exe`。
 - 除明确标注“Windows PowerShell”外，命令都在 **Ubuntu SSH 终端**执行。
-- 服务器项目目录统一为 `/opt/cs`。每次重新登录后先执行 `cd /opt/cs`。
+- 服务器运行目录统一为 `/opt/cs`。每次重新登录后先执行 `cd /opt/cs`。采用 Git 时另用 `/opt/cs-src` 保存仓库，仅在该目录拉取代码；Docker 操作仍在 `/opt/cs` 执行。
 - 本文统一使用 `docker compose -f docker-compose.yml ...`。不要省略 `-f`：仓库的 `docker-compose.override.yml` 会启用开发热重载，服务器首次部署采用镜像运行方式。
 - 每个代码块执行完成、结果符合预期，再执行下一块。`YOUR_...`、`REPLACE_...`、示例域名和 ID 必须换成你的真实值。
-- 先新建一个 **Chatwoot 测试 Website Inbox**。验收前不要把正在接待真实用户的 Inbox 切换到新机器人。
+- 先确认已有前端使用的 Chatwoot 和 Inbox。建议通过独立测试 Inbox 验收；切换已有开发测试 Inbox 的机器人前，记录原绑定并确认没有其他人正在测试。验收前不要切换正在接待真实用户的 Inbox。
 
-本文附带两个可直接修改的模板：
+本文附带以下部署文件：
 
 | 文件 | 用途 |
 | --- | --- |
 | `deploy/server/bot.env.example` | 服务器机器人配置模板，复制成 `/opt/cs/.env` |
+| `deploy/server/Dockerfile.backend-only` | 不依赖独立客服页面的构建文件，同步或解压后复制成服务器 `/opt/cs/Dockerfile` |
 | `deploy/server/nginx-bot.conf.example` | 宿主机 Nginx 站点模板，限制公网可访问接口 |
 
-操作路线：**核对资源 → 上传代码和模型 → 填配置 → 构建镜像 → 初始化 FAQ 和向量库 → 启动并本地验收 → 配网络入口 → 绑定 Chatwoot → 完整测试 → 备份。**
+操作路线：**核对资源 → Git 同步后端并上传模型（或分包上传）→ 填配置 → 构建镜像 → 初始化 FAQ 和向量库 → 启动并本地验收 → 配内网入口 → 绑定 Chatwoot → 在已有前端验收 → 备份。**
 
 ## 1. 准备部署信息
 
@@ -50,7 +53,7 @@
 | SSH 用户 | 你当前为 `ubuntu` |
 | SSH 端口、私钥 | 云主机当前可用的登录方式；默认端口通常是 22 |
 | 机器人公网域名（可选） | `bot.example.com`；没有域名看第 10B 节 |
-| 已有 Chatwoot 根地址 | `https://chat.example.com`，不要带 `/app` 或 `/api` |
+| 已有 Chatwoot 根地址 | 已确认为 `http://172.20.48.12:3000`，不要带 `/app` 或 `/api` |
 | Chatwoot Account ID | 打开后台，地址通常含 `/app/accounts/数字/...` |
 | Chatwoot 用户 API Token | 账户头像 → 个人资料 / Profile Settings → Access Token；使用该账户有管理权限的用户 |
 | 测试 Inbox ID、Website Token | Chatwoot 设置 → 收件箱 / Inboxes → 测试 Website Inbox |
@@ -64,7 +67,7 @@
 | 用户 API Token | `CHATWOOT_API_TOKEN` | 查坐席、修改状态、转人工和联系人操作 |
 | AgentBot Access Token | `CHATWOOT_AGENT_BOT_ACCESS_TOKEN` | 以机器人身份发送回复 |
 | AgentBot Secret | `CHATWOOT_AGENT_BOT_SECRET` | 验证 Chatwoot 发来的 Webhook 签名 |
-| Website Token | `support-chat.html` 或页面参数 | 浏览器加载指定 Inbox 的 Widget；不是后台 API 密钥 |
+| Website Token | 已部署前端的配置或页面参数 | 浏览器加载指定 Inbox 的 Widget；不是后台 API 密钥 |
 | Website HMAC Token | 后端 `CHATWOOT_HMAC_TOKEN` | 已登录用户身份签名；匿名首测可暂不配置 |
 
 ## 2. 登录 Ubuntu，检查资源和已有服务
@@ -170,97 +173,138 @@ df -h /var/lib/docker
 
 如果最后一项路径不存在，以 `DockerRootDir` 的实际值检查磁盘。安装源下载失败时先检查服务器出口、DNS 和代理；不要为此关闭 TLS 验证。
 
-## 4. 从 Windows 准备并上传项目
+## 4. 准备部署文件：Git 同步或分包上传
 
-### 4.1 必须传哪些文件
+两种方式选一种：
 
-首次以你当前工作目录为准，包含尚未提交 Git 的修复；只拉远端仓库可能缺少刚加的图片转换、空回复兜底等代码。
+- **推荐：Git + 模型包。** 执行第 4.2 节制作模型包，然后直接到第 4.6 节完成上传、拉取及目录准备，跳过第 4.3～4.5 节。无需制作 `cs-app.tar.gz`。
+- **备用：两个压缩包。** 按第 4.1～4.5 节操作，完成后直接进入第 5 节。适合服务器无法访问远端仓库的情况。
+
+内网部署不妨碍使用 Git，前提是服务器能访问仓库所在地址，并具备读取权限；没有公网入站地址和不能访问外部仓库是两件不同的事。
+
+### 4.1 两个包各包含什么
+
+压缩包以本机当前工作目录为准；Git 只能取得已提交并推送到目标分支的版本。选择 Git 时，先按第 4.6 节确认部署模板和所需修复已发布到远端。
+
+| 压缩包 | 包含内容 | 何时上传 |
+| --- | --- | --- |
+| `D:\cs-models.tar.gz` | 整个 `models/`，包含检索、重排、BERT 和已训练意图模型；目录原始大小约 8.38 GiB | 首次部署上传；模型变化后才重新打包上传 |
+| `D:\cs-app.tar.gz` | 后端源码、依赖与 Compose 配置、部署模板、文档、FAQ Excel、意图 CSV 和原始知识库 | 首次部署上传；后续更新后端时主要更新此包 |
+
+两个包均不包含本机 `.env`、Anaconda 环境、历史日志、`.git`、现有向量库或已部署的独立前端。`support-chat.html` 和 `chatwoot-chat.html` 都不打包。
+
+后端包携带 `deploy/server/Dockerfile.backend-only`。服务器解压后把它复制成根目录 `Dockerfile`，它不再要求 `COPY support-chat.html`，因此不上传前端也能构建。**本机原 `Dockerfile` 不需要修改。** 应用内管理后台仍随 `ics_agent/` 保留，SSH 隧道管理方式不受影响。
+
+两个包最终都解压到同一个 `/opt/cs`，目录应为：
 
 ```text
 /opt/cs/
-├── Dockerfile
+├── Dockerfile                        解压后由后端构建模板复制生成
 ├── docker-compose.yml
 ├── .dockerignore
 ├── requirements.txt
 ├── .env.example
-├── support-chat.html
-├── ics_agent/                         完整应用代码，包含 retry/ 等新文件
-├── knowledge_base_in/                 文档解析和向量化代码
-├── deploy/server/                     本文附带配置模板
-├── docs/                             本手册
-├── models/
+├── ics_agent/                        后端包：完整应用代码
+├── knowledge_base_in/                后端包：解析和向量化代码
+├── deploy/server/                    后端包：配置模板、Dockerfile.backend-only
+├── docs/                             后端包：本手册
+├── models/                           模型包：仅此目录
 │   ├── bge-m3/
 │   ├── bge-reranker-v2-m3/
 │   ├── google-bert--bert-base-chinese/snapshots/master/
 │   └── intent_classifier_bert/
-└── database/
+└── database/                         后端包：首次初始化用的业务数据
     ├── 最新问答对.xlsx
     ├── intent_dataset_4000.csv
-    └── knowledge_base/                原始知识库文件
+    └── knowledge_base/
 ```
 
-不要上传本机 `.env`、Anaconda 环境、历史日志、`.git`、Excel 临时锁文件或整套 Chatwoot 数据库。首次部署在服务器从知识库原文件重建向量库，不直接复制正在使用的 `knowledge_base_in/vector_store`。
+首次部署在服务器从知识库原文件重建向量库，不复制正在使用的 `knowledge_base_in/vector_store`。`models/` 被 Git 忽略且不进入镜像，运行时依靠挂载；只上传后端包无法运行完整检索链路。
 
-`models/` 和向量库被 Git 忽略；模型、数据又被 `.dockerignore` 排除出镜像，运行时依靠目录挂载。**有镜像不等于有模型和业务数据。**
+### 4.2 第一次打包：只打包模型
 
-### 4.2 打包当前工作区
-
-先保存并关闭正在编辑的 FAQ Excel。下面是 **Windows PowerShell** 命令，不是在 Ubuntu 执行：
+在 **Windows PowerShell** 执行，不是在 Ubuntu 执行：
 
 ```powershell
 Set-Location D:\project\CS
-tar.exe -h -czf D:\cs-server-bundle.tar.gz `
+tar.exe -h -czf D:\cs-models.tar.gz models
+if ($LASTEXITCODE -ne 0) { throw '模型包打包失败，请检查上方错误。' }
+Get-FileHash D:\cs-models.tar.gz -Algorithm SHA256
+```
+
+记录模型包的 SHA256。`-h` 将模型符号链接指向的实际内容打入包，避免迁移后链接失效。模型很大，打包可能持续较长时间；不要在训练或下载模型还未完成时打包。
+
+### 4.3 第二次打包：后端源码和首次业务数据
+
+先保存并关闭正在编辑的 FAQ Excel，再在 **Windows PowerShell** 执行：
+
+```powershell
+Set-Location D:\project\CS
+tar.exe -h -czf D:\cs-app.tar.gz `
   --exclude=__pycache__ `
   --exclude=*.pyc `
   --exclude=knowledge_base_in/output `
   --exclude=knowledge_base_in/vector_store `
-  Dockerfile docker-compose.yml .dockerignore requirements.txt .env.example `
-  support-chat.html ics_agent knowledge_base_in deploy docs models `
+  docker-compose.yml .dockerignore requirements.txt .env.example `
+  ics_agent knowledge_base_in deploy docs `
   database/最新问答对.xlsx database/intent_dataset_4000.csv database/knowledge_base
-if ($LASTEXITCODE -ne 0) { throw '打包失败，请检查上方错误。' }
-Get-FileHash D:\cs-server-bundle.tar.gz -Algorithm SHA256
+if ($LASTEXITCODE -ne 0) { throw '后端包打包失败，请检查上方错误。' }
+Get-FileHash D:\cs-app.tar.gz -Algorithm SHA256
 ```
 
-`-h` 会把模型符号链接所指向的实际内容打入包，避免迁移后链接失效。模型很大，打包可能持续较长时间。压缩包放在 `D:\`，不会把压缩包自身打进去。
+记录后端包自己的 SHA256，不能与模型包的哈希混用。此命令没有 `models`，也没有根目录 `Dockerfile` 或客服 HTML 页面；对应构建文件由 `deploy/` 中的模板提供。两个压缩包均放在 `D:\`，不会把压缩包自身再次打进去。
 
-### 4.3 上传
+首次这两个包应来自同一份工作区：模型包中的意图分类器与后端包中的 `intent_dataset_4000.csv` 必须配套。两次打包之间不要更换意图模型或训练 CSV。
 
-在 **Windows PowerShell** 的另一个终端执行：
+### 4.4 分别上传两个包
+
+在 **Windows PowerShell** 执行，替换你的服务器 SSH 地址；能从电脑访问该私网时可填写 `172.20.48.12`：
 
 ```powershell
-scp -o ServerAliveInterval=30 D:\cs-server-bundle.tar.gz ubuntu@YOUR_SERVER_ADDRESS:~/
+scp -o ServerAliveInterval=30 D:\cs-models.tar.gz ubuntu@YOUR_SERVER_ADDRESS:~/
+if ($LASTEXITCODE -ne 0) { throw '模型包上传失败，请检查网络或使用续传。' }
 ```
 
-如果连接容易断，可以用 WinSCP 的 SFTP 上传同一个压缩包，利用续传功能。仍使用你平时的 SSH 私钥或密码；不要临时关闭 SSH 认证。
+第一份上传成功后，再上传后端包：
 
-### 4.4 在 Ubuntu 校验和解压
+```powershell
+scp -o ServerAliveInterval=30 D:\cs-app.tar.gz ubuntu@YOUR_SERVER_ADDRESS:~/
+if ($LASTEXITCODE -ne 0) { throw '后端包上传失败，请检查网络或使用续传。' }
+```
 
-回到 Ubuntu 的 tmux 会话：
+连接容易断时，可用 WinSCP 的 SFTP 分别上传这两个文件并续传。已经成功传完且校验一致的模型包不必因为后端包上传失败而重传。
+
+### 4.5 在 Ubuntu 分别校验、解压
+
+回到 Ubuntu 的 tmux 会话，分别计算两个文件的哈希：
 
 ```bash
-sha256sum ~/cs-server-bundle.tar.gz
+sha256sum ~/cs-models.tar.gz
+sha256sum ~/cs-app.tar.gz
 ```
 
-与 Windows 输出的 SHA256 完全一致再继续：
+两行分别与 Windows 对应文件的 SHA256 一致，才继续。首次部署 `/opt/cs` 应是新目录；如果已有另一套运行服务，先改用独立路径，不要直接覆盖。
 
 ```bash
 sudo mkdir -p /opt/cs
 sudo chown ubuntu:ubuntu /opt/cs
 cd /opt/cs
-tar -xzf ~/cs-server-bundle.tar.gz
+tar -xzf ~/cs-models.tar.gz
+tar -xzf ~/cs-app.tar.gz
+cp deploy/server/Dockerfile.backend-only Dockerfile
 mkdir -p log knowledge_base_in/output knowledge_base_in/vector_store
 ls -la
 du -sh models database
 df -h /
 ```
 
-首次部署 `/opt/cs` 应是新目录。如果该路径已经有另一套运行服务，先改用独立路径并调整后续命令，不要直接覆盖。
+**两个包都在 `/opt/cs` 下解压，不要进入 `/opt/cs/models` 再解模型包**，否则会形成错误的 `models/models` 目录。`cp` 构建模板这一步也不能省略，否则根目录没有本次需要的 Dockerfile，或仍使用原先依赖前端页面的版本。
 
-确认至少存在：
+检查文件：
 
 ```bash
 test -f Dockerfile && echo 'Dockerfile OK'
-test -f support-chat.html && echo 'support-chat.html OK'
+cmp -s deploy/server/Dockerfile.backend-only Dockerfile && echo 'backend-only Dockerfile OK'
 test -f ics_agent/retry/reconnect.py && echo 'retry code OK'
 test -f ics_agent/app/chatwoot/message_format.py && echo 'image formatting code OK'
 test -f models/intent_classifier_bert/model.safetensors && echo 'intent model OK'
@@ -270,13 +314,168 @@ test -f 'database/最新问答对.xlsx' && echo 'FAQ Excel OK'
 find models -type l -print
 ```
 
-如果仍有符号链接，确认不是悬空链接。不要只传模型的 `config.json` 而漏掉权重文件。
+如果仍有符号链接，确认不是悬空链接。不要只传模型的 `config.json` 而漏掉权重文件。这里不再检查 `support-chat.html`，因为本次不部署该页面。
 
-解压、校验成功后，如磁盘余量不足，可以删除上传包释放空间；Windows 原包仍保留：
+校验、解压和文件检查均成功后，如需释放系统盘空间，可以分别删除已解压的上传包；Windows 原包仍保留：
 
 ```bash
-rm -i ~/cs-server-bundle.tar.gz
+rm -i ~/cs-models.tar.gz
+rm -i ~/cs-app.tar.gz
 ```
+
+以后只改后端代码时，跳过模型打包上传，按第 13.2 节更新后端包。更换或重新训练模型时才更新模型包；意图模型变化还要同步配套 CSV。
+
+### 4.6 推荐方式：Git 同步后端，仅上传模型包
+
+#### 第一步：明确 Git 同步范围
+
+| 内容 | 当前仓库情况 | 服务器处理方式 |
+| --- | --- | --- |
+| 后端源码、依赖、Compose、配置模板 | 通过 Git 管理 | 首次 clone，后续 pull 后同步到运行目录 |
+| `models/` | 已被 Git 忽略，约 8.38 GiB | 首次或模型更新时单独上传模型包 |
+| `.env` | 已被 Git 忽略 | 第 5 节在服务器创建，后续保留服务器值 |
+| FAQ Excel、意图 CSV、`database/knowledge_base/` | 已纳入 Git | 首次复制初始化；日常代码更新不覆盖 |
+| `knowledge_base_in/output/` | 当前已有分块文件纳入 Git | 不复制这些历史产物，第 8 节在服务器重建 |
+| 向量库、运行日志、数据库卷 | 运行数据 | 不通过 Git 更新 |
+
+Git 拉取可能同时取得仓库中已跟踪的前端 HTML，但下列同步命令不将它们复制到运行目录或镜像，也不会更新你已经部署的前端。
+
+本方案使用两个目录：`/opt/cs-src` 是保持干净的 Git 仓库；`/opt/cs` 是实际运行目录。这样既能保留后台修改的业务文件，又不必在 Git 仓库中覆盖根目录 Dockerfile。不要在 `/opt/cs-src` 启动 Compose，也不要把整个仓库无差别覆盖到 `/opt/cs`。
+
+#### 第二步：在 Windows 确认并发布部署版本
+
+在 **Windows PowerShell** 检查：
+
+```powershell
+Set-Location D:\project\CS
+git status --short
+git branch --show-current
+git remote get-url origin
+git diff --stat
+```
+
+本次核对的本地分支是 `yanbicheng`，尚未验证远端是否存在同名分支。仓库地址应使用你自己的 SSH 或 HTTPS 克隆地址；不要把访问令牌直接写进地址。记录准备部署的分支，下面均使用 `YOUR_DEPLOY_BRANCH` 占位。
+
+**本次新增的 `.gitattributes`、`deploy/server/Dockerfile.backend-only` 以及修改后的文档、部署模板，需要先提交并推送。** 只在本机保存文件，服务器无法通过 Git 取得它们。确认改动内容后，可在 Windows 发布本次部署文件：
+
+```powershell
+git add -- .gitattributes README.md docs/server-first-deployment.md deploy/server/Dockerfile.backend-only deploy/server/bot.env.example deploy/server/nginx-bot.conf.example
+if ($LASTEXITCODE -ne 0) { throw '暂存失败，请检查。' }
+git diff --cached --stat
+```
+
+核对暂存区只包含你准备发布的改动；如果原来已有其他暂存文件，先处理好它们，再提交：
+
+```powershell
+git commit -m "docs: add server deployment workflows"
+if ($LASTEXITCODE -ne 0) { throw '提交失败，请检查；若文件已提交则无需重复提交。' }
+git push -u origin YOUR_DEPLOY_BRANCH
+if ($LASTEXITCODE -ne 0) { throw '推送失败，请先解决远端分支或权限问题。' }
+git rev-parse HEAD
+```
+
+`YOUR_DEPLOY_BRANCH` 替换为当前准备发布的真实分支；沿用本次分支时填 `yanbicheng`。如果还有需要部署的业务代码未提交，也要一并核对并发布。推送成功后记录最后显示的提交 SHA，稍后与服务器比对。
+
+#### 第三步：Ubuntu 安装工具并克隆仓库
+
+以下是首次创建目录的操作；`/opt/cs-src` 应尚未存在，`/opt/cs` 应为新建空目录。如果已有服务在 `/opt/cs` 运行，先备份，按第 13.2A 节更新，不要重复初始化业务数据。
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git rsync
+sudo mkdir -p /opt/cs /opt/cs-src
+sudo chown ubuntu:ubuntu /opt/cs /opt/cs-src
+git clone --branch YOUR_DEPLOY_BRANCH --single-branch YOUR_REPOSITORY_URL /opt/cs-src
+```
+
+替换真实分支和仓库地址，确认 clone 成功再继续。私有仓库需要事先在服务器配置仓库读取权限，可使用仓库平台的只读 Deploy Key；密钥的公钥添加到仓库设置中，私钥只保存在服务器。若提示 `Permission denied (publickey)`，核对 SSH 密钥；若连接超时，核对仓库网络可达性。无法访问仓库时使用前面的分包方式。
+
+```bash
+git -C /opt/cs-src status --short
+git -C /opt/cs-src rev-parse HEAD
+git -C /opt/cs-src ls-files --eol -- database/intent_dataset_4000.csv
+test -f /opt/cs-src/deploy/server/Dockerfile.backend-only && echo 'backend build template OK'
+test -f /opt/cs-src/deploy/server/bot.env.example && echo 'server env template OK'
+```
+
+状态应为空，SHA 应与 Windows 准备部署的提交一致，CSV 应显示 `w/crlf` 和 `eol=crlf`，两个文件检查均应显示 OK；否则先核对分支、推送状态和缺失文件。
+
+当前意图模型按 CSV 的原始字节校验指纹，换行符也参与校验。根目录 `.gitattributes` 已将这个 CSV 的检出换行固定为 CRLF，让 Windows 和 Linux 取得与现有模型一致的内容；仓库内部存为 LF 是正常的。必须把这条规则与部署版本一起推送，不要通过关闭指纹校验绕过问题。第 9.4 节还会检查模型与实际运行 CSV 是否配套。
+
+#### 第四步：仅同步运行所需的代码与模板
+
+首次部署和以后更新都使用下面这一段。它只同步指定目录，并排除知识库生成产物：
+
+```bash
+(
+  set -e
+  test -f /opt/cs-src/deploy/server/Dockerfile.backend-only
+  mkdir -p /opt/cs/ics_agent /opt/cs/knowledge_base_in /opt/cs/deploy /opt/cs/docs
+  rsync -a --delete --exclude='__pycache__/' --exclude='*.pyc' \
+    /opt/cs-src/ics_agent/ /opt/cs/ics_agent/
+  rsync -a --delete --exclude='/output/' --exclude='/vector_store/' \
+    --exclude='__pycache__/' --exclude='*.pyc' \
+    /opt/cs-src/knowledge_base_in/ /opt/cs/knowledge_base_in/
+  rsync -a /opt/cs-src/deploy/ /opt/cs/deploy/
+  rsync -a /opt/cs-src/docs/ /opt/cs/docs/
+  cp /opt/cs-src/docker-compose.yml /opt/cs-src/.dockerignore \
+    /opt/cs-src/requirements.txt /opt/cs-src/.env.example /opt/cs/
+  cp /opt/cs-src/deploy/server/Dockerfile.backend-only /opt/cs/Dockerfile
+)
+```
+
+整段无报错、退出码为 0 后继续。`--delete` 只用于两个代码目录，清掉新版已移除的旧代码；被排除的 `output/` 和 `vector_store/` 会保留。不要加入 `--delete-excluded`，也不要把同步目标改成整个 `/opt/cs`。运行目录内的代码和模板视为可替换文件，定制代码应先在开发端修改并提交；实际配置修改在 `/opt/cs/.env` 中进行。
+
+#### 第五步：首次复制业务数据
+
+仅在第一次部署时执行。下面只复制必需的初始资料，并保留目标中已经存在的文件：
+
+```bash
+(
+  set -e
+  mkdir -p /opt/cs/database/knowledge_base /opt/cs/log \
+    /opt/cs/knowledge_base_in/output /opt/cs/knowledge_base_in/vector_store
+  cp -n '/opt/cs-src/database/最新问答对.xlsx' /opt/cs/database/
+  cp -n /opt/cs-src/database/intent_dataset_4000.csv /opt/cs/database/
+  rsync -a --ignore-existing /opt/cs-src/database/knowledge_base/ /opt/cs/database/knowledge_base/
+)
+```
+
+后续更新代码不再执行这一步。FAQ 和知识库通过第 13.3、13.4 节维护；意图 CSV 要与模型包中的训练指纹一致。如果复用旧的源码 checkout，仅拉取新增 `.gitattributes` 可能不会重写既有 CSV；应先确认仓库无本地改动，再用 `git -C /opt/cs-src checkout-index --force -- database/intent_dataset_4000.csv` 按新属性重新检出，确认显示 `w/crlf` 后再做首次复制。此命令只用于可从 Git 恢复的源码副本，不用于服务器后台维护的数据。
+
+#### 第六步：上传模型并进入常规部署
+
+先按第 4.2 节在 Windows 制作模型包并记录 SHA256。然后在 **Windows PowerShell** 上传：
+
+```powershell
+scp -o ServerAliveInterval=30 D:\cs-models.tar.gz ubuntu@YOUR_SERVER_ADDRESS:~/
+if ($LASTEXITCODE -ne 0) { throw '模型包上传失败，请检查网络或使用续传。' }
+```
+
+在 Ubuntu 校验：
+
+```bash
+sha256sum ~/cs-models.tar.gz
+```
+
+与 Windows 的模型包 SHA256 一致后，解压到运行目录：
+
+```bash
+cd /opt/cs
+tar -xzf ~/cs-models.tar.gz
+cmp -s deploy/server/Dockerfile.backend-only Dockerfile && echo 'backend-only Dockerfile OK'
+test -f models/intent_classifier_bert/model.safetensors && echo 'intent model OK'
+test -f models/intent_classifier_bert/labels.json && echo 'intent metadata OK'
+test -f database/intent_dataset_4000.csv && echo 'intent dataset OK'
+test -f 'database/最新问答对.xlsx' && echo 'FAQ Excel OK'
+find models -type l -print
+du -sh models database
+df -h /
+```
+
+确认解压无报错，各检查显示 OK，模型不存在失效链接。若服务器已经拥有同一版本且完整的模型目录，可跳过模型上传与解压。成功后可用 `rm -i ~/cs-models.tar.gz` 释放上传包占用的空间，保留 Windows 原包。
+
+**到这里无需 `cs-app.tar.gz`，直接继续第 5～12 节。** clone/pull 本身不会安装依赖、构建镜像、初始化数据库或重启机器人，仍需完成后续步骤。
 
 ## 5. 配置服务器 .env
 
@@ -314,8 +513,8 @@ CHATWOOT_AGENT_BOT_SECRET=你生成的第四份值
 ### 5.3 填写已有 Chatwoot 地址和用户 API Token
 
 ```dotenv
-CHATWOOT_BASE_URL=https://你的Chatwoot域名
-CHATWOOT_PUBLIC_BASE_URL=https://你的Chatwoot域名
+CHATWOOT_BASE_URL=http://172.20.48.12:3000
+CHATWOOT_PUBLIC_BASE_URL=http://172.20.48.12:3000
 CHATWOOT_ACCOUNT_ID=实际Account数字ID
 CHATWOOT_API_TOKEN=实际用户API令牌
 CHATWOOT_AUTO_REPLY_ENABLED=false
@@ -323,7 +522,7 @@ CHATWOOT_AUTO_REPLY_ENABLED=false
 
 - `CHATWOOT_BASE_URL` 要能从机器人容器访问，用于后台 API 调用。
 - `CHATWOOT_PUBLIC_BASE_URL` 要能从浏览器访问，用于加载 Widget。
-- 使用公网 HTTPS 域名时，两者通常相同。
+- 你的内网部署两者都填 `http://172.20.48.12:3000`。`PUBLIC_BASE_URL` 指浏览器访问地址，不要求是公网域名；复用的已有前端也应连接这同一套 Chatwoot。
 - 不要照搬 Windows Docker Desktop 的 `host.docker.internal`：Ubuntu 默认不提供同样的解析，当前 Compose 也没有配置它。
 - 不要在容器里用 `http://127.0.0.1:3000` 指代另一台服务器或另一个容器的 Chatwoot。
 - `CHATWOOT_CONTACT_API_TOKEN` 留空时，联系人操作回退使用用户级 `CHATWOOT_API_TOKEN`。
@@ -367,38 +566,23 @@ ADMIN_WEB_PORT=3001
 
 “已解决”和“用户 6 小时无动作”用于开启新上下文，不会立即物理删除旧记忆，也不会删除 Chatwoot 聊天记录。
 
-## 6. 修改客服测试页，清除本机地址
+## 6. 复用已有前端，不上传客服页面
 
-当前 `support-chat.html` 中 `var CONFIG` 附近有本地 IP 和本地 Website Token。必须在构建镜像前处理：
+这次部署只更换或新增机器人后端，使用以下链路：
 
-```bash
-cd /opt/cs
-nano support-chat.html
+```text
+已经部署的前端 → 已有内网 Chatwoot → 新部署的机器人 Webhook
 ```
 
-按 `Ctrl+W` 搜索 `var CONFIG`，将相关字段改成：
+先核对已有前端实际连接的 Chatwoot 根地址和 Website Token。如果它连接的就是 `http://172.20.48.12:3000` 和你用于测试的 Inbox，这两项均无需修改，后面只调整该 Inbox 的 AgentBot 绑定和 Webhook 目标地址。
 
-```javascript
-var CONFIG = {
-  CHATWOOT_BASE_URL: "https://你的Chatwoot域名",
-  WEBSITE_TOKEN: "REPLACE_WITH_CHATWOOT_WEBSITE_TOKEN",
-  PROFILE_ENDPOINT: "/chatwoot/profile",
-  RUNTIME_CONFIG_ENDPOINT: "/support-chat/config",
-  REQUIRE_IDENTIFIER_HASH: true,
-  ALLOW_ANONYMOUS_CHAT: true,
-  DEFAULT_LOCALE: "zh_CN",
-  PROFILE_TIMEOUT_MS: 10000,
-  WIDGET_READY_TIMEOUT_MS: 15000
-};
-```
+如果“开发环境 Chatwoot”实际上是另一套实例，应先确认前端、机器人 `.env`、Account ID 和 Inbox 都对应同一套 Chatwoot；只启动机器人不会自动把前端转接到另一套 Chatwoot。
 
-第一次先保留 Website Token 占位符，后面通过 URL 参数传入新测试 Inbox 的 Token，可避免建 Inbox 后又重新构建镜像。
+第 4.5 节复制的 `Dockerfile.backend-only` 不要求客服 HTML 文件。此镜像没有内置的 `/support-chat` 页面，访问该路径出现 404 是预期行为，不表示机器人部署失败。管理后台 `/admin` 仍然可用。
 
-`RUNTIME_CONFIG_ENDPOINT` 必须是 `/support-chat/config`，这样页面才能从当前机器人服务获取 `CHATWOOT_PUBLIC_BASE_URL`。它仍指向本机 `192.168.*` 地址时，远端页面可能访问失败或遭到 HTTPS 混合内容拦截。
+本次无需修改、打包或上传 `support-chat.html` / `chatwoot-chat.html`，也无需重新发布现有前端。只要使用原来的 Inbox，Website Token 不变；如果为了隔离测试另外新建 Inbox，则需要在现有前端支持的测试配置中选择新 Token。
 
-首次按匿名访客测试，不加 `userId`、`identifier`、`appToken` 等参数。`CHATWOOT_PROFILE_ALLOW_QUERY_IDENTIFIERS=false` 保持不变。APP 的真实登录身份接入是独立工作，见第 15 节。
-
-另一个 `chatwoot-chat.html` 不在当前 Dockerfile 中，也不是 `/support-chat` 实际返回的文件；修改它不会改变本次部署页面。
+已有 APP 身份接口也保持原有部署；不要把它盲目切换为本次机器人的 `/chatwoot/profile`。若还未接入真实登录身份，可先用已有前端的匿名模式验收，保持 `CHATWOOT_PROFILE_ALLOW_QUERY_IDENTIFIERS=false`。身份接入边界见第 15 节。
 
 ## 7. 构建镜像，启动机器人数据库
 
@@ -610,7 +794,7 @@ ssh -N -o ServerAliveInterval=30 -L 13001:127.0.0.1:3001 ubuntu@YOUR_SERVER_ADDR
 
 ## 10. 让 Chatwoot 能访问机器人
 
-先选择一种方式：
+**你当前没有公网域名，主流程使用第 10B 节的私网方式。** 第 10A 节保留为以后需要 HTTPS 域名时的可选操作，本次可以跳过。
 
 | 情况 | 选择 |
 | --- | --- |
@@ -674,7 +858,7 @@ sudo systemctl reload nginx
 
 如果提示软链接已存在，不用再建；先检查它指向的文件。只有 `nginx -t` 成功才 reload。
 
-模板只公开 `/webhooks/chatwoot`、`/health`、`/support-chat`、`/support-chat.html` 和 `/support-chat/config`，其他路径默认返回 404。特别是当前 **`/rag/query` 没有认证**，会调用付费模型，不应通过公网默认开放。管理员使用第 9.6 节的 SSH 隧道。
+模板只公开 `/webhooks/chatwoot` 和 `/health`，其他路径默认返回 404，已有前端仍由原来的站点提供。特别是当前 **`/rag/query` 没有认证**，会调用付费模型，不应通过公网默认开放。管理员使用第 9.6 节的 SSH 隧道。
 
 #### 第四步：申请 HTTPS 证书
 
@@ -770,22 +954,26 @@ http://172.20.48.12:3001/webhooks/chatwoot
 
 这里仍必须使用真实签名 Secret。使用与 10A 相同的未签名探测，把 URL 换成私网地址，预期同样为 401。
 
-Docker 发布端口时可能绕过部分 UFW 规则，不能只凭 `ufw status` 判断已经限制来源；核对云安全组和实际连通结果。浏览器仍通过 SSH 隧道测试，Chatwoot 的浏览器地址仍填写已有的 HTTPS 域名。
+Docker 发布端口时可能绕过部分 UFW 规则，不能只凭 `ufw status` 判断已经限制来源；核对云安全组和实际连通结果。管理后台通过 SSH 隧道访问；用户问答通过已有前端测试，浏览器需要能访问内网 Chatwoot `http://172.20.48.12:3000`。
 
 ## 11. 创建测试 AgentBot，连接已有 Chatwoot
 
-### 11.1 新建或选择测试 Website Inbox
+### 11.1 确认已有前端所用的测试 Website Inbox
+
+先在已有前端配置中找到 Website Token，在 Chatwoot Inbox 设置中对应到同一个 Website Inbox。如果这是专门用于开发测试的 Inbox，可以复用，但切换前记录原 AgentBot 的 ID 和绑定状态，确认当前没有其他测试者使用。这样前端完全不需要重新部署。
+
+如果该 Inbox 已有真实用户，使用独立测试 Inbox。新建方法如下：
 
 在已有 Chatwoot 后台：
 
 1. 打开“设置 → 收件箱 / Inboxes → 添加收件箱”。
 2. 选择 Website 网站渠道，名称例如“智能客服服务器测试”。
-3. 网站地址填写本次测试页所在地址；有域名时为 `https://bot.example.com`。
+3. 网站地址填写你已经部署的前端测试入口地址。
 4. 把用于验收的人工坐席加入这个 Inbox。机器人与人工在同一个 Inbox 内切换。
 5. 保存后，在 Widget 安装代码中找到 `websiteToken`，记录该值。
 6. 记录 Inbox ID。一般能在 Inbox 设置页地址或下面的 API 查询结果中看到。
 
-不要把 Account ID、Inbox ID、AgentBot ID 混用。第一次测试可保持所有人工坐席离线，验证机器人后再让一名测试坐席上线。
+新 Inbox 的 Website Token 与原来不同，需要在已有前端支持的测试配置中选择它；仅创建 Inbox 不会改变前端原来的连接。不要把 Account ID、Inbox ID、AgentBot ID 混用。第一次测试可保持所有人工坐席离线，验证机器人后再让一名测试坐席上线。
 
 ### 11.2 选择 UI 配置或 API 配置
 
@@ -802,15 +990,15 @@ Docker 发布端口时可能绕过部分 UFW 规则，不能只凭 `ufw status` 
 ```bash
 cd /opt/cs
 umask 077
-CW_DEPLOY_BASE='https://你的Chatwoot域名'
+CW_DEPLOY_BASE='http://172.20.48.12:3000'
 CW_DEPLOY_ACCOUNT='实际Account数字ID'
 CW_DEPLOY_INBOX='实际测试Inbox数字ID'
-CW_DEPLOY_WEBHOOK='https://你的机器人域名/webhooks/chatwoot'
+CW_DEPLOY_WEBHOOK='http://172.20.48.12:3001/webhooks/chatwoot'
 read -r -s -p '粘贴 Chatwoot 用户 API Token，然后回车：' CW_DEPLOY_TOKEN
 printf '\n'
 ```
 
-10B 私网方式把 `CW_DEPLOY_WEBHOOK` 换成私网地址。输入 Token 时不显示字符是正常的。
+以上示例按机器人也部署在 `172.20.48.12`、采用第 10B 节 3001 私网入口填写；如果机器人部署在另一台机器，只将 `CW_DEPLOY_WEBHOOK` 改为机器人实际地址。`CW_DEPLOY_BASE` 始终是已有 Chatwoot 的 3000 地址。输入 Token 时不显示字符是正常的。
 
 获取测试 Inbox 信息，先保存到权限受限的本地文件：
 
@@ -969,19 +1157,13 @@ AgentBot 通常不负责独立的 `contact_updated` 事件。若还要验证“�
 
 ### 12.1 打开测试页面
 
-有域名时，Windows 浏览器打开：
+打开你**已经上传并部署的前端原地址**，无需上传新页面，也不要访问机器人服务器的 `/support-chat` 路径。
 
-```text
-https://bot.example.com/support-chat?websiteToken=测试Inbox的WebsiteToken
-```
+如果复用原开发测试 Inbox，页面的 Chatwoot 地址和 Website Token 保持原值。若另外创建了测试 Inbox，则按现有前端支持的方式选择该 Inbox 的 Website Token；只有确认前端支持 URL 参数时，才使用 `?websiteToken=...`，不要假设所有页面都支持。
 
-没有域名时，通过第 9.6 或 10B 节的 SSH 隧道打开：
+发一条唯一的测试消息，确认 Chatwoot 后台在**预期的测试 Inbox** 收到它，再检查新服务器日志是否出现对应事件。消息进入其他 Inbox，或只在旧开发机器人日志里出现时，先检查前端 Token 与 AgentBot 绑定，不要同时打开两套机器人处理相同消息。
 
-```text
-http://127.0.0.1:13001/support-chat?websiteToken=测试Inbox的WebsiteToken
-```
-
-如果你隧道本地端口是 3001，URL 也用 3001。本次不要添加任何用户身份参数。页面应加载已有 Chatwoot 的聊天窗口，Chatwoot 后台能看到消息进入**测试 Inbox**。
+通过 SSH 隧道打开的 `http://127.0.0.1:13001/admin` 只用于管理后端；它不是本次复用的用户聊天入口。
 
 ### 12.2 逐项验收清单
 
@@ -1080,15 +1262,82 @@ docker compose -f docker-compose.yml up -d --force-recreate ics-agent
 
 然后检查健康和日志。修改数据库密码不属于普通环境变量变更：PostgreSQL 已有数据卷时，改 `POSTGRES_PASSWORD` 不会自动修改已有数据库用户密码，可能导致应用连接失败。
 
-### 13.2 修改 Python 代码、网页、依赖或 Dockerfile
+### 13.2 更新后端代码，不重复传模型或前端
 
-先上传新文件，再执行：
+#### 13.2A Git 部署方式
+
+先在 Windows 提交并推送新版本。服务器按第 14 节备份，记录当前镜像版本，在当前请求结束后操作。
+
+若首次使用 Git 接管之前的压缩包部署，只执行第 4.6 节第三步中安装 Git/rsync、创建 `/opt/cs-src` 并 clone 的操作，保留已有 `/opt/cs`。不要再次复制初始业务数据或解压模型。确认源码仓库版本正确后，再继续下列流程。
+
+1. 在 Ubuntu 检查源码仓库是否干净：
+
+```bash
+git -C /opt/cs-src status --short
+git -C /opt/cs-src log -1 --oneline
+```
+
+`status` 没有输出才继续。如果有本地改动，先查清原因并保留需要的修改；不要用 `reset --hard` 清除它们。
+
+2. 拉取当前分支的新提交：
+
+```bash
+git -C /opt/cs-src pull --ff-only
+git -C /opt/cs-src log -1 --oneline
+```
+
+确认 pull 成功且提交 SHA 是本次目标版本。如果提示分支分叉、权限或网络错误，停止这次发布，先解决 Git 问题。
+
+3. 重新执行 **第 4.6 节第四步“仅同步运行所需的代码与模板”** 的完整代码块。无需执行第五步的初始数据复制。
+4. 在运行目录校验配置、构建并更新应用：
+
+```bash
+cd /opt/cs
+docker compose -f docker-compose.yml config --quiet
+```
+
+配置检查成功后再执行：
 
 ```bash
 docker compose -f docker-compose.yml up -d --build ics-agent
 ```
 
-服务器未使用开发 override，所以只改文件不会自动进入已构建镜像；`support-chat.html` 也需要重新构建才会变化。
+等待预热完成，按第 9 节检查日志、FAQ、RAG 和健康接口，再从已有前端验收。成功后记录实际采用的源码版本：
+
+```bash
+mkdir -p /opt/cs/deployment-records
+git -C /opt/cs-src rev-parse HEAD > /opt/cs/deployment-records/source-commit.txt
+```
+
+日常同步保留服务器 `.env`、`models/`、`database/`、知识库分块与向量库、日志及数据库卷。新版本若增加环境变量，需阅读配置模板并手工补到服务器 `.env`，不要直接用模板覆盖已有值。部署目录的 Nginx 文件只是模板，同步不会自动更新 `/etc/nginx/` 中已启用的站点。
+
+#### 13.2B 压缩包部署方式
+
+如果只修改 Python 代码、依赖或后端构建模板：
+
+1. 在 Windows 重新执行第 4.3 节，生成新的 `D:\cs-app.tar.gz` 并记录新 SHA256。
+2. 只上传这个后端包：
+
+```powershell
+scp -o ServerAliveInterval=30 D:\cs-app.tar.gz ubuntu@YOUR_SERVER_ADDRESS:~/
+if ($LASTEXITCODE -ne 0) { throw '后端包上传失败。' }
+```
+
+3. 在 Ubuntu 执行 `sha256sum ~/cs-app.tar.gz`，与本次 Windows 结果核对。
+4. 先按第 14 节备份，在当前测试请求已结束后更新：
+
+```bash
+cd /opt/cs
+tar --exclude=database -xzf ~/cs-app.tar.gz
+cp deploy/server/Dockerfile.backend-only Dockerfile
+docker compose -f docker-compose.yml up -d --build ics-agent
+```
+
+这里特意排除解压 `database/`，避免单纯更新代码时覆盖服务器已经通过管理后台维护的 FAQ、知识库或意图 CSV。模型目录不在后端包内，`.env` 也不在包内，二者保持原样。知识库/FAQ 更新分别按第 13.3、13.4 节操作。
+
+服务器未使用开发 override，所以代码变化后需要重新构建。现有前端独立维护，无需跟随后端重新上传。
+
+只有模型发生变化时才重新执行第 4.2 节并上传模型包。更新模型应在停止机器人应用后进行，检查意图模型与 CSV 指纹配套，再启动验收；不要把新模型目录直接混入正在使用的旧模型版本。
 
 ### 13.3 更新 FAQ
 
@@ -1152,19 +1401,19 @@ docker compose -f docker-compose.yml exec -T postgres \
 test -s "$CS_BACKUP_DIR/bot-postgres.dump" && echo '数据库备份文件已生成'
 tar -czf "$CS_BACKUP_DIR/bot-files.tar.gz" \
   .env database knowledge_base_in/output knowledge_base_in/vector_store \
-  ics_agent knowledge_base_in/*.py support-chat.html Dockerfile \
-  docker-compose.yml requirements.txt deploy docs
+  ics_agent knowledge_base_in/*.py Dockerfile \
+  docker-compose.yml .dockerignore .env.example requirements.txt deploy docs
 chmod 600 "$CS_BACKUP_DIR/bot-postgres.dump" "$CS_BACKUP_DIR/bot-files.tar.gz"
 docker compose -f docker-compose.yml start ics-agent
 ```
 
-停止应用后再归档向量库，是为避免复制正在写入的数据库文件。如果中间备份失败，也要在排错后记得 `start ics-agent` 并检查服务。模型目录另外保留原始部署包或同步到备份存储。
+停止应用后再归档向量库，是为避免复制正在写入的数据库文件。如果中间备份失败，也要在排错后记得 `start ics-agent` 并检查服务。模型目录另外保留 `cs-models.tar.gz` 或同步到备份存储；已有前端按其原部署方式单独备份，不要求本服务器存在客服 HTML 文件。
 
 ### 14.3 新服务器空库恢复顺序
 
-1. 在新服务器完成 Docker、代码、模型、`.env` 和挂载目录准备。
-2. 应用保持停止，只启动机器人 PostgreSQL。
-3. 从 `bot-files.tar.gz` 恢复文件到正确项目目录，并核对 `.env` 地址和密钥；不要覆盖正在运行的另一套系统。
+1. 在新服务器安装 Docker，准备一个独立项目目录和备份文件，暂不启动应用或数据库。
+2. 先从 `bot-files.tar.gz` 恢复文件到正确项目目录，再从 `cs-models.tar.gz` 恢复模型。确认 `.dockerignore` 已恢复，避免构建时把整个模型目录送入镜像构建上下文；不要覆盖正在运行的另一套系统。
+3. 核对恢复后的 `.env` 地址、密钥、数据库名、用户名和密码，确认目录完整后再执行 `docker compose -f docker-compose.yml up -d postgres`，等待 healthy。应用仍保持停止。新空库首次初始化必须使用这份已核对的配置，不要先用临时密码建库、再覆盖成备份中的密码。
 4. **只对新建空数据库**执行以下恢复命令；已有数据的库需单独制定回滚计划，不要直接覆盖：
 
 ```bash
@@ -1192,16 +1441,22 @@ docker image tag ics-agent:py310 ics-agent:server-verified-20261008
 
 标签日期改成本次实际验收日期。保留旧的已验证镜像，可在新版本验证失败时切回；标签本身不会复制一份完整镜像。需要跨服务器恢复时，可另行导出镜像或推到你自己的镜像仓库。
 
+Git 部署方式还需在验收成功时记录本次采用的提交；记录后再开始下一次拉取更新：
+
+```bash
+git -C /opt/cs-src rev-parse HEAD > /opt/cs/deployment-records/source-commit.txt
+```
+
 ## 15. APP 登录身份、性能和当前边界
 
 ### 15.1 匿名首测与 APP 身份接入
 
-本手册用匿名 Widget 先验证部署链路。正式 APP 应由业务后端根据已验证的登录态生成 `identifier` 和 `identifier_hash`，而不是让浏览器随意传 `userId` 就获得某个用户的身份签名。
+本手册复用已经部署的前端和身份链路；如尚未完成身份接入，可用匿名 Widget 先验证部署。正式 APP 应由业务后端根据已验证的登录态生成 `identifier` 和 `identifier_hash`，而不是让浏览器随意传 `userId` 就获得某个用户的身份签名。
 
 - Website HMAC Token 只放后端。
 - 保持 `CHATWOOT_PROFILE_ALLOW_QUERY_IDENTIFIERS=false`。
-- 实际业务后端提供身份接口后，再修改测试页的 Profile 接口接入；该接口的跨域允许来源应是实际页面域名。
-- 修改代码后重新构建镜像。
+- 实际业务后端提供身份接口后，在独立前端的部署配置中接入；该接口的跨域允许来源应是实际页面来源。
+- 本次后端镜像不包含独立前端，前端变更通过其原发布流程生效。
 - 新服务器首次部署无需执行 README 中针对旧匿名/实名历史数据的迁移 SQL。
 
 ### 15.2 首测不要横向扩容
@@ -1242,13 +1497,15 @@ docker image tag ics-agent:py310 ics-agent:server-verified-20261008
 | 有答案日志但 Chatwoot 没收到 | `CHATWOOT_AUTO_REPLY_ENABLED`、API Token、发送错误 | 配置 true 并 recreate；用户 Token 与机器人 Token 各就其位 |
 | 转人工提示没有坐席 | 测试 Inbox 成员、坐席 online 状态、open 会话数 | 坐席加入同一个 Inbox 并上线；确认未达到每人 5 个会话限制 |
 | 已解决后仍不恢复机器人 | 会话状态事件是否到达、绑定是否启用 | 验证 AgentBot 状态事件，必要时补带正确 Secret 的状态 Webhook |
-| 测试页访问本机 192.168 地址 | `support-chat.html` 中 CONFIG | 运行配置接口改为相对路径；重新 build，刷新页面缓存 |
+| 已有前端消息未到新机器人 | 前端实际连接的 Chatwoot、Website Token、Inbox 绑定 | 确认与后端配置的同一套内网 Chatwoot 对应，不混用开发环境的另一个 Inbox |
+| 构建仍提示缺少 support-chat.html | 服务器根 Dockerfile 是否仍是原版 | 执行 `cp deploy/server/Dockerfile.backend-only Dockerfile` 后重新 build |
+| 机器人 `/support-chat` 返回 404 | 当前是否使用后端专用构建 | 属于预期；打开原有独立前端，管理后台使用 `/admin` |
 | 页面提示缺少 websiteToken | 页面 URL 参数 / CONFIG | 用当前测试 Inbox 的 Website Token，不是用户 API Token |
 | 页面身份校验 403 | URL 是否携带用户身份，Profile 接口是否关闭 | 首测移除身份参数，用匿名模式；正式身份由业务后端验证 |
 | 图片不显示 | FAQ 原始内容、浏览器图片请求 | 确认图片链接返回图片且浏览器可访问；旧消息不会被自动回写 |
 | HTTPS 证书失败 | DNS、80/443、安全组、已有代理 | 按代理现状排查，避免安装第二套代理造成端口冲突 |
 | 改 .env 后行为没变化 | 是否只用了 restart | 改用 `up -d --force-recreate ics-agent` |
-| 改代码或页面后没变化 | 是否重新 build | 服务器镜像模式执行 `up -d --build ics-agent` |
+| 改后端代码后没变化 | 是否重新 build | 服务器镜像模式执行 `up -d --build ics-agent`；独立前端使用其原发布流程 |
 
 常用只读排查命令：
 
@@ -1271,6 +1528,8 @@ sudo journalctl -k --since '30 minutes ago' | grep -i -E 'oom|out of memory|kill
 
 - [ ] Ubuntu 版本、CPU 核数、内存和剩余磁盘已记录。
 - [ ] 服务器模型文件完整，意图 CSV 与模型指纹一致。
+- [ ] 模型包和后端包分别完成 SHA256 校验，并都解压到 `/opt/cs`。
+- [ ] 根 Dockerfile 已从后端模板复制，未重复上传独立前端。
 - [ ] Compose 使用显式 `-f docker-compose.yml`，没有开发热重载或多实例。
 - [ ] PostgreSQL healthy，FAQ 表有数据。
 - [ ] 知识库解析和向量化完成，RAG 测试确实使用了知识片段。
