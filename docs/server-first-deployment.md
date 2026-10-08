@@ -1,12 +1,20 @@
 # 智能客服机器人：Ubuntu 服务器首次部署测试手册
 
-适用项目：`ics_agent` / `D:\project\CS`。编写日期：2026-10-08。
+适用项目：`ics_agent` / `D:\project\CS`。更新日期：2026-10-08。本轮核对基线：分支 `test`，提交 `e23be74`，以及当前配置文件；本次手册和服务器模板的修订还需提交、推送。实际发布以第 4 节记录的完整提交 SHA 为准。
 
 本文按你已确认的环境编写：**Ubuntu 22.04 LTS、x86_64，已有服务器端 Chatwoot，本次只部署机器人并接入 Chatwoot。** Ubuntu 24.04 可按相同步骤操作。未登录你的远端服务器执行部署；本文命令依据当前项目源码、Compose 配置及本地已验证的 Chatwoot 接口核对。
 
 当前 Chatwoot 根地址为 **`http://172.20.48.12:3000`，使用内网，没有公网域名**。前端已经单独部署，本次复用该前端。推荐通过 **Git 同步后端源码和配置模板，只单独上传模型包 `cs-models.tar.gz`**；服务器不能访问仓库时，仍可使用模型包与后端部署包 `cs-app.tar.gz` 分开上传的方案。
 
-服务器登录信息显示系统盘约 49.10 GB、已用 15.1%，约有 41.7 GB 可用。`172.20.48.12` 是私网地址。CPU 核数、内存总量、公网 IP、域名及 Chatwoot 是否与机器人同机，仍需按第 2 节确认。
+服务器最初登录信息显示系统盘约 49.10 GB、当时约有 41.7 GB 可用；上传模型后应重新检查余量。`172.20.48.12` 是私网地址，Windows 已配置 SSH 别名 `ics`。CPU 核数、内存总量及机器人是否与 Chatwoot 同机，仍需按第 2 节确认。
+
+**你已完成的步骤：** 模型包已上传到 `/home/ubuntu/cs-models.tar.gz`，且与本机 SHA256 一致：
+
+```text
+f161f5bab8e534700fc9c1891c9132388e9cef733222974f7f83a608b9210831
+```
+
+如果之后没有重新训练或更换模型，这个包可继续使用，无需再打包、上传。这个校验说明传输完整，模型与当前意图 CSV 的配套关系还要按第 7.2 节验证。
 
 ## 0. 先看部署目标和操作约定
 
@@ -43,13 +51,36 @@
 
 操作路线：**核对资源 → Git 同步后端并上传模型（或分包上传）→ 填配置 → 构建镜像 → 初始化 FAQ 和向量库 → 启动并本地验收 → 配内网入口 → 绑定 Chatwoot → 在已有前端验收 → 备份。**
 
+### 0.1 从你当前的进度继续
+
+| 顺序 | 本次执行内容 | 对应章节 / 完成标志 |
+| --- | --- | --- |
+| 1 | Windows 执行 `ssh ics`，核对资源、Docker，进入 tmux | 第 2～3 节；已有 Docker 不重复安装 |
+| 2 | 将当前版本提交、推送；给服务器配置 Git 只读权限并 clone | 第 4.6 节第一～三步；服务器与本机提交 SHA 一致 |
+| 3 | 同步后端、首次复制业务文件 | 第 4.6 节第四～五步；不覆盖已有运行数据 |
+| 4 | 解压已经上传的模型包 | 第 4.6 节第六步；跳过打包上传命令 |
+| 5 | 创建并填写服务器 `.env` | 第 5 节；地址、密码、Token 和业务参数已核对 |
+| 6 | 构建镜像、检查配置和模型、启动机器人数据库 | 第 7 节；检查 PASS，数据库 healthy |
+| 7 | 导入 FAQ、解析知识库并建向量库 | 第 8 节；导入及建库成功 |
+| 8 | 启动应用，验证后台和 FAQ/RAG | 第 9 节；不仅检查 `/health` |
+| 9 | 绑定服务器私网地址，验证 Chatwoot 到机器人的网络 | 第 10B 节；跳过没有域名时不适用的第 10A 节 |
+| 10 | 配置 AgentBot、启用自动回复并绑定测试 Inbox | 第 11 节；已有前端能收到机器人消息 |
+| 11 | 验收故障兜底、咨询边界、人工接管，备份 | 第 12、14、17 节 |
+
+### 0.2 当前版本与旧手册的主要差异
+
+服务器模板现已与根 `.env.example` 的业务参数对齐：封禁 1 天、会话记忆 15 天、Webhook 并发 10、重排并发 4、LLM 并发 8、数据库连接池 12、获取连接等待 1 秒、LLM 单次超时 10 秒、Webhook 查询总预算 30 秒。完整配置表及资源不足时的调整见第 5.7 节。
+
+`deploy/server/bot.env.example` 是本手册唯一的服务器起始模板，根 `.env.example` 是通用示例；二者都不是实际密钥文件。旧版服务器 `.env` 不会自动更新，已经配置过的服务器需按第 5.7、13.1 节逐项修改。
+
 ## 1. 准备部署信息
 
 先把下表填好；密码和 Token 保存在自己的密码管理器中，不要粘贴到截图或公开工单。
 
 | 信息 | 示例或获取位置 |
 | --- | --- |
-| 机器人服务器 SSH 地址 | 云控制台的公网 IP，或 VPN/堡垒机提供的连接地址 |
+| 机器人服务器 SSH 地址 | Windows 已配置别名 `ics`，可直接 `ssh ics`；地址由该 SSH 配置提供 |
+| Git 仓库地址、部署分支 | 开发端运行 `git remote get-url origin` / `git branch --show-current`；本轮分支是 `test` |
 | SSH 用户 | 你当前为 `ubuntu` |
 | SSH 端口、私钥 | 云主机当前可用的登录方式；默认端口通常是 22 |
 | 机器人公网域名（可选） | `bot.example.com`；没有域名看第 10B 节 |
@@ -58,7 +89,7 @@
 | Chatwoot 用户 API Token | 账户头像 → 个人资料 / Profile Settings → Access Token；使用该账户有管理权限的用户 |
 | 测试 Inbox ID、Website Token | Chatwoot 设置 → 收件箱 / Inboxes → 测试 Website Inbox |
 | 云端模型名称、API Base URL、API Key | 使用你本机已经调用成功的一组配置，不直接照抄模板中的示例模型 |
-| DNS、云安全组权限 | 配置域名和允许必要来源访问端口 |
+| 云安全组 / 主机网络权限 | 允许 Chatwoot 所在主机或容器访问机器人私网端口；本次无需 DNS |
 
 需要区分五种信息：
 
@@ -70,19 +101,21 @@
 | Website Token | 已部署前端的配置或页面参数 | 浏览器加载指定 Inbox 的 Widget；不是后台 API 密钥 |
 | Website HMAC Token | 后端 `CHATWOOT_HMAC_TOKEN` | 已登录用户身份签名；匿名首测可暂不配置 |
 
+例如 Chatwoot 后台地址为 `http://172.20.48.12:3000/app/accounts/1/dashboard`，则根地址是 `http://172.20.48.12:3000`，Account ID 是 `1`。这里的 `1` 仅举例，不要在未核对时当作真实账号 ID。Inbox ID 从“设置 → 收件箱”打开目标 Inbox 的 URL 或第 11.3 节 API 获取。
+
 ## 2. 登录 Ubuntu，检查资源和已有服务
 
 ### 2.1 重新连接 SSH
 
 你看到的 `client_loop: send disconnect: Connection reset` 表示 SSH 连接中断，不能据此判断机器人或服务器故障。先重新连接。
 
-在 **Windows PowerShell** 执行，替换服务器地址：
+在 **Windows PowerShell** 执行：
 
 ```powershell
-ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 ubuntu@YOUR_SERVER_ADDRESS
+ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 ics
 ```
 
-如果平时用私钥或非 22 端口，保留你原来的 `-i` / `-p` 参数。`172.20.48.12` 只有在你的电脑能访问该私网时才可以直接使用。
+`ics` 会沿用你 SSH 配置中的主机地址、用户名、端口和私钥；本文 Windows 侧的上传、隧道也使用它。这个别名仅代表“Windows 登录服务器”，服务器访问 Git 仓库的权限仍需按第 4.6 节单独配置。
 
 ### 2.2 在 Ubuntu 检查
 
@@ -177,7 +210,7 @@ df -h /var/lib/docker
 
 两种方式选一种：
 
-- **推荐：Git + 模型包。** 执行第 4.2 节制作模型包，然后直接到第 4.6 节完成上传、拉取及目录准备，跳过第 4.3～4.5 节。无需制作 `cs-app.tar.gz`。
+- **推荐：Git + 模型包。** 你已有校验成功的模型包，直接从第 4.6 节开始，跳过第 4.1～4.5 节。如果模型更新才重新执行第 4.2 节；无需制作 `cs-app.tar.gz`。
 - **备用：两个压缩包。** 按第 4.1～4.5 节操作，完成后直接进入第 5 节。适合服务器无法访问远端仓库的情况。
 
 内网部署不妨碍使用 Git，前提是服务器能访问仓库所在地址，并具备读取权限；没有公网入站地址和不能访问外部仓库是两件不同的事。
@@ -258,17 +291,17 @@ Get-FileHash D:\cs-app.tar.gz -Algorithm SHA256
 
 ### 4.4 分别上传两个包
 
-在 **Windows PowerShell** 执行，替换你的服务器 SSH 地址；能从电脑访问该私网时可填写 `172.20.48.12`：
+在 **Windows PowerShell** 执行，沿用已配置的 SSH 别名 `ics`：
 
 ```powershell
-scp -o ServerAliveInterval=30 D:\cs-models.tar.gz ubuntu@YOUR_SERVER_ADDRESS:~/
+scp -o ServerAliveInterval=30 D:\cs-models.tar.gz ics:~/
 if ($LASTEXITCODE -ne 0) { throw '模型包上传失败，请检查网络或使用续传。' }
 ```
 
 第一份上传成功后，再上传后端包：
 
 ```powershell
-scp -o ServerAliveInterval=30 D:\cs-app.tar.gz ubuntu@YOUR_SERVER_ADDRESS:~/
+scp -o ServerAliveInterval=30 D:\cs-app.tar.gz ics:~/
 if ($LASTEXITCODE -ne 0) { throw '后端包上传失败，请检查网络或使用续传。' }
 ```
 
@@ -354,9 +387,9 @@ git remote get-url origin
 git diff --stat
 ```
 
-本次核对的本地分支是 `yanbicheng`，尚未验证远端是否存在同名分支。仓库地址应使用你自己的 SSH 或 HTTPS 克隆地址；不要把访问令牌直接写进地址。记录准备部署的分支，下面均使用 `YOUR_DEPLOY_BRANCH` 占位。
+本次核对的本地分支是 **`test`**，已不同于旧手册的分支。尚未联网验证远端分支；下面用 `YOUR_DEPLOY_BRANCH` 占位，沿用当前分支就替换成 `test`。仓库地址从 Git 平台“克隆”入口取得，或查看 `git remote get-url origin`；不要把访问令牌直接写进地址。
 
-**本次新增的 `.gitattributes`、`deploy/server/Dockerfile.backend-only` 以及修改后的文档、部署模板，需要先提交并推送。** 只在本机保存文件，服务器无法通过 Git 取得它们。确认改动内容后，可在 Windows 发布本次部署文件：
+**先提交并推送当前代码、最新手册和服务器配置模板。** `.gitattributes` 和 `Dockerfile.backend-only` 已纳入本地仓库，但本轮模板修订仍需发布；只在本机保存文件，服务器无法取得它们。确认改动内容后，可在 Windows 暂存部署相关文件：
 
 ```powershell
 git add -- .gitattributes README.md docs/server-first-deployment.md deploy/server/Dockerfile.backend-only deploy/server/bot.env.example deploy/server/nginx-bot.conf.example
@@ -367,28 +400,79 @@ git diff --cached --stat
 核对暂存区只包含你准备发布的改动；如果原来已有其他暂存文件，先处理好它们，再提交：
 
 ```powershell
-git commit -m "docs: add server deployment workflows"
+git commit -m "docs: align server deployment with current configuration"
 if ($LASTEXITCODE -ne 0) { throw '提交失败，请检查；若文件已提交则无需重复提交。' }
 git push -u origin YOUR_DEPLOY_BRANCH
 if ($LASTEXITCODE -ne 0) { throw '推送失败，请先解决远端分支或权限问题。' }
 git rev-parse HEAD
 ```
 
-`YOUR_DEPLOY_BRANCH` 替换为当前准备发布的真实分支；沿用本次分支时填 `yanbicheng`。如果还有需要部署的业务代码未提交，也要一并核对并发布。推送成功后记录最后显示的提交 SHA，稍后与服务器比对。
+`YOUR_DEPLOY_BRANCH` 替换为当前准备发布的真实分支；沿用本次分支时填 `test`。如果还有需要部署的业务代码未提交，也要一并核对并发布。已经提交过的版本不必重复 commit，直接检查 push 结果。推送成功后记录最后显示的完整提交 SHA，稍后与服务器比对。
 
 #### 第三步：Ubuntu 安装工具并克隆仓库
 
-以下是首次创建目录的操作；`/opt/cs-src` 应尚未存在，`/opt/cs` 应为新建空目录。如果已有服务在 `/opt/cs` 运行，先备份，按第 13.2A 节更新，不要重复初始化业务数据。
+先在 **Ubuntu SSH 终端**安装工具：
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y git rsync
+```
+
+**私有仓库推荐配置独立的只读部署密钥。** 可以使用你已有 Git 平台账号给仓库添加权限，但服务器不会继承开发电脑的 Git 登录状态，`ssh ics` 也不能替代这一步。不要复制开发电脑上的私钥。
+
+在 Ubuntu 创建独立密钥目录并生成密钥：
+
+```bash
+install -d -m 700 ~/.ssh
+ssh-keygen -t ed25519 -C 'ics-server-readonly' -f ~/.ssh/ics_repo_ed25519
+```
+
+若提示同名文件已存在，先选择不覆盖并核对已有密钥。新建时按提示选择口令；无口令便于部署机非交互拉取，有口令则拉取前需解锁。查看并复制**公钥**：
+
+```bash
+cat ~/.ssh/ics_repo_ed25519.pub
+```
+
+在 Git 平台打开“目标仓库 → 设置 → Deploy Keys / 部署公钥”，添加上述整行公钥，**只启用读取权限**。各平台入口名称可能不同；如果只支持账号级 SSH 公钥，该账号本身必须有仓库读取权限。私钥文件 `ics_repo_ed25519` 不上传。
+
+编辑服务器的 SSH 配置，不覆盖其中已有内容：
+
+```bash
+touch ~/.ssh/config
+chmod 600 ~/.ssh/config
+nano ~/.ssh/config
+```
+
+在文件末尾添加，`YOUR_GIT_HOST` 换成仓库域名，例如你的 GitHub、Gitee、GitLab 或内网 Git 服务地址。自建服务用户名、端口以平台提供的 SSH 克隆地址为准：
+
+```sshconfig
+Host ics-repo
+    HostName YOUR_GIT_HOST
+    User git
+    IdentityFile ~/.ssh/ics_repo_ed25519
+    IdentitiesOnly yes
+```
+
+保存后验证：
+
+```bash
+ssh -T ics-repo
+git ls-remote --exit-code YOUR_REPOSITORY_URL refs/heads/YOUR_DEPLOY_BRANCH
+```
+
+这里 `YOUR_REPOSITORY_URL` 使用别名地址，例如平台原地址为 `git@YOUR_GIT_HOST:团队/仓库.git`，则填写 `git@ics-repo:团队/仓库.git`。两个地方的分支一致；首次连接先核对平台公布的主机指纹，再接受。部分 Git 平台的 `ssh -T` 会提示不提供 shell 并返回非零码，这是正常的；以 `git ls-remote` 能返回目标分支的 SHA 为读取成功依据。
+
+若使用 HTTPS，可跳过 SSH 密钥部分，使用平台提供的 HTTPS 克隆地址，并在认证提示中提供账号和具有仓库读取权限的访问令牌；令牌不写进克隆 URL。令牌过期后需重新认证。仓库无法访问或权限未通过时，先解决网络/权限，或采用分包方式。
+
+确认有读取权限后创建部署目录。以下仅适用于首次部署：`/opt/cs-src` 应尚未存在或是空目录，`/opt/cs` 应为新建空目录。如果已有服务在 `/opt/cs` 运行，按第 13.2A 节更新，不要重复初始化数据。
+
+```bash
 sudo mkdir -p /opt/cs /opt/cs-src
 sudo chown ubuntu:ubuntu /opt/cs /opt/cs-src
 git clone --branch YOUR_DEPLOY_BRANCH --single-branch YOUR_REPOSITORY_URL /opt/cs-src
 ```
 
-替换真实分支和仓库地址，确认 clone 成功再继续。私有仓库需要事先在服务器配置仓库读取权限，可使用仓库平台的只读 Deploy Key；密钥的公钥添加到仓库设置中，私钥只保存在服务器。若提示 `Permission denied (publickey)`，核对 SSH 密钥；若连接超时，核对仓库网络可达性。无法访问仓库时使用前面的分包方式。
+替换真实分支和仓库地址，确认 clone 成功再继续。若提示 `Permission denied (publickey)`，核对密钥和仓库权限；若提示目录非空，不要直接删除，先确认是不是已有 checkout，转到第 13.2A 节。
 
 ```bash
 git -C /opt/cs-src status --short
@@ -445,10 +529,10 @@ test -f /opt/cs-src/deploy/server/bot.env.example && echo 'server env template O
 
 #### 第六步：上传模型并进入常规部署
 
-先按第 4.2 节在 Windows 制作模型包并记录 SHA256。然后在 **Windows PowerShell** 上传：
+**你已完成模型包上传与校验，本次模型未变更时跳过下面的上传命令，直接解压。** 第一次从其他电脑部署或重新更换模型时，才按第 4.2 节制作模型包，并在 **Windows PowerShell** 上传：
 
 ```powershell
-scp -o ServerAliveInterval=30 D:\cs-models.tar.gz ubuntu@YOUR_SERVER_ADDRESS:~/
+scp -o ServerAliveInterval=30 D:\cs-models.tar.gz ics:~/
 if ($LASTEXITCODE -ne 0) { throw '模型包上传失败，请检查网络或使用续传。' }
 ```
 
@@ -508,7 +592,7 @@ ADMIN_JWT_SECRET=你生成的第三份值
 CHATWOOT_AGENT_BOT_SECRET=你生成的第四份值
 ```
 
-使用十六进制随机值能避免 `.env` 中 `$`、`#`、空格等特殊字符的转义问题。`ADMIN_USERNAME=csadmin` 是本手册的管理员账号；它与 Chatwoot 登录账号没有关系。
+使用十六进制随机值能避免 `.env` 中 `$`、`#`、空格等特殊字符的转义问题。当前服务器模板使用 `ADMIN_USERNAME=Denpans`，与代码默认一致；它与 Chatwoot 登录账号没有关系。若旧部署已经用 `csadmin` 建立管理员，应保留并使用原账号；不要以为更新模板会自动修改已有账号或密码。
 
 ### 5.3 填写已有 Chatwoot 地址和用户 API Token
 
@@ -531,15 +615,15 @@ CHATWOOT_AUTO_REPLY_ENABLED=false
 ### 5.4 填写大模型配置
 
 ```dotenv
-LLM_MODEL=本机已经调用成功的模型名称
+LLM_MODEL=gpt-5.6-sol
 LLM_MODEL_PROVIDER=openai
-LLM_BASE_URL=该服务商要求的API根地址
+LLM_BASE_URL=https://ai-sfo.apiveer.com/v1
 LLM_API_KEY=你的模型API密钥
 ```
 
-本项目可接 OpenAI 兼容接口。是否带 `/v1` 以你的实际服务商为准；不要自行拼接 `/chat/completions` 到 Base URL。
+上面的模型名和 Base URL 来自你当前根 `.env.example`，API Key 仍需自行填写。若已切换服务商，三者应一起按本机验证成功的配置更新。本项目可接 OpenAI 兼容接口；是否带 `/v1` 以实际服务商为准，不自行拼接 `/chat/completions` 到 Base URL。
 
-模板保守设置：Webhook 并发 2、模型并发 2、每次模型请求超时 30 秒、整轮检索和生成超时 120 秒。先验收，再依据 CPU、内存和响应耗时增加并发。
+当前设置是 **LLM 单次请求 10 秒、Webhook 查询阶段总预算 30 秒**。前者不是整轮最大等待时间；后者也不是“用户一定在 30 秒内收到回复”的承诺。排队、重试与故障兜底的准确含义见第 5.7、12.5 节。
 
 ### 5.5 数据库配置保持一致
 
@@ -551,6 +635,8 @@ POSTGRES_HOST=postgres
 POSTGRES_PORT=5432
 POSTGRES_HOST_PORT=5433
 POSTGRES_DSN=
+POSTGRES_POOL_SIZE=12
+POSTGRES_POOL_ACQUIRE_TIMEOUT=1.0
 ADMIN_WEB_HOST=127.0.0.1
 ADMIN_WEB_PORT=3001
 ```
@@ -559,12 +645,47 @@ ADMIN_WEB_PORT=3001
 - 容器内连接 `postgres:5432`；宿主机映射为 `127.0.0.1:5433`。端口 5433 已占用时可改 `POSTGRES_HOST_PORT=5434`，应用内部仍使用 5432。
 - 保持 `POSTGRES_DSN` 为空，避免旧连接串覆盖这些配置。
 - 不要把这里填成 Chatwoot 正在使用的数据库。
+- 连接池显式设置为 12，获取连接最多等待 1 秒；不要漏掉这两项，否则代码默认等待仅 0.05 秒，冷启动或负载下更容易获取连接失败。池大小不是整个 PostgreSQL 实例的总连接上限，会话记忆还使用独立的异步连接池。
 
 ### 5.6 数据保留设置
 
-本模板建议首测：`RAG_MEMORY_RETENTION_DAYS=30`，Webhook 幂等记录保留 7 天。根目录原 `.env.example` 的会话记忆默认值为 `0`，表示永久保留；本手册明确选择了不同的测试保留期。
+当前服务器模板与根 `.env.example` 均使用 `RAG_MEMORY_RETENTION_DAYS=15`；代码本身省略该项时仍默认 `0`（永久保留），所以服务器明确写入 15。静音 / 封禁时长为 `CHATWOOT_BLOCK_DURATION_SECONDS=86400`（1 天），Webhook 幂等记录保留 7 天。
+
+| 数据 / 状态 | 当前清理方式 |
+| --- | --- |
+| 机器人会话记忆 | 根据咨询线程最后活动时间清理闲置超过 15 天的线程和检查点；启动时尝试清理，此后每 24 小时一次，每批最多 500 个 |
+| Webhook 幂等记录 | 每 24 小时清理 `completed` / `failed` 且超过 7 天的记录，每批最多 1000 条；不是对全部事件状态无条件删除 |
+| 联系人静音 / 封禁 | 收到对应事件并记录后，按 1 天期限由后台任务尝试解除；轮询默认 60 秒，依赖 Chatwoot API 可用及第 11.6 节事件配置 |
+| 应用日志 | stdout / stderr 各按 30 MiB 轮转，最多各保留 5 份历史文件；Docker 自身日志另有轮转 |
+
+清理任务依赖服务持续运行和数据库可用，达到天数不代表当秒删除；批次上限也可能产生待清理积压。FAQ、原始知识库、模型和 Chatwoot 数据不属于这些自动清理范围。
 
 “已解决”和“用户 6 小时无动作”用于开启新上下文，不会立即物理删除旧记忆，也不会删除 Chatwoot 聊天记录。
+
+### 5.7 核对当前并发、超时与服务器专用项
+
+无需重复追加同名配置；模板已有以下字段时，直接核对或修改原行：
+
+| 配置项 | 当前服务器模板值 | 作用 |
+| --- | --- | --- |
+| `WEBHOOK_WORKER_COUNT` | `10` | 单进程内 Webhook 任务并发，不是 10 个 Uvicorn 进程 |
+| `RAG_RERANKER_MAX_CONCURRENCY` | `4` | 重排并发上限 |
+| `LLM_MAX_CONCURRENCY` | `8` | 共享云模型调用并发上限 |
+| `LLM_CONCURRENCY_WAIT_TIMEOUT` | `15` | 等待模型并发槽位的最长秒数，也会消耗查询预算 |
+| `POSTGRES_POOL_SIZE` / `POSTGRES_POOL_ACQUIRE_TIMEOUT` | `12` / `1.0` | 同步数据库连接池容量 / 获取连接等待秒数 |
+| `LLM_TIMEOUT` / `LLM_MAX_RETRIES` | `10` / `2` | SDK 单次超时 / SDK 最大重试数 |
+| `WEBHOOK_RAG_TIMEOUT_SECONDS` | `30` | worker 开始查询后，FAQ、记忆、检索、重排与生成的总预算 |
+| `WEBHOOK_PROCESSING_TIMEOUT_SECONDS` | `300` | worker 每次任务处理的外层时限，包含查询以外的 Chatwoot 操作 |
+| `WEBHOOK_MAX_RETRIES` | `3` | 未被查询兜底吸收的任务异常，最多额外重试 3 次 |
+| `CHATWOOT_SESSION_IDLE_TIMEOUT_SECONDS` | `21600` | 用户消息间隔达到 6 小时，下一条消息开启新上下文 |
+
+为降低首次部署的积压和批次内存占用，服务器模板还显式使用 `WEBHOOK_QUEUE_MAX_SIZE=100`、`KNOWLEDGE_BASE_EMBEDDING_BATCH_SIZE=2`、`RAG_RERANKER_BATCH_SIZE=2`；代码默认分别为 1000、8、8。这三项属于部署取值，与上表当前业务超时和并发基线分开记录。
+
+当前并发基线还没有在你目标服务器上压测。如果 CPU / 内存紧张，可先在服务器 `.env` 中将 `WEBHOOK_WORKER_COUNT=2`、`RAG_RERANKER_MAX_CONCURRENCY=1`、`LLM_MAX_CONCURRENCY=2`，其他超时和保留策略保持当前值，低并发验收成功后再逐步调整；并发降低不能代替满足模型加载内存需求。
+
+服务器始终保留 `APP_ENV=production`、`CHATWOOT_PROFILE_ALLOW_QUERY_IDENTIFIERS=false`、准备阶段的 `CHATWOOT_AUTO_REPLY_ENABLED=false`。不要把本地用于调试的 `.env` 整份覆盖过来。`CHATWOOT_PROFILE_ALLOWED_ORIGINS` 仅在需要浏览器访问本机器人身份接口时填写真实前端来源；现有前端只与 Chatwoot 通信时无需启用该接口。
+
+模板的 `ADMIN_WEB_HOST=127.0.0.1` 用于初始本机检查，第 10B 节才切到机器人实际私网 IP。模板里的 Chatwoot 地址是 3000，机器人对外端口是 3001，数据库宿主机端口是 5433，不要混用。
 
 ## 6. 复用已有前端，不上传客服页面
 
@@ -578,7 +699,7 @@ ADMIN_WEB_PORT=3001
 
 如果“开发环境 Chatwoot”实际上是另一套实例，应先确认前端、机器人 `.env`、Account ID 和 Inbox 都对应同一套 Chatwoot；只启动机器人不会自动把前端转接到另一套 Chatwoot。
 
-第 4.5 节复制的 `Dockerfile.backend-only` 不要求客服 HTML 文件。此镜像没有内置的 `/support-chat` 页面，访问该路径出现 404 是预期行为，不表示机器人部署失败。管理后台 `/admin` 仍然可用。
+第 4 节同步或解压时复制的 `Dockerfile.backend-only` 不要求客服 HTML 文件。此镜像没有内置的 `/support-chat` 页面，访问该路径出现 404 是预期行为，不表示机器人部署失败。管理后台 `/admin` 仍然可用。
 
 本次无需修改、打包或上传 `support-chat.html` / `chatwoot-chat.html`，也无需重新发布现有前端。只要使用原来的 Inbox，Website Token 不变；如果为了隔离测试另外新建 Inbox，则需要在现有前端支持的测试配置中选择新 Token。
 
@@ -586,15 +707,92 @@ ADMIN_WEB_PORT=3001
 
 ## 7. 构建镜像，启动机器人数据库
 
+### 7.1 校验 Compose 并构建后端镜像
+
 ```bash
 cd /opt/cs
 docker compose -f docker-compose.yml config --quiet
+```
+
+无报错且退出码为 0 后，继续构建：
+
+```bash
 docker compose -f docker-compose.yml build ics-agent
 ```
 
 不要运行不带 `--quiet` 的 `docker compose config` 后把完整输出发给别人，它可能展开密钥。
 
 首次构建需要下载 Python 依赖、CPU 版 PyTorch 等，可能耗时较久。使用 tmux 等待构建结束；不要因终端暂时没有新输出重复发起构建。成功时应显示镜像构建完成，命令退出码为 0。
+
+入口采用内网并不表示完全离线部署：服务器仍需能够访问 Git 仓库、Docker 镜像源、Python 包源、CPU PyTorch 下载源，以及你配置的云模型服务。图片 OCR 也可能初始化额外资源。如果没有任何出站网络，本手册的在线构建步骤不能直接使用，需另行准备离线镜像和依赖。
+
+### 7.2 启动前检查配置与模型配套
+
+以下一次性容器只读取配置和模型文件，不连接数据库、不调用云端模型、不发送 Chatwoot 消息。可在正式启动前发现占位值和模型 CSV 不配套的问题：
+
+```bash
+docker compose -f docker-compose.yml run --rm --no-deps -T ics-agent python - <<'PY'
+import hashlib
+import json
+from pathlib import Path
+from pydantic import ValidationError
+from ics_agent.app.core.config import AppSettings
+from ics_agent.rag.config import RAGSettings
+from ics_agent.faq.config import FAQSettings
+
+try:
+    app = AppSettings()
+    rag = RAGSettings()
+    FAQSettings()
+except ValidationError as exc:
+    for item in exc.errors():
+        print('配置类型错误：', '.'.join(map(str, item['loc'])))
+    raise SystemExit('请修正配置后重试；不要公开完整配置内容。')
+
+required = (
+    'postgres_password', 'admin_initial_password', 'admin_jwt_secret',
+    'chatwoot_api_token', 'chatwoot_agent_bot_secret', 'llm_api_key',
+    'chatwoot_base_url', 'llm_model', 'llm_base_url',
+)
+missing = []
+for key in required:
+    value = str(getattr(app, key)).strip()
+    if not value or any(marker in value.lower() for marker in ('replace_', 'change-me', 'your_')):
+        missing.append(key.upper())
+if not app.chatwoot_account_id.isdigit():
+    missing.append('CHATWOOT_ACCOUNT_ID（应为实际数字 ID）')
+if missing:
+    raise SystemExit('请填写配置项：' + ', '.join(missing))
+assert app.app_env == 'production', 'APP_ENV 应为 production'
+assert not app.chatwoot_profile_allow_query_identifiers, '服务器需关闭 URL 身份调试'
+assert rag.webhook_rag_timeout_seconds < rag.webhook_processing_timeout_seconds, '查询预算必须小于任务总时限'
+
+model_dir = Path(rag.rag_output_dir)
+assert (model_dir / 'model.safetensors').is_file(), '缺少意图模型权重'
+for directory in (rag.knowledge_base_embedding_model_dir, rag.rag_reranker_model_dir, rag.rag_pretrained_model_dir):
+    assert (Path(directory) / 'config.json').is_file(), '缺少模型配置：' + directory
+metadata = json.loads((model_dir / 'labels.json').read_text(encoding='utf-8'))
+expected = metadata.get('dataset', {}).get('sha256')
+actual = hashlib.sha256(Path(rag.rag_intent_dataset_path).read_bytes()).hexdigest()
+assert expected and actual == expected, '意图 CSV 与模型指纹不一致，先检查 CRLF 和模型版本'
+print('PASS: 配置必填项、类型、模型基础文件和意图 CSV 指纹检查通过')
+print('当前策略：', {
+    'worker': rag.webhook_worker_count,
+    'reranker': rag.rag_reranker_max_concurrency,
+    'llm_concurrency': app.llm_max_concurrency,
+    'llm_timeout': app.llm_timeout,
+    'rag_timeout': rag.webhook_rag_timeout_seconds,
+    'db_pool': app.postgres_pool_size,
+    'db_acquire_timeout': app.postgres_pool_acquire_timeout,
+    'memory_days': rag.rag_memory_retention_days,
+    'block_seconds': app.chatwoot_block_duration_seconds,
+})
+PY
+```
+
+应看到 PASS 及当前非敏感策略值。该检查不验证云模型凭据是否可用，也不加载所有大模型权重，后面仍需真实 FAQ / RAG 验收。若只有 CSV 指纹失败，先检查第 4.6 节的 `.gitattributes` 和 CRLF，确认与模型版本一致；不要关闭校验或直接修改模型的预期指纹。
+
+### 7.3 启动机器人自己的 PostgreSQL
 
 ```bash
 docker compose -f docker-compose.yml up -d postgres
@@ -770,14 +968,14 @@ curl --fail-with-body --max-time 180 \
 - `retrieved_count`、`reranked_count` 大于 0，`documents` 中资料与问题相关。
 - `answer` 非空，内容符合知识库，且不是“当前智能客服正在维护……”的兜底文案。
 
-RAG 测试会实际调用你配置的云端模型。手工 `/rag/query` 没有 Chatwoot 路径的 120 秒整体兜底；`curl --max-time` 只限制当前客户端等待，失败后先看日志，不要连续重复提交。
+RAG 测试会实际调用你配置的云端模型。手工 `/rag/query` 没有 Chatwoot 路径的 **30 秒查询整体兜底**；`curl --max-time` 只限制当前客户端等待，失败后先看日志，不要连续重复提交。检索故障在这个直接查询接口可能表现为 HTTP 错误，实际 Chatwoot 的维护回复路径按第 12.5 节验证。
 
 ### 9.6 通过 SSH 隧道访问管理后台
 
 在 **Windows PowerShell** 新开终端执行，窗口保持开启：
 
 ```powershell
-ssh -N -o ServerAliveInterval=30 -L 3001:127.0.0.1:3001 ubuntu@YOUR_SERVER_ADDRESS
+ssh -N -o ServerAliveInterval=30 -L 3001:127.0.0.1:3001 ics
 ```
 
 Windows 浏览器打开 `http://127.0.0.1:3001/admin`，用 `.env` 的 `ADMIN_USERNAME` 和 `ADMIN_INITIAL_PASSWORD` 登录。
@@ -785,7 +983,7 @@ Windows 浏览器打开 `http://127.0.0.1:3001/admin`，用 `.env` 的 `ADMIN_US
 若本机 3001 已被你本地客服服务占用，换本地端口，不改服务器端口：
 
 ```powershell
-ssh -N -o ServerAliveInterval=30 -L 13001:127.0.0.1:3001 ubuntu@YOUR_SERVER_ADDRESS
+ssh -N -o ServerAliveInterval=30 -L 13001:127.0.0.1:3001 ics
 ```
 
 此时打开 `http://127.0.0.1:13001/admin`。预期能看到 FAQ、知识库维护和日志界面。
@@ -919,15 +1117,22 @@ https://bot.example.com/webhooks/chatwoot
 ```bash
 cd /opt/cs
 docker compose -f docker-compose.yml up -d --force-recreate ics-agent
-curl --fail http://172.20.48.12:3001/health
 ```
+
+等待模型预热结束。可用 `tail -f log/uvicorn-admin.stderr.log` 查看新一次启动日志，看到 `Application startup complete` 后按 `Ctrl+C` 退出查看，再检查私网入口：
+
+```bash
+curl --fail --max-time 20 http://172.20.48.12:3001/health
+```
+
+`up -d` 返回只代表容器已启动，不代表模型预热已完成；立即请求得到连接拒绝时先看启动日志。日志已有初始化失败时按第 16 节排错，不要仅靠反复 recreate 继续。
 
 改成私网绑定后，本文后续所有**在服务器执行**的 `http://127.0.0.1:3001` 都改为 `http://172.20.48.12:3001`。Nginx 的 127.0.0.1 上游也不再适用；10A 与 10B 是两条选择路径。
 
 SSH 隧道也相应改成：
 
 ```powershell
-ssh -N -o ServerAliveInterval=30 -L 13001:172.20.48.12:3001 ubuntu@YOUR_SERVER_ADDRESS
+ssh -N -o ServerAliveInterval=30 -L 13001:172.20.48.12:3001 ics
 ```
 
 从 Chatwoot 主机访问：
@@ -944,7 +1149,7 @@ docker compose exec -T sidekiq ruby -rnet/http -e 'u=URI("http://172.20.48.12:30
 
 预期为 200。这只验证网络，不代表 Chatwoot 的 URL 安全检查已允许访问私网。
 
-本地验证的 Chatwoot 4.17.1 对内网 Webhook 有访问限制；当错误日志明确提示私网地址被拒绝时，可由 Chatwoot 管理员在其已有部署配置中为 Rails 和 Sidekiq 设置 `SAFE_FETCH_ALLOW_PRIVATE_NETWORK=true`，再重建对应容器。不同服务器版本可能不同，先核对该版本支持的配置。此设置扩大 Chatwoot 可请求的网络范围，优先使用 10A 的有效 HTTPS 公网域名。
+本地验证的 Chatwoot 4.17.1 对内网 Webhook 有访问限制；当错误日志明确提示私网地址被拒绝时，可由 Chatwoot 管理员在其已有部署配置中为 Rails 和 Sidekiq 设置 `SAFE_FETCH_ALLOW_PRIVATE_NETWORK=true`，再重建对应容器。不同服务器版本可能不同，先核对该版本支持的配置。这是 **Chatwoot 侧**配置，写进机器人的 `.env` 不生效；此设置扩大 Chatwoot 可请求的网络范围，应配合本次受控的内网访问范围使用。
 
 本路径的 Webhook 地址为：
 
@@ -952,7 +1157,16 @@ docker compose exec -T sidekiq ruby -rnet/http -e 'u=URI("http://172.20.48.12:30
 http://172.20.48.12:3001/webhooks/chatwoot
 ```
 
-这里仍必须使用真实签名 Secret。使用与 10A 相同的未签名探测，把 URL 换成私网地址，预期同样为 401。
+这里仍必须使用签名 Secret；准备阶段是第 5 节生成的临时值，绑定前替换为真实 AgentBot Secret。在 Ubuntu 执行以下未签名探测：
+
+```bash
+curl -sS --max-time 10 -o /dev/null -w '%{http_code}\n' \
+  -X POST -H 'Content-Type: application/json' \
+  -d '{"event":"deployment_probe"}' \
+  http://172.20.48.12:3001/webhooks/chatwoot
+```
+
+预期为 `401`，因为缺少合法签名；不是 `200` 或 `202`。这里不用 `curl --fail`，因为预期响应就是 401。此请求不包含用户消息。网络连通、签名拒绝均正常后再配置 AgentBot。
 
 Docker 发布端口时可能绕过部分 UFW 规则，不能只凭 `ufw status` 判断已经限制来源；核对云安全组和实际连通结果。管理后台通过 SSH 隧道访问；用户问答通过已有前端测试，浏览器需要能访问内网 Chatwoot `http://172.20.48.12:3000`。
 
@@ -1209,15 +1423,29 @@ AgentBot 通常不负责独立的 `contact_updated` 事件。若还要验证“�
 
 当前处于人工接管的会话，即使达到空闲边界，也不会因此自动解除人工接管。
 
-### 12.5 验证空回复兜底，不破坏真实模型配置
+### 12.5 验证空回复、检索故障和查询超时兜底
 
-以下命令只在容器里的独立进程模拟空回复，不修改运行服务，不调用真实模型，不给 Chatwoot 发消息：
+当前代码的处理边界如下：
+
+| 情况 | 当前行为 |
+| --- | --- |
+| FAQ 基础设施查询异常 | 尝试转到 RAG；后续 RAG 也失败时才走维护提示 |
+| 大模型请求异常，或返回空字符串、全空白、`None`、没有有效文本的内容块 | 回复节点在首次失败后间隔 1 秒、3 秒重连，最多 3 次节点调用；仍失败则返回维护提示 |
+| 意图识别、检索、重排、查询中的记忆访问异常 | Chatwoot 查询外层捕获，返回维护提示；不为这类已兜底的查询继续重试整个 Webhook 任务 |
+| 查询阶段达到当前 30 秒预算 | Chatwoot 查询外层取消等待并返回维护提示；不保证内部所有重试都完成 |
+| 检索正常完成但没有命中文档 | 不等同于“检索异常”，仍可能进入回复生成；验收知识库时不能仅凭无报错判定成功 |
+| Chatwoot API 回复发送失败、查询外的数据库控制状态失败 | 不属于上述查询兜底保证；任务可能重试并最终失败，用户可能收不到维护提示 |
+
+SDK 自身仍有 `LLM_MAX_RETRIES=2`，它与回复节点的重连是两层机制；二者共同消耗外层 30 秒查询预算。30 秒不包含进入 worker 前的队列等待、查询前的部分会话控制操作，以及查询后的 Chatwoot 写回耗时。CPU 线程或第三方调用的取消也可能存在延迟，因此它是应用等待预算，不是用户侧严格的送达时限。
+
+以下命令在容器里的独立进程模拟三种故障，不修改运行服务，不调用真实模型，不给 Chatwoot 发消息。为了不用等待 30 秒，超时分支仅在这个独立进程临时用 0.01 秒测试：
 
 ```bash
 docker compose -f docker-compose.yml exec -T ics-agent python - <<'PY'
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from ics_agent.app.chatwoot import routes
 from ics_agent.rag.graph import nodes
 
 async def check():
@@ -1228,11 +1456,32 @@ async def check():
     assert model.await_count == 3
     print('PASS: 空回复重试后返回指定维护提示')
 
+    with patch.object(routes, '_run_rag_query', new=AsyncMock(side_effect=RuntimeError('retrieval unavailable'))):
+        result = await routes._build_webhook_answer(
+            content='服务器检索故障测试', thread_id='deployment-check:retrieval', event_key='deployment-check:retrieval'
+        )
+    assert result['route'] == 'rag_fallback'
+    assert result['answer'] == nodes.LLM_REPLY_FALLBACK_ANSWER
+    print('PASS: 检索异常返回指定维护提示')
+
+    async def stalled_query(*args, **kwargs):
+        await asyncio.sleep(1)
+
+    with patch.object(routes, '_run_rag_query', new=stalled_query), patch.object(
+        routes, 'rag_settings', SimpleNamespace(webhook_rag_timeout_seconds=0.01)
+    ):
+        result = await routes._build_webhook_answer(
+            content='服务器查询超时测试', thread_id='deployment-check:timeout', event_key='deployment-check:timeout'
+        )
+    assert result['answer'] == nodes.LLM_REPLY_FALLBACK_ANSWER
+    assert 'TimeoutError' in result['rag_error']
+    print('PASS: 查询超时返回指定维护提示')
+
 asyncio.run(check())
 PY
 ```
 
-预期最后输出 PASS。不要通过修改正在使用的 API Key 来模拟故障。
+预期输出三条 PASS，期间出现模拟故障日志是正常的。不要通过修改正在使用的 API Key 来模拟故障。这个检查验证兜底分支；真实回复的 Chatwoot 投递能力仍以第 12.2 节前端验收为准。
 
 真实故障时固定维护文案为：
 
@@ -1252,6 +1501,14 @@ docker compose -f docker-compose.yml restart ics-agent
 
 ## 13. 日常更新和配置修改
 
+| 改了什么 | 需要执行什么 |
+| --- | --- |
+| 只改服务器 `.env` | 修改原文件后 recreate 应用；普通 restart 不更新容器环境 |
+| 改 Python、依赖、Dockerfile | Git 拉取、同步代码、重新 build 并启动应用 |
+| 只改仓库中的 `.env.example` / 服务器模板 | 模板不会自动覆盖运行 `.env`，先手工合并参数，再 recreate |
+| 改 FAQ / 知识库 | 管理后台更新，或第 13.3～13.4 节；单纯 git pull 不会更新运行数据 |
+| 换模型或训练 CSV | 作为配套版本单独部署，检查指纹并重新预热；不属于普通代码同步 |
+
 ### 13.1 只改 .env
 
 ```bash
@@ -1261,6 +1518,23 @@ docker compose -f docker-compose.yml up -d --force-recreate ics-agent
 ```
 
 然后检查健康和日志。修改数据库密码不属于普通环境变量变更：PostgreSQL 已有数据卷时，改 `POSTGRES_PASSWORD` 不会自动修改已有数据库用户密码，可能导致应用连接失败。
+
+**从旧手册配置升级到当前版本：** 保留原服务器密钥、地址和已建立的管理员账号，在 `/opt/cs/.env` 修改对应原行：
+
+```dotenv
+CHATWOOT_BLOCK_DURATION_SECONDS=86400
+RAG_MEMORY_RETENTION_DAYS=15
+WEBHOOK_WORKER_COUNT=10
+RAG_RERANKER_MAX_CONCURRENCY=4
+LLM_MAX_CONCURRENCY=8
+LLM_CONCURRENCY_WAIT_TIMEOUT=15
+POSTGRES_POOL_SIZE=12
+POSTGRES_POOL_ACQUIRE_TIMEOUT=1.0
+LLM_TIMEOUT=10
+WEBHOOK_RAG_TIMEOUT_SECONDS=30
+```
+
+缺少的项才追加；不要给同一键保留两个不同值。LLM 模型、Base URL 和 API Key 按第 5.4 节成组核对。若主动采用了第 5.7 节的小并发方案，则保留你选定的并发值。修改后 recreate 并按第 7.2 节读回配置摘要。
 
 ### 13.2 更新后端代码，不重复传模型或前端
 
@@ -1319,7 +1593,7 @@ git -C /opt/cs-src rev-parse HEAD > /opt/cs/deployment-records/source-commit.txt
 2. 只上传这个后端包：
 
 ```powershell
-scp -o ServerAliveInterval=30 D:\cs-app.tar.gz ubuntu@YOUR_SERVER_ADDRESS:~/
+scp -o ServerAliveInterval=30 D:\cs-app.tar.gz ics:~/
 if ($LASTEXITCODE -ne 0) { throw '后端包上传失败。' }
 ```
 
@@ -1463,7 +1737,7 @@ git -C /opt/cs-src rev-parse HEAD > /opt/cs/deployment-records/source-commit.txt
 
 当前使用单个应用进程、内存队列和进程内会话锁，FAQ 也有进程内索引。首测不要加多个 Uvicorn workers，不要执行 `--scale ics-agent=2`。想支持多个实例，需要先改造共享队列、会话串行和索引刷新方式。
 
-本项目主要在 CPU 上运行本地检索模型，生成回复通过云端大模型。先测少量并发，关注 `docker stats`、内存、等待时间和模型服务限流，不要直接复制本机较大的 worker 配置。
+本项目主要在 CPU 上运行本地检索模型，生成回复通过云端大模型。当前模板保留你最新的 10 / 4 / 8 并发基线，但它不是目标服务器的容量证明；先用少量测试会话观察 `docker stats`、内存、等待时间和模型服务限流。资源不足按第 5.7 节降低并发并记录实际取值，仍只启动一个应用进程。
 
 ### 15.3 当前服务恢复边界
 
@@ -1479,6 +1753,8 @@ git -C /opt/cs-src rev-parse HEAD > /opt/cs/deployment-records/source-commit.txt
 | 现象 | 先看哪里 | 处理 |
 | --- | --- | --- |
 | SSH 再次出现 Connection reset | 网络、云控制台、SSH 日志 | 重新连接后 attach tmux；构建可能仍在运行，不要重复启动 |
+| Git 提示 `Permission denied (publickey)` | 服务器独立密钥、SSH 别名、仓库 Deploy Key | 按第 4.6 节配置读取权限；Windows 的 `ssh ics` 不能提供 Git 仓库认证 |
+| Git 提示远端分支不存在 / 找不到新模板 | 当前分支、推送结果、提交 SHA | 本轮分支为 `test`，核对已推送的实际版本；仅保存未提交的文件无法拉取 |
 | `docker: permission denied` | 当前用户是否已加入 docker 组、是否重新登录 | 重新登录，或由管理员使用 sudo；不改 Docker socket 为所有人可写 |
 | `port is already allocated` | `sudo ss -lntp` | 调整机器人 3001 / 数据库宿主机 5433 映射，不抢占 Chatwoot 原端口 |
 | 构建下载超时 | 服务器能否访问 Python 源、PyTorch CPU 源、Docker Registry | 修复出口和 DNS 后重试，保留 TLS 校验 |
@@ -1490,10 +1766,12 @@ git -C /opt/cs-src rev-parse HEAD > /opt/cs/deployment-records/source-commit.txt
 | `No such file` 或 Windows 路径 | `.env` 和模型元数据路径 | 使用 `/app` 相对路径，补齐模型实际权重；不复制 Windows 环境路径 |
 | OCR 初始化失败 | stderr 的缺失依赖或模型下载错误 | 按明确错误补齐资源并重新构建；确认所需图片已成功提取文字再验收 |
 | 数据库认证失败 | `.env`、数据库初始化时的密码 | 已有卷不会因改 env 自动改数据库密码，恢复正确配置或由管理员执行密码变更 |
+| 数据库连接池获取超时 | 生效的连接池配置、数据库状态、并发 | 核对当前 `POSTGRES_POOL_SIZE=12`、`POSTGRES_POOL_ACQUIRE_TIMEOUT=1.0` 已 recreate 生效；不要把连接池耗尽误当密码错误 |
+| Chatwoot 经常收到维护提示 | 查询耗时和失败日志、模型限流、CPU / 内存 | 按第 12.5 节区分空回复、检索异常与 30 秒查询预算耗尽；先排查瓶颈，再决定是否调整预算 |
 | 管理员密码不对 | 首次初始化时的配置、system_users 是否已有记录 | 改 `ADMIN_INITIAL_PASSWORD` 不会覆盖已有密码；走账号重置流程，不删除整个库 |
 | Webhook 401 | AgentBot Secret、Account Secret、时间同步 | Secret 与来源对应；recreate 应用；核对 Chatwoot 是否发送签名头 |
 | Chatwoot 收到消息但机器人没日志 | Outgoing URL、Inbox AgentBot 绑定、Sidekiq 网络 | 从 Chatwoot 实际任务容器探测机器人，检查 Sidekiq 投递日志 |
-| Chatwoot 报私网 URL 被拒 | Chatwoot 版本和 safe-fetch 日志 | 优先 HTTPS 域名；内网模式按该版本配置受控的私网请求支持 |
+| Chatwoot 报私网 URL 被拒 | Chatwoot 版本和 safe-fetch 日志 | 按第 10B 节在 Chatwoot 侧配置该版本支持的私网访问；写到机器人 .env 无效 |
 | 有答案日志但 Chatwoot 没收到 | `CHATWOOT_AUTO_REPLY_ENABLED`、API Token、发送错误 | 配置 true 并 recreate；用户 Token 与机器人 Token 各就其位 |
 | 转人工提示没有坐席 | 测试 Inbox 成员、坐席 online 状态、open 会话数 | 坐席加入同一个 Inbox 并上线；确认未达到每人 5 个会话限制 |
 | 已解决后仍不恢复机器人 | 会话状态事件是否到达、绑定是否启用 | 验证 AgentBot 状态事件，必要时补带正确 Secret 的状态 Webhook |
@@ -1528,7 +1806,9 @@ sudo journalctl -k --since '30 minutes ago' | grep -i -E 'oom|out of memory|kill
 
 - [ ] Ubuntu 版本、CPU 核数、内存和剩余磁盘已记录。
 - [ ] 服务器模型文件完整，意图 CSV 与模型指纹一致。
-- [ ] 模型包和后端包分别完成 SHA256 校验，并都解压到 `/opt/cs`。
+- [ ] 模型包 SHA256 已核对，解压到 `/opt/cs`；代码通过 Git 同步且记录提交 SHA，或备用后端包已校验解压。
+- [ ] 使用当前服务器模板配置；实际并发、10 秒 LLM 超时、30 秒查询预算、15 天记忆与 1 天封禁策略已核对。
+- [ ] 第 7.2 节配置与模型检查通过，没有占位凭据，数据库连接池参数已显式填写。
 - [ ] 根 Dockerfile 已从后端模板复制，未重复上传独立前端。
 - [ ] Compose 使用显式 `-f docker-compose.yml`，没有开发热重载或多实例。
 - [ ] PostgreSQL healthy，FAQ 表有数据。
@@ -1541,7 +1821,7 @@ sudo journalctl -k --since '30 minutes ago' | grep -i -E 'oom|out of memory|kill
 - [ ] FAQ、RAG、图片、链接分别验收。
 - [ ] 转人工、人工期间静默、已解决后新上下文分别验收。
 - [ ] 6 小时边界测试后已恢复为 21600 秒。
-- [ ] 空回复模拟验证通过，真实模型配置保持有效。
+- [ ] 空回复、检索异常、查询超时三项模拟兜底验证通过，真实模型配置保持有效。
 - [ ] 正常重启后，数据库、管理后台和问答仍可用。
 - [ ] 备份已生成并移出服务器，成功镜像和依赖版本已记录。
 
