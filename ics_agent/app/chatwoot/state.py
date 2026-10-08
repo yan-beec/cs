@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable
+from uuid import uuid4
 
 from ics_agent.faq.repositories import PostgreSQLConnectionPool
 
@@ -21,7 +22,9 @@ _CONTROL_COLUMNS = """
     last_ai_message_id, last_handoff_message_id,
     handoff_conversation_updated, handoff_label_applied,
     handoff_note_created, handoff_assignment_applied,
-    handoff_notice_sent, handoff_trigger_message_id
+    handoff_notice_sent, handoff_trigger_message_id,
+    session_started_at, session_closed_at, last_user_message_at,
+    last_status_event_at
 """.strip()
 
 
@@ -49,6 +52,11 @@ class ConversationControl:
     handoff_notice_sent: bool
     # 触发当前人工轮次的入站消息；用于队列重试续跑未完成动作。
     handoff_trigger_message_id: str | None = None
+    session_started_at: datetime | None = None
+    # 保留历次结束的最大时间，重开后也不清空，避免旧事件再次关闭新轮。
+    session_closed_at: datetime | None = None
+    last_user_message_at: datetime | None = None
+    last_status_event_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +108,10 @@ class ConversationControlRepository:
                                 DEFAULT FALSE,
                             handoff_notice_sent BOOLEAN NOT NULL DEFAULT FALSE,
                             handoff_trigger_message_id TEXT,
+                            session_started_at TIMESTAMPTZ,
+                            session_closed_at TIMESTAMPTZ,
+                            last_user_message_at TIMESTAMPTZ,
+                            last_status_event_at TIMESTAMPTZ,
                             created_at TIMESTAMPTZ NOT NULL
                                 DEFAULT CURRENT_TIMESTAMP,
                             updated_at TIMESTAMPTZ NOT NULL
@@ -124,6 +136,25 @@ class ConversationControlRepository:
                         f"""
                         ALTER TABLE {CONVERSATION_CONTROL_TABLE}
                         ADD COLUMN IF NOT EXISTS handoff_trigger_message_id TEXT
+                        """.strip()
+                    )
+                    for column in (
+                        "session_started_at", "session_closed_at",
+                        "last_user_message_at", "last_status_event_at",
+                    ):
+                        cursor.execute(
+                            f"ALTER TABLE {CONVERSATION_CONTROL_TABLE} "
+                            f"ADD COLUMN IF NOT EXISTS {column} TIMESTAMPTZ"
+                        )
+                    # 升级时只补已明确结束的边界，不能把操作更新时间误当
+                    # 成用户活跃时间。旧会话下一条新消息再建立独立轮次。
+                    cursor.execute(
+                        f"""
+                        UPDATE {CONVERSATION_CONTROL_TABLE}
+                        SET session_closed_at = updated_at
+                        WHERE last_chatwoot_status = 'resolved'
+                          AND session_closed_at IS NULL
+                          AND session_started_at IS NULL
                         """.strip()
                     )
                     cursor.execute(
@@ -250,90 +281,124 @@ class ConversationControlRepository:
         thread_id: str | None,
         message_id: str | None,
         chatwoot_status: str | None = None,
+        message_at: datetime | None = None,
+        idle_timeout_seconds: int = 6 * 60 * 60,
     ) -> ConversationControl:
-        """记录消息；切换线程时恢复该新线程的 AI 能力。"""
+        """按用户消息时间维护咨询轮次；超时只换上下文，不解除人工。"""
         account_id, conversation_id = _validate_reference(
-            account_id,
-            conversation_id,
+            account_id, conversation_id,
         )
-        clean_thread_id = _clean_thread_id(thread_id)
+        if idle_timeout_seconds <= 0:
+            raise ValueError("Consultation idle timeout must be positive.")
         clean_status = _clean_status(chatwoot_status)
+        received_at = _utc_datetime(message_at)
         connection = self._connections.acquire()
         try:
             with connection.transaction():
                 cursor = connection.cursor()
                 try:
+                    # 与人工释放/分配保持相同锁顺序，避免先锁行后锁账号。
+                    cursor.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                        (f"chatwoot:handoff:account={account_id}",),
+                    )
                     cursor.execute(
                         f"""
                         INSERT INTO {CONVERSATION_CONTROL_TABLE} (
-                            account_id, conversation_id, active_thread_id,
-                            last_chatwoot_status, last_user_message_id
-                        )
-                        VALUES (%s, %s, %s, %s, %s)
-                        ON CONFLICT (account_id, conversation_id)
-                        DO NOTHING
+                            account_id, conversation_id, active_thread_id
+                        ) VALUES (%s, %s, %s)
+                        ON CONFLICT (account_id, conversation_id) DO NOTHING
                         """.strip(),
-                        (
-                            account_id,
-                            conversation_id,
-                            clean_thread_id,
-                            clean_status,
-                            message_id,
-                        ),
+                        (account_id, conversation_id, _clean_thread_id(thread_id)),
                     )
                     control = self._fetch(
-                        cursor,
-                        account_id=account_id,
-                        conversation_id=conversation_id,
-                        for_update=True,
+                        cursor, account_id=account_id,
+                        conversation_id=conversation_id, for_update=True,
                     )
                     if control is None:
-                        raise RuntimeError(
-                            "Conversation control row was not created."
-                        )
-
-                    previous_status = control.last_chatwoot_status
-                    release_handoff = control.handoff_required and (
-                        clean_status == "resolved"
+                        raise RuntimeError("Conversation control row was not created.")
+                    was_closed = control.session_closed_at is not None and (
+                        control.session_started_at is None
+                        or control.session_closed_at >= control.session_started_at
+                    )
+                    if message_id is not None and message_id == control.last_user_message_id:
+                        # 状态补查可能在本条消息第一次写入之后才发现更早的
+                        # 结束事件。仅允许同一原始时间的这条消息补开新轮。
+                        if not (
+                            was_closed
+                            and received_at > control.session_closed_at
+                            and received_at == control.last_user_message_at
+                        ):
+                            return control
+                    # 乱序/重试不能把时间回拨，也不能把旧轮消息送入新轮。
+                    if (
+                        control.last_user_message_at is not None
+                        and received_at < control.last_user_message_at
+                    ) or (
+                        control.session_started_at is not None
+                        and received_at < control.session_started_at
+                    ) or (
+                        control.session_closed_at is not None
+                        and received_at <= control.session_closed_at
+                    ):
+                        return control
+                    new_session = (
+                        control.active_thread_id is None
+                        or control.session_started_at is None
+                        or control.last_user_message_at is None
+                        or was_closed
                         or (
-                            clean_status == "open"
-                            and previous_status == "resolved"
+                            received_at - control.last_user_message_at
+                        ).total_seconds() >= idle_timeout_seconds
+                    )
+                    active_thread_id = (
+                        _new_session_thread_id(account_id, conversation_id)
+                        if new_session else control.active_thread_id
+                    )
+                    status_is_current = (
+                        control.last_status_event_at is None
+                        or received_at >= control.last_status_event_at
+                    )
+                    next_status = (
+                        clean_status if status_is_current and clean_status
+                        else control.last_chatwoot_status
+                    )
+                    # 消息中的 resolved 只是快照，不能结束刚开启的新轮。
+                    # 显式状态事件由 record_conversation_status 记录结束边界。
+                    release_handoff = control.handoff_required and (
+                        was_closed
+                        or (status_is_current and clean_status == "resolved")
+                        or (
+                            status_is_current and clean_status == "open"
+                            and control.last_chatwoot_status == "resolved"
                         )
                     )
                     cursor.execute(
                         f"""
                         UPDATE {CONVERSATION_CONTROL_TABLE}
-                        SET
-                            active_thread_id = COALESCE(
-                                active_thread_id, %s
-                            ),
-                            last_chatwoot_status = COALESCE(
-                                %s, last_chatwoot_status
-                            ),
-                            last_user_message_id = COALESCE(
-                                %s, last_user_message_id
-                            ),
+                        SET active_thread_id = %s,
+                            session_started_at = %s,
+                            last_user_message_at = %s,
+                            last_user_message_id = COALESCE(%s, last_user_message_id),
+                            last_chatwoot_status = %s,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE account_id = %s AND conversation_id = %s
                         """.strip(),
                         (
-                            clean_thread_id,
-                            clean_status,
-                            message_id,
-                            account_id,
-                            conversation_id,
+                            active_thread_id,
+                            received_at if new_session else control.session_started_at,
+                            received_at, message_id, next_status,
+                            account_id, conversation_id,
                         ),
                     )
                     if release_handoff:
                         self._release_handoff_cursor(
-                            cursor,
-                            account_id=account_id,
+                            cursor, account_id=account_id,
                             conversation_id=conversation_id,
-                            status=clean_status or previous_status,
+                            status=next_status or "resolved",
                         )
                     control = self._fetch(
-                        cursor,
-                        account_id=account_id,
+                        cursor, account_id=account_id,
                         conversation_id=conversation_id,
                     )
                 finally:
@@ -408,6 +473,25 @@ class ConversationControlRepository:
                         raise RuntimeError(
                             "Conversation control row was not created."
                         )
+
+                    if not inserted and (
+                        (
+                            control.session_closed_at is not None
+                            and (
+                                control.session_started_at is None
+                                or control.session_closed_at >= control.session_started_at
+                            )
+                        )
+                        or (
+                            clean_thread_id is not None
+                            and control.active_thread_id is not None
+                            and ":round:" in control.active_thread_id
+                            and clean_thread_id != control.active_thread_id
+                        )
+                    ):
+                        # 结束通知可以在查询坐席期间到达；旧任务不得重新
+                        # 打开人工接管。旧版无轮次 ID 的记录仍可兼容升级。
+                        return control, False
 
                     if inserted:
                         transitioned = True
@@ -508,60 +592,96 @@ class ConversationControlRepository:
         conversation_id: str,
         status: str,
         release_handoff: bool = True,
+        event_at: datetime | None = None,
     ) -> ConversationControl:
-        """记录 Chatwoot 状态，并按需结束当前人工接管轮次。"""
+        """记录有序状态事件；resolved 结束所有咨询，包括纯 AI 咨询。"""
         account_id, conversation_id = _validate_reference(
-            account_id,
-            conversation_id,
+            account_id, conversation_id,
         )
         clean_status = _clean_status(status)
         if clean_status is None:
             raise ValueError("Chatwoot conversation status is required.")
+        observed_at = _utc_datetime(event_at)
         connection = self._connections.acquire()
         try:
             with connection.transaction():
                 cursor = connection.cursor()
                 try:
-                    if release_handoff and clean_status == "resolved":
-                        cursor.execute(
-                            "SELECT pg_advisory_xact_lock(hashtext(%s))",
-                            (f"chatwoot:handoff:account={account_id}",),
-                        )
-                    previous_control = self._fetch(
-                        cursor,
-                        account_id=account_id,
-                        conversation_id=conversation_id,
-                        for_update=True,
+                    cursor.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                        (f"chatwoot:handoff:account={account_id}",),
                     )
                     cursor.execute(
                         f"""
                         INSERT INTO {CONVERSATION_CONTROL_TABLE} (
-                            account_id, conversation_id,
-                            last_chatwoot_status
-                        )
-                        VALUES (%s, %s, %s)
-                        ON CONFLICT (account_id, conversation_id)
-                        DO UPDATE SET
-                            last_chatwoot_status = EXCLUDED.last_chatwoot_status,
-                            updated_at = CURRENT_TIMESTAMP
+                            account_id, conversation_id
+                        ) VALUES (%s, %s)
+                        ON CONFLICT (account_id, conversation_id) DO NOTHING
                         """.strip(),
-                        (account_id, conversation_id, clean_status),
+                        (account_id, conversation_id),
                     )
-                    if (
-                        release_handoff
-                        and previous_control is not None
-                        and previous_control.handoff_required
-                        and clean_status == "resolved"
+                    control = self._fetch(
+                        cursor, account_id=account_id,
+                        conversation_id=conversation_id, for_update=True,
+                    )
+                    if control is None:
+                        raise RuntimeError("Conversation control row was not created.")
+                    closed = control.session_closed_at
+                    currently_closed = closed is not None and (
+                        control.session_started_at is None
+                        or closed >= control.session_started_at
+                    )
+                    # 无事件时间的同步重复操作也不应延长已结束轮次的边界。
+                    if event_at is None and clean_status == "resolved" and currently_closed:
+                        observed_at = closed
+                    if event_at is None and clean_status != "resolved" and currently_closed:
+                        return control
+                    event_in_current_session = (
+                        control.session_started_at is None
+                        or observed_at >= control.session_started_at
+                    )
+                    status_is_current = (
+                        control.last_status_event_at is None
+                        or observed_at >= control.last_status_event_at
+                    )
+                    if not event_in_current_session or (
+                        clean_status != "resolved" and not status_is_current
                     ):
+                        return control
+                    if clean_status == "resolved":
+                        closed = max(closed, observed_at) if closed else observed_at
+                    # open/reopened 可以先于更早的 resolved 送达；仍须保留
+                    # 结束边界，但不能把当前 Chatwoot 状态从 open 回拨。
+                    next_status = (
+                        clean_status if status_is_current else control.last_chatwoot_status
+                    )
+                    next_status_event_at = control.last_status_event_at
+                    if status_is_current and (
+                        event_at is not None or clean_status == "resolved"
+                    ):
+                        next_status_event_at = observed_at
+                    cursor.execute(
+                        f"""
+                        UPDATE {CONVERSATION_CONTROL_TABLE}
+                        SET last_chatwoot_status = %s,
+                            last_status_event_at = %s,
+                            session_closed_at = %s,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE account_id = %s AND conversation_id = %s
+                        """.strip(),
+                        (
+                            next_status, next_status_event_at,
+                            closed, account_id, conversation_id,
+                        ),
+                    )
+                    if release_handoff and clean_status == "resolved":
                         self._release_handoff_cursor(
-                            cursor,
-                            account_id=account_id,
+                            cursor, account_id=account_id,
                             conversation_id=conversation_id,
-                            status=clean_status,
+                            status=next_status or clean_status,
                         )
                     control = self._fetch(
-                        cursor,
-                        account_id=account_id,
+                        cursor, account_id=account_id,
                         conversation_id=conversation_id,
                     )
                 finally:
@@ -569,7 +689,7 @@ class ConversationControlRepository:
         finally:
             connection.close()
         if control is None:
-            raise RuntimeError("Conversation control row was not created.")
+            raise RuntimeError("Conversation control row disappeared.")
         return control
 
     def release_handoff(
@@ -1010,6 +1130,18 @@ def _clean_status(status: str | None) -> str | None:
     return value or None
 
 
+def _utc_datetime(value: datetime | None) -> datetime:
+    if value is None:
+        return datetime.now(timezone.utc)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _new_session_thread_id(account_id: str, conversation_id: str) -> str:
+    return f"chatwoot:{account_id}:{conversation_id}:round:{uuid4().hex}"
+
+
 def _control_from_row(row: Any) -> ConversationControl | None:
     if row is None:
         return None
@@ -1036,6 +1168,18 @@ def _control_from_row(row: Any) -> ConversationControl | None:
         handoff_notice_sent=bool(row[17]),
         handoff_trigger_message_id=(
             None if len(row) <= 18 or row[18] is None else str(row[18])
+        ),
+        session_started_at=(
+            None if len(row) <= 19 or row[19] is None else _utc_datetime(row[19])
+        ),
+        session_closed_at=(
+            None if len(row) <= 20 or row[20] is None else _utc_datetime(row[20])
+        ),
+        last_user_message_at=(
+            None if len(row) <= 21 or row[21] is None else _utc_datetime(row[21])
+        ),
+        last_status_event_at=(
+            None if len(row) <= 22 or row[22] is None else _utc_datetime(row[22])
         ),
     )
 

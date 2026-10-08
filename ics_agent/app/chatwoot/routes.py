@@ -39,6 +39,8 @@ from .payload import (
     is_explicit_handoff_request,
     parse_event,
     verify_signature,
+    webhook_message_time,
+    webhook_status_time,
 )
 from ics_agent.app.services.rag import _run_rag_query
 from ics_agent.rag.graph.nodes import LLM_REPLY_FALLBACK_ANSWER
@@ -102,7 +104,7 @@ def _should_process_webhook_event(event: ChatwootWebhookEvent) -> bool:
 
 
 def _webhook_thread_id(event: ChatwootWebhookEvent) -> str | None:
-    """按 Chatwoot 会话生成稳定的长期记忆 ID。"""
+    """生成会话基础 ID；有会话控制记录时使用其独立咨询轮次 ID。"""
     conversation = event.conversation or {}
     account = event.account or {}
     conversation_id = conversation.get("id")
@@ -252,6 +254,7 @@ async def _enqueue_webhook_job(
     *,
     event: ChatwootWebhookEvent,
     event_key: str,
+    received_at: datetime | None = None,
 ) -> None:
     if webhook_queue is None:
         await asyncio.to_thread(
@@ -270,6 +273,7 @@ async def _enqueue_webhook_job(
                 event_key=event_key,
                 event=event,
                 partition_key=_webhook_partition_key(event),
+                received_at=received_at or datetime.now(timezone.utc),
             )
         )
     except WebhookQueueFull as exc:
@@ -669,44 +673,40 @@ async def _refresh_handoff_from_chatwoot_status(
     event: ChatwootWebhookEvent,
     control: ConversationControl,
 ) -> ConversationControl:
-    """用 Webhook 或 Chatwoot 当前状态判断人工轮次是否结束。"""
+    """Only query missing handoff status; message snapshots are not status events."""
     account_id, conversation_id = _webhook_conversation_reference(event)
-    status = _conversation_status(event)
     if (
-        control.handoff_required
-        and status is None
-        and account_id
-        and conversation_id
+        not control.handoff_required
+        or _conversation_status(event) is not None
+        or not account_id
+        or not conversation_id
     ):
-        try:
-            conversation = await asyncio.to_thread(
-                get_chatwoot_client().get_conversation,
-                account_id=account_id,
-                conversation_id=conversation_id,
-            )
-            status = str(conversation.get("status") or "").strip().lower()
-        except ChatwootAPIError as exc:
-            log_event(
-                logger,
-                logging.WARNING,
-                "webhook.handoff.status_lookup_failed",
-                account_id=account_id,
-                conversation_id=conversation_id,
-                status_code=exc.status_code,
-            )
-            return control
-
-    if status is None:
         return control
-
-    if account_id and conversation_id:
-        control = await asyncio.to_thread(
-            conversation_control_repository.record_conversation_status,
+    try:
+        conversation = await asyncio.to_thread(
+            get_chatwoot_client().get_conversation,
             account_id=account_id,
             conversation_id=conversation_id,
-            status=status,
         )
-    return control
+    except ChatwootAPIError as exc:
+        log_event(
+            logger, logging.WARNING, "webhook.handoff.status_lookup_failed",
+            account_id=account_id, conversation_id=conversation_id,
+            status_code=exc.status_code,
+        )
+        return control
+    status = str(conversation.get("status") or "").strip().lower()
+    if not status:
+        return control
+    return await asyncio.to_thread(
+        conversation_control_repository.record_conversation_status,
+        account_id=account_id,
+        conversation_id=conversation_id,
+        status=status,
+        event_at=webhook_status_time(
+            ChatwootWebhookEvent(event="conversation_updated", raw=conversation)
+        ),
+    )
 
 
 async def _update_chatwoot_typing(
@@ -746,9 +746,17 @@ async def _set_ai_chatwoot_status(
     account_id: str,
     conversation_id: str,
     event_key: str | None = None,
+    thread_id: str | None = None,
 ) -> bool:
-    """尽力让 AI 会话保持 pending，但不阻断 RAG 或已发出的回复。"""
+    """尽力让当前 AI 咨询保持 pending，不重新打开已结束的轮次。"""
     try:
+        if thread_id:
+            latest = await asyncio.to_thread(
+                conversation_control_repository.get,
+                account_id=account_id, conversation_id=conversation_id,
+            )
+            if not _can_reply_in_session(latest, thread_id):
+                return False
         await asyncio.to_thread(
             get_chatwoot_client().set_conversation_status,
             account_id=account_id,
@@ -899,11 +907,59 @@ async def _stop_typing_task(
     )
 
 
+def _session_is_closed(control: ConversationControl) -> bool:
+    return control.session_closed_at is not None and (
+        control.session_started_at is None
+        or control.session_closed_at >= control.session_started_at
+    )
+
+
+class SessionBoundaryChanged(RuntimeError):
+    """Retry a new user message when a delayed end event invalidates its context."""
+
+
+def _retry_message_after_late_close(
+    control: ConversationControl | None, message_at: datetime | None,
+) -> None:
+    if (
+        control is not None
+        and message_at is not None
+        and _session_is_closed(control)
+        and control.session_closed_at is not None
+        and message_at > control.session_closed_at
+    ):
+        raise SessionBoundaryChanged("Rebuild the answer in a new consultation.")
+
+
+def _session_suppressed_result(reason: str) -> dict[str, object]:
+    return {
+        "route": "session_suppressed",
+        "faq_route": "session_suppressed",
+        "answer": "",
+        "intent_label": None,
+        "intent_confidence": None,
+        "reason": reason,
+        "chatwoot_reply": {"enabled": settings.chatwoot_auto_reply_enabled, "sent": False},
+    }
+
+
+def _can_reply_in_session(control: ConversationControl | None, thread_id: str) -> bool:
+    return bool(
+        control is not None
+        and control.active_thread_id == thread_id
+        and not _session_is_closed(control)
+        and control.ai_enabled
+        and not control.handoff_required
+    )
+
+
 async def _send_chatwoot_auto_reply(
     *,
     event: ChatwootWebhookEvent,
     event_key: str,
     result: dict[str, object],
+    thread_id: str | None = None,
+    message_at: datetime | None = None,
 ) -> dict[str, object]:
     reply_result: dict[str, object] = {
         "enabled": settings.chatwoot_auto_reply_enabled,
@@ -913,6 +969,15 @@ async def _send_chatwoot_auto_reply(
         return reply_result
 
     account_id, conversation_id = _webhook_conversation_reference(event)
+    if thread_id:
+        latest = await asyncio.to_thread(
+            conversation_control_repository.get,
+            account_id=account_id, conversation_id=conversation_id,
+        )
+        if not _can_reply_in_session(latest, thread_id):
+            _retry_message_after_late_close(latest, message_at)
+            reply_result["reason"] = "consultation_ended_or_changed"
+            return reply_result
     try:
         sent_message = await asyncio.to_thread(
             get_chatwoot_client().send_message,
@@ -943,11 +1008,19 @@ async def _send_chatwoot_auto_reply(
             conversation_id=conversation_id,
             message_id=_chatwoot_message_id(sent_message),
         )
-        await _set_ai_chatwoot_status(
-            account_id=account_id,
-            conversation_id=conversation_id,
-            event_key=event_key,
-        )
+        # A resolved webhook can arrive while the external send is in flight.
+        # Never reopen that ended consultation with a trailing pending update.
+        latest = await asyncio.to_thread(
+            conversation_control_repository.get,
+            account_id=account_id, conversation_id=conversation_id,
+        ) if thread_id else None
+        if not thread_id or _can_reply_in_session(latest, thread_id):
+            await _set_ai_chatwoot_status(
+                account_id=account_id,
+                conversation_id=conversation_id,
+                event_key=event_key,
+                thread_id=thread_id,
+            )
     return reply_result
 
 
@@ -970,6 +1043,7 @@ async def _process_webhook_job_unlocked(
     account_id, conversation_id = _webhook_conversation_reference(event)
     message_id = None if event.id is None else str(event.id)
     thread_id = _webhook_thread_id(event)
+    message_at = webhook_message_time(event) or job.received_at
     image_handoff = has_image_attachment(event)
     explicit_handoff = is_explicit_handoff_request(content)
     handoff_requested = explicit_handoff or image_handoff
@@ -986,6 +1060,7 @@ async def _process_webhook_job_unlocked(
                 account_id=account_id,
                 conversation_id=conversation_id,
                 status=status,
+                event_at=webhook_status_time(event) or job.received_at,
             )
         return {
             "route": "conversation_status",
@@ -1007,11 +1082,35 @@ async def _process_webhook_job_unlocked(
             thread_id=thread_id,
             message_id=message_id,
             chatwoot_status=_conversation_status(event),
+            message_at=message_at,
+            idle_timeout_seconds=settings.chatwoot_session_idle_timeout_seconds,
         )
+        if (
+            (control.session_closed_at is not None and message_at <= control.session_closed_at)
+            or (control.session_started_at is not None and message_at < control.session_started_at)
+        ):
+            return _session_suppressed_result("message_from_ended_consultation")
+        thread_id = control.active_thread_id or thread_id
         control = await _refresh_handoff_from_chatwoot_status(
             event=event,
             control=control,
         )
+
+        if _session_is_closed(control):
+            if control.session_closed_at is not None and message_at > control.session_closed_at:
+                # A status lookup may reveal an end marker after this message
+                # was recorded. Re-evaluate the same source message once.
+                control = await asyncio.to_thread(
+                    conversation_control_repository.record_user_message,
+                    account_id=account_id, conversation_id=conversation_id,
+                    thread_id=thread_id, message_id=message_id,
+                    chatwoot_status=_conversation_status(event),
+                    message_at=message_at,
+                    idle_timeout_seconds=settings.chatwoot_session_idle_timeout_seconds,
+                )
+                thread_id = control.active_thread_id or thread_id
+            if _session_is_closed(control):
+                return _session_suppressed_result("consultation_ended_or_changed")
 
         # 同一触发消息的队列重试需要继续完成未完成的接管动作；
         # 其他人工轮次中的新消息仍保持静默，避免重复转接。
@@ -1103,6 +1202,13 @@ async def _process_webhook_job_unlocked(
                 message_id=message_id,
                 chatwoot_status=_conversation_status(event),
             )
+            if _session_is_closed(control) or control.active_thread_id != thread_id:
+                await asyncio.to_thread(
+                    conversation_control_repository.release_handoff_reservation,
+                    account_id=account_id, conversation_id=conversation_id,
+                    only_if_not_started=True,
+                )
+                return _session_suppressed_result("consultation_ended_or_changed")
     elif handoff_requested:
         raise ValueError(
             "Chatwoot handoff requires account_id and conversation_id."
@@ -1134,6 +1240,7 @@ async def _process_webhook_job_unlocked(
             account_id=account_id,
             conversation_id=conversation_id,
             event_key=job.event_key,
+            thread_id=thread_id,
         )
 
     typing_task = (
@@ -1165,6 +1272,12 @@ async def _process_webhook_job_unlocked(
             account_id=account_id,
             conversation_id=conversation_id,
         )
+        _retry_message_after_late_close(latest_control, message_at)
+        if latest_control is not None and (
+            latest_control.active_thread_id != thread_id
+            or _session_is_closed(latest_control)
+        ):
+            return _session_suppressed_result("consultation_ended_or_changed")
         if latest_control is not None and (
             latest_control.handoff_required
             or not latest_control.ai_enabled
@@ -1183,6 +1296,8 @@ async def _process_webhook_job_unlocked(
         event=event,
         event_key=job.event_key,
         result=result,
+        thread_id=thread_id if account_id and conversation_id else None,
+        message_at=message_at,
     )
     log_event(
         logger,
@@ -1448,6 +1563,21 @@ async def _suppress_no_agent_handoff(
     }
 
 
+async def _handoff_session_is_current(control: ConversationControl) -> bool:
+    if control.session_started_at is None:
+        return True  # Compatibility for legacy handoff rows before their next user message.
+    latest = await asyncio.to_thread(
+        conversation_control_repository.get,
+        account_id=control.account_id, conversation_id=control.conversation_id,
+    )
+    return bool(
+        latest is not None
+        and latest.active_thread_id == control.active_thread_id
+        and not _session_is_closed(latest)
+        and latest.handoff_required
+    )
+
+
 async def _complete_handoff(
     *,
     event: ChatwootWebhookEvent,
@@ -1476,6 +1606,8 @@ async def _complete_handoff(
             notice_sent=False,
         )
 
+    if not await _handoff_session_is_current(control):
+        return _session_suppressed_result("consultation_ended_or_changed")
     client = get_chatwoot_client()
     actions: dict[str, object] = {"enabled": True}
 
@@ -1565,6 +1697,8 @@ async def _complete_handoff(
     # 先完成 assignment，再打开会话，避免 Chatwoot 在 open 瞬间把消息
     # 通知给旧坐席或自动分配到错误的坐席。
     if not control.handoff_conversation_updated:
+        if not await _handoff_session_is_current(control):
+            return _session_suppressed_result("consultation_ended_or_changed")
         await asyncio.to_thread(
             client.set_conversation_status,
             account_id=account_id,
@@ -1595,6 +1729,8 @@ async def _complete_handoff(
     notice_sent = control.handoff_notice_sent
     notice_message_id: str | None = None
     if not control.handoff_notice_sent:
+        if not await _handoff_session_is_current(control):
+            return _session_suppressed_result("consultation_ended_or_changed")
         if settings.chatwoot_handoff_notice_enabled:
             notice_result = await asyncio.to_thread(
                 client.send_message,
@@ -1718,6 +1854,7 @@ async def chatwoot_webhook(
         alias="X-Chatwoot-Timestamp",
     ),
 ) -> JSONResponse:
+    received_at = datetime.now(timezone.utc)
     raw_body = await request.body()
 
     if not _is_valid_chatwoot_signature(
@@ -1797,6 +1934,36 @@ async def chatwoot_webhook(
             },
         )
 
+    # Reuse the first receipt across HTTP redelivery as well as worker retries.
+    # Chatwoot normally supplies source times; this is the fallback when absent.
+    if isinstance(claim.first_seen_at, datetime):
+        received_at = claim.first_seen_at
+
+    # Persist the end marker before queueing: status jobs otherwise wait behind
+    # the very answer that this resolved event needs to suppress.
+    if (
+        _is_conversation_status_event(event)
+        and _conversation_status(event) == "resolved"
+        and account_id and conversation_id
+    ):
+        try:
+            await asyncio.to_thread(
+                conversation_control_repository.record_conversation_status,
+                account_id=account_id,
+                conversation_id=conversation_id,
+                status="resolved",
+                event_at=webhook_status_time(event) or received_at,
+            )
+        except Exception as exc:
+            await asyncio.to_thread(
+                webhook_repository.mark_failed, event_key,
+                "Consultation boundary could not be stored.",
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Consultation state is temporarily unavailable.",
+            ) from exc
+
     handoff_detected = is_explicit_handoff_request(event.content)
     if handoff_detected:
         log_event(
@@ -1808,7 +1975,9 @@ async def chatwoot_webhook(
             conversation_id=conversation_id,
         )
 
-    await _enqueue_webhook_job(event=event, event_key=event_key)
+    await _enqueue_webhook_job(
+        event=event, event_key=event_key, received_at=received_at,
+    )
 
     return JSONResponse(
         status_code=202,

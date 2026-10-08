@@ -62,6 +62,8 @@ class AppSettings(BaseSettings):
         le=3600,
     )
     chatwoot_auto_reply_enabled: bool = False
+    # 仅用户新消息刷新此窗口；resolved 会立即结束当前咨询。
+    chatwoot_session_idle_timeout_seconds: int = Field(default=21600, gt=0)
     chatwoot_handoff_enabled: bool = True
     chatwoot_handoff_label: str = "handoff_required"
     chatwoot_handoff_notice_enabled: bool = True

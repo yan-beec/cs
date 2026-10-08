@@ -7,7 +7,8 @@ import hashlib
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from psycopg.types.json import Jsonb
@@ -30,6 +31,7 @@ class WebhookClaim:
     accepted: bool
     status: str
     attempts: int
+    first_seen_at: datetime | None = None
 
 
 def payload_hash(raw_body: bytes) -> str:
@@ -101,7 +103,7 @@ class WebhookIdempotencyRepository:
                     )
                     VALUES (%s, %s, %s, %s)
                     ON CONFLICT (event_key) DO NOTHING
-                    RETURNING status, attempts
+                    RETURNING status, attempts, first_seen_at
                     """.strip(),
                     (event_key, event_id, event_type, body_hash),
                 )
@@ -111,11 +113,12 @@ class WebhookIdempotencyRepository:
                         accepted=True,
                         status=str(inserted[0]),
                         attempts=int(inserted[1]),
+                        first_seen_at=inserted[2],
                     )
 
                 cursor.execute(
                     f"""
-                    SELECT status, attempts
+                    SELECT status, attempts, first_seen_at
                     FROM {WEBHOOK_TABLE_NAME}
                     WHERE event_key = %s
                     FOR UPDATE
@@ -135,6 +138,7 @@ class WebhookIdempotencyRepository:
                         accepted=False,
                         status=status,
                         attempts=attempts,
+                        first_seen_at=existing[2],
                     )
 
                 # failed 事件允许再次被 Chatwoot 投递时重新入队；
@@ -160,7 +164,7 @@ class WebhookIdempotencyRepository:
                                   - (%s * INTERVAL '1 second')
                           )
                       )
-                    RETURNING status, attempts
+                    RETURNING status, attempts, first_seen_at
                     """.strip(),
                     (
                         event_id,
@@ -176,11 +180,13 @@ class WebhookIdempotencyRepository:
                         accepted=False,
                         status=status,
                         attempts=attempts,
+                        first_seen_at=existing[2],
                     )
                 return WebhookClaim(
                     accepted=True,
                     status=str(reclaimed[0]),
                     attempts=int(reclaimed[1]),
+                    first_seen_at=reclaimed[2],
                 )
         finally:
             connection.close()
@@ -332,6 +338,8 @@ class WebhookJob:
     event_key: str
     event: Any
     partition_key: str | None = None
+    # Keep the fallback time stable across worker retries.
+    received_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class WebhookQueueFull(RuntimeError):

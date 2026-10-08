@@ -373,6 +373,8 @@ async def reranker_node(state: RAGState) -> dict[str, Any]:
 def _response_content(response: Any) -> str:
     """提取 LangChain 响应中的文本，同时兼容不同提供商的格式。"""
     content = getattr(response, "content", response)
+    if content is None:
+        return ""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -392,11 +394,14 @@ def _response_content(response: Any) -> str:
     operation="rag.llm_reply",
 )
 async def _call_llm_reply(prompt: str) -> Any:
-    """调用云端 LLM 生成最终回复，失败时由装饰器重连。"""
-    return await call_cloud_llm(
+    """调用云端 LLM 生成最终回复，异常或空回复由装饰器重连。"""
+    response = await call_cloud_llm(
         prompt,
         system_prompt=SYSTEM_PROMPT,
     )
+    if not _response_content(response).strip():
+        raise ValueError("LLM returned an empty reply.")
+    return response
 
 
 async def llm_reply_node(state: RAGState) -> dict[str, Any]:

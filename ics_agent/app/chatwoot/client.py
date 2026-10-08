@@ -10,6 +10,7 @@ from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from ics_agent.app.core.config import AppSettings, get_settings
+from .message_format import normalize_chatwoot_message
 
 
 class ChatwootAPIError(RuntimeError):
@@ -42,7 +43,7 @@ class ChatwootClient:
         return self._create_message(
             account_id=account_id,
             conversation_id=conversation_id,
-            content=content,
+            content=normalize_chatwoot_message(content),
             private=False,
         )
 

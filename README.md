@@ -2,6 +2,8 @@
 
 基于 FastAPI 的智能客服服务，面向 Chatwoot 提供 FAQ 优先、RAG 兜底的自动问答能力。
 
+首次部署到 Ubuntu 服务器并连接已有 Chatwoot，请按[服务器首次部署测试手册](docs/server-first-deployment.md)操作；其中包含 Windows 上传、数据库和模型初始化、Chatwoot 绑定、HTTPS/无域名测试、验收与排错，以及可复制的服务器配置模板。
+
 一次查询的处理顺序如下：
 
 ```text
@@ -184,8 +186,11 @@ Content-Type: application/json
 ```
 
 `thread_id` 可选。传入相同的 ID 时，服务会复用 PostgreSQL 中的对话记忆。
-Chatwoot Webhook 默认按同一个 `conversation_id` 生成稳定 `thread_id`；
-`RAG_MEMORY_RETENTION_DAYS=0` 时长期保留该记忆，不会因时间自动清理。
+Chatwoot Webhook 在同一个 `conversation_id` 下按咨询轮次使用独立的 `thread_id`。
+收到 `resolved`（已解决）后，本轮结束；下一条用户消息使用全新上下文。
+距离上一条用户消息达到 6 小时，也会在下一条消息到来时开启新轮次。
+轮次切换仅隔离 AI 上下文；旧轮次数据仍按 `RAG_MEMORY_RETENTION_DAYS` 清理，
+该配置为 `0` 时不按时间删除。手动调用 `/rag/query` 仍由调用者提供的 `thread_id` 决定上下文。
 
 返回结果包含：
 
@@ -227,8 +232,14 @@ Webhook 只处理带文本的入站消息：
   会向用户提示当前暂无在线空闲坐席并保持 AI 会话可继续承接。
 - 人工接管会打开会话、添加 `handoff_required` 标签、写入私有备注，并按配置分配 Team/Agent。
 - 人工接管后，当前 Chatwoot 对话在坐席结束本轮处理前不会再自动回复。
-- 坐席在 Chatwoot 中点击“已解决”后，下一条用户消息会重新进入 AI。
-- 同一个 Chatwoot 对话会继续复用长期历史，不需要新建窗口或切换 `thread_id`。
+- Chatwoot 会话变为“已解决”后，本轮咨询结束；下一条用户消息重新进入 AI，使用全新上下文。
+- 同一个 Chatwoot 对话可以承载多轮咨询，不需要用户新建窗口；每轮自动使用独立的记忆 ID。
+- 用户连续 6 小时未发送新消息，下一条消息开启新轮次。可通过
+  `CHATWOOT_SESSION_IDLE_TIMEOUT_SECONDS=21600` 调整时限；机器人/坐席回复、
+  状态变化、输入中和页面浏览不延长该计时。
+- 6 小时边界只重置上下文，不自动解除人工接管，也不会自动把 Chatwoot 会话标为已解决。
+- “已解决”边界在接收时立即记录，发送前再次检查轮次；已经结束或切换轮次的旧答案不再发送。
+- 首次升级时旧会话没有独立的用户消息时间，下一条新消息会建立新轮次；完整聊天记录仍保留在 Chatwoot。
 - 会话状态类 Webhook 的幂等键包含请求体哈希，避免同一会话第二次标记
   `resolved`、`pending` 或 `open` 时被旧事件记录误判为重复。
 
@@ -269,7 +280,7 @@ CHATWOOT_BLOCK_REAPER_BATCH_SIZE=100
 
 当前版本不会通过 API 把 Website 会话迁移到另一个 Inbox，也不会在人工结束后把会话回流到 AI Inbox。转人工时，服务只读取 Webhook 事件中当前 Inbox 的在线坐席，并按轮询和每人最多 5 个 open 会话的限制分配；配置 `CHATWOOT_HANDOFF_TEAM_ID` 时会再取 Team 与当前 Inbox 的交集。
 
-如果要使用 ics-agent 的自动轮询，请把人工坐席加入 Website Widget 所在的 Inbox，并保持该 Inbox 的 AgentBot 配置不变。人工结束并将会话标记为 `resolved` 后，服务只释放本地人工接管状态，会话仍留在原 Inbox；下一次用户消息是否重新进入 AI 流程由该 Inbox 的 AgentBot/Webhook 配置决定。
+如果要使用 ics-agent 的自动轮询，请把人工坐席加入 Website Widget 所在的 Inbox，并保持该 Inbox 的 AgentBot 配置不变。人工结束并将会话标记为 `resolved` 后，服务释放本地人工接管状态并结束当前咨询轮次，会话仍留在原 Inbox；下一次用户消息是否重新进入 AI 流程由该 Inbox 的 AgentBot/Webhook 配置决定。
 
 如果必须让 AI Inbox 完全不包含人工坐席，再把会话交给独立的人工 Inbox，需要先在实际 Chatwoot 版本中验证该渠道支持的迁移方式和 Widget 连续性，再启用独立迁移流程；不要仅凭 `PATCH .../conversations/:id` 的成功响应判断迁移完成。
 
@@ -376,6 +387,13 @@ database/最新问答对.xlsx
 ```
 
 FAQ 数据会同步到 PostgreSQL 的 `faq_qna_optimized` 表，并在服务进程内生成 BM25 索引和答案字典。达到匹配阈值时直接返回内存中的 FAQ 答案，否则进入 RAG。
+
+FAQ 中的图片建议使用 Markdown：`![图片说明](https://example.com/image.jpg)`。
+为兼容现有资料，机器人发送到 Chatwoot 前会把 HTTP/HTTPS 的 `<img src="...">`
+转换成 Markdown 图片，兼容中文引号和转义的图片标签；图片会独立显示在正文中。
+普通文本、已有 Markdown 图片和代码示例保持原样。历史已发送消息不会被回写，
+图片仍由浏览器从原地址加载，因此该地址需要对访客可访问。
+
 
 命令行同步：
 
@@ -507,6 +525,27 @@ python main.py `
   --thread-id local:test-session `
   --query "我刚才说的充值问题还没解决"
 ```
+
+## 云端 LLM 响应耗时
+
+`ics_agent/llm_factory/response_time.py` 读取现有 `.env` 的模型配置，
+通过 `call_cloud_llm` 在同一进程内先调用 1 次，再连续调用 3 次。
+每次打印回复与耗时，最后分别显示首次耗时、连续调用的平均/最快/最慢耗时。
+记录追加到 `log/llm_response_time.log`，包含批次、提示词名称和调用类型。
+
+在项目根目录使用 `cs` 环境运行：
+
+```powershell
+& 'C:\Users\lenovo\Anaconda3\envs\cs\python.exe' -X utf8 -u -m ics_agent.llm_factory.response_time
+```
+
+切换服务商直接修改 `.env` 中的 `LLM_MODEL`、`LLM_MODEL_PROVIDER`、
+`LLM_BASE_URL` 和 `LLM_API_KEY`，修改问题则编辑模块顶部的 `PROMPT`。
+将 `PROMPT_NAME` 设为 `"PROMPT2"` 可测试检索回复；`CONTINUOUS_CALLS` 控制后续调用次数。
+每轮使用相同提示词和模型配置。首次包含客户端初始化，后续调用复用客户端。
+耗时从调用工厂开始，到完整回复返回为止，包含配置的 SDK 重试；首次指本进程首次调用，
+不代表服务商缓存为空。调用失败会先记录耗时再停止，已完成的记录保留。
+PyCharm 顶部选择 **LLM 响应耗时 (cs)** 即可按模块方式运行。
 
 ## 项目结构
 

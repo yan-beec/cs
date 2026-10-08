@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import re
 import time
 import unicodedata
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import Any
 
 from ics_agent.app.core.models import ChatwootWebhookEvent
@@ -443,6 +445,72 @@ def parse_event(raw_body: bytes) -> ChatwootWebhookEvent:
         sender=payload.get("sender"),
         raw=payload,
     )
+
+
+def webhook_message_time(event: ChatwootWebhookEvent) -> datetime | None:
+    """读取本次用户新消息的创建时间，不使用会话快照或投递时间。"""
+    event_name = event.event.strip().lower().replace("_", ".")
+    if event_name != "message.created":
+        return None
+    if (event.message_type or "").strip().lower() != "incoming":
+        return None
+    payload = event.raw
+    if payload.get("private") is True:
+        return None
+    sender_type = str((event.sender or {}).get("type") or "").lower()
+    if sender_type and sender_type != "contact":
+        return None
+    # Chatwoot's message webhook_data supplies this message's created_at.
+    # conversation.messages, updated_at and timestamp can describe other activity.
+    return _parse_webhook_time(payload.get("created_at"))
+
+
+def webhook_status_time(event: ChatwootWebhookEvent) -> datetime | None:
+    """读取状态事件携带的会话更新时间，缺失时交给调用者使用接收时间。"""
+    event_name = event.event.strip().lower().replace("_", ".")
+    if not event_name.startswith("conversation."):
+        return None
+    # Chatwoot merges conversation.webhook_data at the top level for status
+    # events. Some integrations wrap that same data in conversation instead.
+    raw_conversation = event.raw.get("conversation")
+    raw_conversation = (
+        raw_conversation if isinstance(raw_conversation, Mapping) else {}
+    )
+    for candidate in (event.raw, raw_conversation, event.conversation or {}):
+        parsed = _parse_webhook_time(candidate.get("updated_at"))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _parse_webhook_time(value: Any) -> datetime | None:
+    """兼容 ISO 8601 和 Unix 秒/毫秒，统一为带时区的 UTC 时间。"""
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+        else:
+            try:
+                if parsed.tzinfo is None:
+                    return parsed.replace(tzinfo=timezone.utc)
+                return parsed.astimezone(timezone.utc)
+            except (ValueError, OverflowError):
+                return None
+    try:
+        timestamp = float(value)
+        if not math.isfinite(timestamp) or timestamp < 0:
+            return None
+        if timestamp >= 100_000_000_000:
+            timestamp /= 1000
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    except (ValueError, OverflowError, OSError):
+        return None
 
 
 def contact_blocked_from_payload(

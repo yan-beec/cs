@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="referrer" content="origin">
+  <title>在线客服</title>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #f4f6fb; overflow: hidden; }
+    /* 聊天框铺满整页 */
+    #cw-frame { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; display: none; }
+    #cw-loading, #cw-err {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      padding: 24px; text-align: center; box-sizing: border-box;
+      font: 15px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: #f4f6fb;
+    }
+    #cw-loading { color: #8a94a6; }
+    #cw-err { display: none; color: #c0392b; flex-direction: column; }
+    #cw-err code { background: #fff; padding: 2px 6px; border-radius: 4px; color: #333; }
+  </style>
+</head>
+<body>
+  <div id="cw-loading">正在接入客服…</div>
+  <div id="cw-err">
+    <div>缺少 websiteToken，无法接入客服。</div>
+    <div style="margin-top:8px;">请在链接后加上 <code>?websiteToken=你的Token</code></div>
+  </div>
+  <iframe id="cw-frame" allow="camera; microphone; clipboard-write; autoplay"></iframe>
+
+  <script>
+    (function () {
+      // chatwoot 部署地址（与 widget 同域）
+      var BASE_URL = "https://kefu-h5.oxing.ren";
+      // 链接未带 token 时的兜底 token（可删）
+      var DEFAULT_TOKEN = "jnVbSfQGcyCSS94WDvAvFzKp";
+
+      // —— 从链接获取 websiteToken（兼容三种参数名）——
+      var p = new URLSearchParams(location.search);
+      var token = p.get("websiteToken") || p.get("website_token") || p.get("token") || DEFAULT_TOKEN;
+
+      // —— 链接上的用户信息（大小写不敏感，兼容多种参数名）——
+      // 例: ?websiteToken=xxx&id=10086&name=张三  或  &uid=...&nickname=...
+      var lp = {};
+      p.forEach(function (v, k) { lp[k.toLowerCase()] = v; });
+      var extId   = lp["id"]   || lp["uid"]      || lp["user_id"];
+      var extName = lp["name"] || lp["nickname"] || lp["nick"];
+
+      if (!token) {
+        document.getElementById("cw-loading").style.display = "none";
+        document.getElementById("cw-err").style.display = "flex";
+        return;
+      }
+
+      // 拼接 widget 直达地址；可选 locale 也从链接透传
+      var src = BASE_URL + "/widget?website_token=" + encodeURIComponent(token);
+      var locale = p.get("locale");
+      if (locale) src += "&locale=" + encodeURIComponent(locale);
+      // 直接进对话视图，跳过 Home 欢迎页（widget 用 hash 路由，#/messages 对应 Messages.vue）
+      src += "#/messages";
+
+      var frame = document.getElementById("cw-frame");
+
+      // —— 统一的父页→widget 消息发送（协议见 chatwoot App.vue 的 message.event 分支：
+      //    格式固定为 "chatwoot-widget:" + JSON.stringify({ event, ...payload })）——
+      function post(obj) {
+        try { frame.contentWindow.postMessage("chatwoot-widget:" + JSON.stringify(obj), "*"); } catch (e) {}
+      }
+
+      // widget 默认是"收起的未读预览态"，需主动发 toggle-open 让它展开成完整对话界面。
+      function sendOpen() { post({ event: "toggle-open", isOpen: true }); }
+
+      // —— 把链接上的用户信息注入 widget ——
+      // set-user：identifier=用户ID、name=昵称 → 后台联系人面板直接显示，且同 ID 可续历史会话。
+      //   App.vue 的 setUser action 解构 { identifier, user }，故必须用嵌套结构，不能平铺。
+      //   安全提醒：当前 inbox 未开启身份校验(hmac_mandatory=false)，identifier 未带 identifier_hash，
+      //   属"可被冒充"状态——任何人改 URL 的 id 即可冒充该用户/拉取其历史会话。仅展示用途风险低；
+      //   若 id 关联真实账号或要安全续历史，必须由服务端算 identifier_hash 一起传（见上方说明）。
+      function sendUser() {
+        if (!extId) return;                 // identifier 必填，无 ID 不发 set-user
+        post({ event: "set-user", identifier: extId, user: { name: extName || undefined } });
+      }
+
+      // set-conversation-custom-attributes：填后台「会话」域自定义属性 user_id / nickname。
+      //   conversation/setCustomAttributes 只对"已存在的会话"生效，故需在会话建立后重试若干次。
+      function sendConvAttrs() {
+        // 昵称已由 set-user 写成「联系人名」(会话列表/标题/联系人面板都显示)，故会话域不再重复发 nickname。
+        // 仅保留 user_id：把业务 uid 显示在会话右侧「会话信息」，方便客服按 uid 关联业务。
+        if (!extId) return;
+        post({ event: "set-conversation-custom-attributes", customAttributes: { user_id: extId } });
+      }
+
+      var opened = false;
+      var userSent = false;
+      var convSends = 0;                     // 限制总发送次数，避免会话属性无限刷接口
+      var CONV_SEND_MAX = 40;
+      function pushConvAttrs() {
+        if (convSends >= CONV_SEND_MAX) return;
+        convSends++;
+        sendConvAttrs();
+      }
+
+      frame.onload = function () {
+        document.getElementById("cw-loading").style.display = "none";
+        frame.style.display = "block";
+        // widget 内部 Vue 需要时间挂载消息监听，故加载后短时间内重复发送 toggle-open，确保被收到
+        var tries = 0;
+        var timer = setInterval(function () {
+          sendOpen();
+          if (++tries >= 10) clearInterval(timer);   // 前 ~3s 发 10 次
+        }, 300);
+        // 会话属性：会话通常要用户发首条消息后才建立，这里 20s 内每 2s 兜底重试一次
+        var ctries = 0;
+        var ctimer = setInterval(function () {
+          pushConvAttrs();
+          if (++ctries >= 10) clearInterval(ctimer);
+        }, 2000);
+      };
+
+      // widget 就绪后会向父页回发消息：
+      //   首次收到 → 确保展开 + 注入用户身份（此时 widget 已挂载，set-user 必达）；
+      //   后续每条 → 补发一次会话属性（捕捉用户较晚才开始聊天、会话刚建立的情况）。
+      window.addEventListener("message", function (e) {
+        if (typeof e.data !== "string" || e.data.indexOf("chatwoot-widget:") !== 0) return;
+        if (!opened) {
+          opened = true;
+          sendOpen();
+        }
+        if (!userSent) {
+          userSent = true;
+          sendUser();
+          pushConvAttrs();
+        } else {
+          pushConvAttrs();
+        }
+      });
+      frame.src = src;
+    })();
+  </script>
+</body>
+</html>

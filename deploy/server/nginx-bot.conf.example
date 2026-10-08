@@ -1,0 +1,31 @@
+# 用于宿主机 Nginx。若 Nginx 在容器里，127.0.0.1 指向该代理容器，不能直接照用。
+# 替换 bot.example.com；先检查服务器已有 80/443 的使用情况。
+# HTTPS 由文档中的 certbot 步骤添加。不要覆盖已有 Chatwoot 站点。
+server {
+    listen 80;
+    server_name bot.example.com;
+
+    client_max_body_size 10m;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_connect_timeout 10s;
+    proxy_read_timeout 30s;
+
+    location = /webhooks/chatwoot {
+        limit_except POST { deny all; }
+        proxy_pass http://127.0.0.1:3001;
+    }
+
+    location ~ ^/(health|support-chat|support-chat\.html|support-chat/config)$ {
+        limit_except GET { deny all; }
+        proxy_pass http://127.0.0.1:3001;
+    }
+
+    # /admin、/auth、/rag/query、/docs、/chatwoot/profile 等不直接向公网开放。
+    # 管理和调试通过 SSH 隧道访问应用的本地 3001 端口。
+    location / {
+        return 404;
+    }
+}
