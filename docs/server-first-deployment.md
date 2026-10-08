@@ -1,6 +1,6 @@
 # 智能客服机器人：Ubuntu 服务器首次部署测试手册
 
-适用项目：`ics_agent` / `D:\project\CS`。更新日期：2026-10-08。本轮核对基线：分支 `test`，提交 `e23be74`，以及当前配置文件；本次手册和服务器模板的修订还需提交、推送。实际发布以第 4 节记录的完整提交 SHA 为准。
+适用项目：`ics_agent` / `D:\project\CS`。更新日期：2026-10-08。本轮核对基线：分支 `test`，提交 `6b2e89a`，以及当前配置文件；本次国内网络构建修订还需提交、推送。实际发布以第 4 节记录的完整提交 SHA 为准。
 
 本文按你已确认的环境编写：**Ubuntu 22.04 LTS、x86_64，已有服务器端 Chatwoot，本次只部署机器人并接入 Chatwoot。** Ubuntu 24.04 可按相同步骤操作。未登录你的远端服务器执行部署；本文命令依据当前项目源码、Compose 配置及本地已验证的 Chatwoot 接口核对。
 
@@ -70,6 +70,8 @@ f161f5bab8e534700fc9c1891c9132388e9cef733222974f7f83a608b9210831
 ### 0.2 当前版本与旧手册的主要差异
 
 服务器模板现已与根 `.env.example` 的业务参数对齐：封禁 1 天、会话记忆 15 天、Webhook 并发 10、重排并发 4、LLM 并发 8、数据库连接池 12、获取连接等待 1 秒、LLM 单次超时 10 秒、Webhook 查询总预算 30 秒。完整配置表及资源不足时的调整见第 5.7 节。
+
+国内网络构建现支持普通 Python 依赖使用清华 PyPI 镜像、CPU PyTorch 单独下载，以及 pip 下载缓存、超时和重试。已经卡在 `pip install` 的服务器直接按第 7.1A 节更新构建文件和参数；无需重新上传模型包。
 
 `deploy/server/bot.env.example` 是本手册唯一的服务器起始模板，根 `.env.example` 是通用示例；二者都不是实际密钥文件。旧版服务器 `.env` 不会自动更新，已经配置过的服务器需按第 5.7、13.1 节逐项修改。
 
@@ -392,7 +394,7 @@ git diff --stat
 **先提交并推送当前代码、最新手册和服务器配置模板。** `.gitattributes` 和 `Dockerfile.backend-only` 已纳入本地仓库，但本轮模板修订仍需发布；只在本机保存文件，服务器无法取得它们。确认改动内容后，可在 Windows 暂存部署相关文件：
 
 ```powershell
-git add -- .gitattributes README.md docs/server-first-deployment.md deploy/server/Dockerfile.backend-only deploy/server/bot.env.example deploy/server/nginx-bot.conf.example
+git add -- .gitattributes Dockerfile docker-compose.yml README.md docs/server-first-deployment.md deploy/server/Dockerfile.backend-only deploy/server/bot.env.example deploy/server/nginx-bot.conf.example
 if ($LASTEXITCODE -ne 0) { throw '暂存失败，请检查。' }
 git diff --cached --stat
 ```
@@ -709,6 +711,17 @@ ADMIN_WEB_PORT=3001
 
 ### 7.1 校验 Compose 并构建后端镜像
 
+本次服务器模板已包含以下构建参数；如果 `.env` 是旧版创建的，先按第 7.1A 节补齐：
+
+```dotenv
+BUILD_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+BUILD_TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+BUILD_PIP_TIMEOUT=120
+BUILD_PIP_RETRIES=8
+```
+
+这四项由 Compose 的 `build.args` 传给镜像构建，修改后必须重新 `build`；它们不会修改 Windows `cs` 环境的 pip 配置。仅执行 `restart` 或把它们放入没有对应 `build.args` 的旧 Compose 文件，不会改变依赖下载方式。
+
 ```bash
 cd /opt/cs
 docker compose -f docker-compose.yml config --quiet
@@ -717,14 +730,70 @@ docker compose -f docker-compose.yml config --quiet
 无报错且退出码为 0 后，继续构建：
 
 ```bash
-docker compose -f docker-compose.yml build ics-agent
+docker compose --progress plain -f docker-compose.yml build ics-agent
 ```
 
 不要运行不带 `--quiet` 的 `docker compose config` 后把完整输出发给别人，它可能展开密钥。
 
 首次构建需要下载 Python 依赖、CPU 版 PyTorch 等，可能耗时较久。使用 tmux 等待构建结束；不要因终端暂时没有新输出重复发起构建。成功时应显示镜像构建完成，命令退出码为 0。
 
+构建分两次安装：先只从独立 CPU 源取得固定的 `torch==2.6.0+cpu`，再从普通 PyPI 镜像安装其他依赖并补齐 torch 的依赖。第二阶段仍保留 CPU 版精确版本约束，最后执行 `pip check` 检查依赖一致性。普通包不再逐个访问 PyTorch 的额外源。
+
+构建使用 BuildKit 的 pip 缓存，同一构建器后续重试可复用已缓存的完整下载和成功的镜像层；不要添加 `--no-cache` 或先清理构建缓存。这不保证未下载完的大文件能跨构建断点续传。默认 120 秒是 pip 网络超时参数，8 次为连接重试参数，不是整个构建的最长时限，也不能保证所有中途断流都会自动恢复。
+
 入口采用内网并不表示完全离线部署：服务器仍需能够访问 Git 仓库、Docker 镜像源、Python 包源、CPU PyTorch 下载源，以及你配置的云模型服务。图片 OCR 也可能初始化额外资源。如果没有任何出站网络，本手册的在线构建步骤不能直接使用，需另行准备离线镜像和依赖。
+
+### 7.1A 已因 pip 下载慢而失败：从当前进度恢复
+
+1. **Windows 开发端：** 按第 4.6 节第二步提交并推送本次改动，尤其是 `docker-compose.yml`、`deploy/server/Dockerfile.backend-only` 和 `deploy/server/bot.env.example`。
+2. **Ubuntu 服务器：** 确认源码仓库干净，再拉取：
+
+```bash
+git -C /opt/cs-src status --short
+```
+
+没有本地改动时继续：
+
+```bash
+git -C /opt/cs-src pull --ff-only
+```
+
+3. 确认 pull 成功，执行 **第 4.6 节第四步的整段同步命令**，将新 Compose 和构建模板同步到 `/opt/cs`。仅在 `/opt/cs-src` 拉取，不会更新 `/opt/cs/Dockerfile`。无需复制初始业务数据或解压模型。
+4. 编辑实际运行配置：
+
+```bash
+cd /opt/cs
+nano .env
+```
+
+加入上面第 7.1 节的四个 `BUILD_...` 配置项；已存在则修改原行，不重复追加。保存退出后核对根 Dockerfile 已更新：
+
+```bash
+cmp -s deploy/server/Dockerfile.backend-only Dockerfile && echo 'backend build template OK'
+grep -nE 'ARG.*INDEX_URL|mount=type=cache|pip check' Dockerfile
+docker compose -f docker-compose.yml config --quiet
+```
+
+应看到两个下载源参数、缓存挂载和 `pip check`；Compose 校验无报错后重新执行：
+
+```bash
+docker compose --progress plain -f docker-compose.yml build ics-agent
+```
+
+这是重新构建应用镜像，不会清空已有数据库、模型或后台业务文件。构建成功后继续第 7.2 节，不要重复上传大模型包。
+
+按日志区分剩余问题：
+
+| 卡住位置 / 现象 | 下一步 |
+| --- | --- |
+| `pandas`、`FastAPI`、`LangChain` 等普通依赖下载超时 | 查看实际 `Looking in indexes` 是否是所设国内源；确认新 Compose、Dockerfile、`.env` 都已生效。可将 `BUILD_PIP_INDEX_URL` 换为你网络可达的其他可信 PyPI 镜像，再 build |
+| `torch-2.6.0+cpu` 下载慢 | 仍属于独立的 PyTorch CPU 源。普通清华 PyPI 镜像不保证提供 `+cpu` 轮子；需让服务器可访问官方 CPU 源，或把 `BUILD_TORCH_INDEX_URL` 配成已确认包含该版本 Linux x86_64 / Python 3.10 轮子的可信 CPU 索引 |
+| `No matching distribution found for torch==2.6.0+cpu` | 核对 CPU 源、架构和 Python 版本；不要改成不带 `+cpu` 的版本来绕过，否则可能拉入大型 CUDA 依赖 |
+| `load metadata for ... python` 或 `postgres` 镜像拉取失败 | 属于 Docker 镜像源网络问题，修改 pip 源无效；按主机现有 Docker 镜像代理 / 企业镜像仓库配置处理，不覆盖正在运行 Chatwoot 的 Docker 设置 |
+| 反复出现 `pip is looking at multiple versions` | 可能是依赖解析回溯，换源不能保证解决；保留末尾冲突信息，再按具体约束处理，不盲目升级全部依赖 |
+| `--mount option requires BuildKit` | 使用第 3 节的 Compose V2 / Buildx；不要用已停用 BuildKit 的旧构建方式 |
+
+保留 HTTPS 校验，无需增加 `trusted-host`。此处是构建网络调整，不涉及云模型运行时的 `LLM_BASE_URL`。若仍失败，记录失败的包名及构建末尾 30 行错误，避免仅凭进度长时间不变判定原因。
 
 ### 7.2 启动前检查配置与模型配套
 
@@ -1503,13 +1572,16 @@ docker compose -f docker-compose.yml restart ics-agent
 
 | 改了什么 | 需要执行什么 |
 | --- | --- |
-| 只改服务器 `.env` | 修改原文件后 recreate 应用；普通 restart 不更新容器环境 |
+| 只改服务器 `.env` 的运行参数 | 修改原文件后 recreate 应用；普通 restart 不更新容器环境 |
+| 改 `.env` 中的 `BUILD_...` 下载源 / 构建参数 | 重新 build；单独 recreate 不能重新安装镜像内的依赖 |
 | 改 Python、依赖、Dockerfile | Git 拉取、同步代码、重新 build 并启动应用 |
 | 只改仓库中的 `.env.example` / 服务器模板 | 模板不会自动覆盖运行 `.env`，先手工合并参数，再 recreate |
 | 改 FAQ / 知识库 | 管理后台更新，或第 13.3～13.4 节；单纯 git pull 不会更新运行数据 |
 | 换模型或训练 CSV | 作为配套版本单独部署，检查指纹并重新预热；不属于普通代码同步 |
 
 ### 13.1 只改 .env
+
+本节针对机器人运行参数；`BUILD_...` 构建参数按第 7.1 节重新构建镜像后再更新应用。
 
 ```bash
 cd /opt/cs
@@ -1757,7 +1829,7 @@ git -C /opt/cs-src rev-parse HEAD > /opt/cs/deployment-records/source-commit.txt
 | Git 提示远端分支不存在 / 找不到新模板 | 当前分支、推送结果、提交 SHA | 本轮分支为 `test`，核对已推送的实际版本；仅保存未提交的文件无法拉取 |
 | `docker: permission denied` | 当前用户是否已加入 docker 组、是否重新登录 | 重新登录，或由管理员使用 sudo；不改 Docker socket 为所有人可写 |
 | `port is already allocated` | `sudo ss -lntp` | 调整机器人 3001 / 数据库宿主机 5433 映射，不抢占 Chatwoot 原端口 |
-| 构建下载超时 | 服务器能否访问 Python 源、PyTorch CPU 源、Docker Registry | 修复出口和 DNS 后重试，保留 TLS 校验 |
+| 构建下载超时 | 具体失败包 / Docker Registry 与生效的构建参数 | 按第 7.1A 节区分普通 PyPI、CPU PyTorch 与 Docker 镜像；同步新构建文件和参数后保留缓存重试 |
 | 容器退出码 137 / `Killed` | `free -h`、`docker stats`、内核 OOM 日志 | 增加内存、减小批次/并发；检查是否在同机同时跑 Chatwoot 与向量化 |
 | 磁盘满 | `df -h`、`docker system df`、`du -sh models log knowledge_base_in/vector_store` | 优先清理已核对的上传临时包；不要删除数据库卷或盲目 prune |
 | `/health` 正常，但一直维护提示 | 应用 stderr 日志，不能只看 docker logs | 检查模型文件、向量库、数据库和模型 API；健康接口不是完整就绪检查 |
