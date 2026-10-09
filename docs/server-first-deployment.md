@@ -681,6 +681,8 @@ ADMIN_WEB_PORT=3001
 | `WEBHOOK_MAX_RETRIES` | `3` | 未被查询兜底吸收的任务异常，最多额外重试 3 次 |
 | `CHATWOOT_SESSION_IDLE_TIMEOUT_SECONDS` | `21600` | 用户消息间隔达到 6 小时，下一条消息开启新上下文 |
 
+在线 RAG 的 Query 向量化现在使用微批处理：`KNOWLEDGE_BASE_EMBEDDING_MICRO_BATCH_WAIT_MS=20` 最多等待 20 毫秒，`KNOWLEDGE_BASE_EMBEDDING_MICRO_BATCH_MAX_SIZE=4` 最多合并 4 个 Query，然后一次调用 BGE-M3 并按原请求分别继续检索。它只合并短时间内到达的 embedding 请求，不合并不同用户的最终回复；同一会话仍按原顺序处理。
+
 为降低首次部署的积压和批次内存占用，服务器模板还显式使用 `WEBHOOK_QUEUE_MAX_SIZE=100`、`KNOWLEDGE_BASE_EMBEDDING_BATCH_SIZE=2`、`RAG_RERANKER_BATCH_SIZE=2`；代码默认分别为 1000、8、8。这三项属于部署取值，与上表当前业务超时和并发基线分开记录。
 
 当前并发基线还没有在你目标服务器上压测。如果 CPU / 内存紧张，可先在服务器 `.env` 中将 `WEBHOOK_WORKER_COUNT=2`、`RAG_RERANKER_MAX_CONCURRENCY=1`、`LLM_MAX_CONCURRENCY=2`，其他超时和保留策略保持当前值，低并发验收成功后再逐步调整；并发降低不能代替满足模型加载内存需求。

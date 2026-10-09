@@ -596,6 +596,11 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
             },
             message_type="incoming",
             content="",
+            raw={
+                "changed_attributes": [
+                    {"status": {"previous_value": "open", "current_value": "resolved"}}
+                ],
+            },
         )
         repository = Mock()
         repository.record_conversation_status = Mock(
@@ -609,6 +614,8 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
             )
 
         client.update_conversation.assert_not_called()
+        repository.record_conversation_status.assert_called_once()
+        self.assertTrue(result["handoff_released"])
         self.assertFalse(result["returned_to_ai_inbox"])
 
 

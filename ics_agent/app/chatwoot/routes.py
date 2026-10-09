@@ -305,12 +305,16 @@ def _webhook_contact_id(event: ChatwootWebhookEvent) -> str | None:
     conversation = event.conversation or {}
     meta = conversation.get("meta")
     meta = meta if isinstance(meta, dict) else {}
+    payload_meta = event.raw.get("meta")
+    payload_meta = payload_meta if isinstance(payload_meta, dict) else {}
     candidates = (
         (event.sender or {}).get("id"),
         (conversation.get("contact") or {}).get("id"),
         (conversation.get("sender") or {}).get("id"),
         (meta.get("contact") or {}).get("id"),
         (meta.get("sender") or {}).get("id"),
+        (payload_meta.get("contact") or {}).get("id"),
+        (payload_meta.get("sender") or {}).get("id"),
         (event.raw.get("contact") or {}).get("id"),
         event.raw.get("contact_id"),
     )
@@ -529,6 +533,31 @@ def _handoff_mute_check_unavailable_result() -> dict[str, object]:
 def _is_conversation_status_event(event: ChatwootWebhookEvent) -> bool:
     event_name = event.event.strip().lower().replace("_", ".")
     return event_name in CONVERSATION_STATUS_EVENTS
+
+
+def _conversation_status_transition(event: ChatwootWebhookEvent) -> str | None:
+    """只采纳真正的状态变更，普通会话活动携带的状态快照不结束咨询。"""
+    if not _is_conversation_status_event(event):
+        return None
+    status = _conversation_status(event)
+    event_name = event.event.strip().lower().replace("_", ".")
+    if event_name != "conversation.updated":
+        return status
+
+    # 静音联系人新消息不会自动重开 Chatwoot 会话；随消息到达的
+    # conversation_updated 仍可能是 resolved，仅 last_activity_at 有变化。
+    changes = event.raw.get("changed_attributes")
+    if not isinstance(changes, list):
+        return None
+    for change in changes:
+        status_change = change.get("status") if isinstance(change, dict) else None
+        if not isinstance(status_change, dict):
+            continue
+        previous = str(status_change.get("previous_value") or "").strip().lower()
+        current = str(status_change.get("current_value") or "").strip().lower()
+        if current == status and previous != current:
+            return status
+    return None
 
 
 def _is_contact_block_event(event: ChatwootWebhookEvent) -> bool:
@@ -1049,11 +1078,14 @@ async def _process_webhook_job_unlocked(
     handoff_requested = explicit_handoff or image_handoff
     control: ConversationControl | None = None
 
+    block_result = None
     if _is_contact_block_event(event):
-        return await _process_contact_block_event(event)
+        block_result = await _process_contact_block_event(event)
+        if not _is_conversation_status_event(event):
+            return block_result
 
     if _is_conversation_status_event(event):
-        status = _conversation_status(event)
+        status = _conversation_status_transition(event)
         if account_id and conversation_id and status:
             control = await asyncio.to_thread(
                 conversation_control_repository.record_conversation_status,
@@ -1062,13 +1094,15 @@ async def _process_webhook_job_unlocked(
                 status=status,
                 event_at=webhook_status_time(event) or job.received_at,
             )
+        if block_result is not None:
+            return block_result
         return {
             "route": "conversation_status",
             "faq_route": "conversation_status",
             "answer": "",
             "intent_label": None,
             "intent_confidence": None,
-            "chatwoot_status": status,
+            "chatwoot_status": _conversation_status(event),
             "handoff_released": _is_handoff_release_status(status),
             # 跨 Inbox 回流未启用；保留字段兼容旧的状态响应调用方。
             "returned_to_ai_inbox": False,
@@ -1942,8 +1976,7 @@ async def chatwoot_webhook(
     # Persist the end marker before queueing: status jobs otherwise wait behind
     # the very answer that this resolved event needs to suppress.
     if (
-        _is_conversation_status_event(event)
-        and _conversation_status(event) == "resolved"
+        _conversation_status_transition(event) == "resolved"
         and account_id and conversation_id
     ):
         try:

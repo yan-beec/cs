@@ -2,7 +2,7 @@
 
 基于 FastAPI 的智能客服服务，面向 Chatwoot 提供 FAQ 优先、RAG 兜底的自动问答能力。
 
-首次部署到 Ubuntu 服务器并连接已有 Chatwoot，请按[服务器首次部署测试手册](docs/server-first-deployment.md)操作；手册和服务器模板已按当前配置更新，包含从模型包上传完成后继续部署的步骤、SSH 别名与 Git 读取权限、数据库和模型初始化、Chatwoot 内网接入、故障验收、更新和备份。推荐 Git 同步后端、模型单独上传，复用已有前端；第 5.7 节列出当前并发、超时和资源调整方法。
+首次部署到 Ubuntu 服务器并连接已有 Chatwoot，请按[服务器首次部署测试手册](docs/server-first-deployment.md)操作；手册和服务器模板已按当前配置更新，包含从模型包上传完成后继续部署的步骤、SSH 别名与 Git 读取权限、数据库和模型初始化、Chatwoot 内网接入、故障验收、更新和备份。每次开发端发布后的同步更新，请按[服务器同步更新操作手册](docs/server-sync-update.md)执行。推荐 Git 同步后端、模型单独上传，复用已有前端；第 5.7 节列出当前并发、超时和资源调整方法。
 
 国内网络的 Docker 构建使用清华普通 PyPI 镜像和南大 CPU PyTorch 镜像：服务器 `.env` 设置 `BUILD_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple`、`BUILD_TORCH_INDEX_URL=https://mirrors.nju.edu.cn/pytorch/whl/cpu`，然后重新 build；服务器模板已包含这两项。CPU 源备用为 `https://mirror.sjtu.edu.cn/pytorch-wheels/cpu`。构建保留 CPU 精确版本约束和 pip 缓存，已有下载失败按手册第 7.1A 节恢复。
 
@@ -272,8 +272,8 @@ CHATWOOT_HANDOFF_ASSIGNEE_ID=
 CHATWOOT_HANDOFF_MAX_ACTIVE_CONVERSATIONS=5
 # 读取坐席在线状态、open 会话数，以及更新状态/分配都需要用户级 API Token，不能只配置 AgentBot Token。
 # CHATWOOT_CONTACT_API_TOKEN 未配置时回退使用 CHATWOOT_API_TOKEN。
-# Chatwoot 静音联系人默认 7 天后自动解除；单位为秒。
-CHATWOOT_BLOCK_DURATION_SECONDS=604800
+# Chatwoot 静音联系人默认 24 小时后自动解除；单位为秒。
+CHATWOOT_BLOCK_DURATION_SECONDS=86400
 CHATWOOT_BLOCK_REAPER_INTERVAL_SECONDS=60
 CHATWOOT_BLOCK_REAPER_BATCH_SIZE=100
 ```
@@ -301,9 +301,9 @@ Chatwoot 的会话状态变更 Webhook，至少覆盖坐席将会话标记为
 Chatwoot 的 Mute 会将联系人标记为 `blocked`，但不会阻止外部 AgentBot
 主动调用会话打开接口。因此，`ics-agent` 会在转人工前检查联系人静音状态；
 已静音联系人不会被转入人工队列，并会收到“非常抱歉，当前人工座席繁忙，请稍后再试。”
-的提示。座席通过 Chatwoot 静音联系人后，服务默认将该状态记录 7 天，
+的提示。静音期间普通消息仍由智能客服回复。座席通过 Chatwoot 静音联系人后，服务默认将该状态记录 24 小时，
 后台任务到期后调用 Chatwoot 联系人 API 自动设置 `blocked=false`。
-可通过 `CHATWOOT_BLOCK_DURATION_SECONDS` 调整时长；设置为 `604800` 即 7 天。
+可通过 `CHATWOOT_BLOCK_DURATION_SECONDS` 调整时长；设置为 `86400` 即 24 小时。
 联系人 API 必须使用用户 API Token，不能使用 AgentBot Token；可配置
 `CHATWOOT_CONTACT_API_TOKEN`，未配置时回退到 `CHATWOOT_API_TOKEN`。
 

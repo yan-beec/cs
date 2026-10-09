@@ -76,7 +76,7 @@ class AppSettings(BaseSettings):
         le=100,
     )
     chatwoot_block_duration_seconds: int = Field(
-        default=7 * 24 * 60 * 60,
+        default=24 * 60 * 60,
         ge=60,
     )
     chatwoot_block_reaper_interval_seconds: int = Field(
