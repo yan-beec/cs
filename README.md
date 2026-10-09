@@ -152,6 +152,11 @@ LLM_MODEL=deepseek-flash
 LLM_MODEL_PROVIDER=openai
 LLM_API_KEY=你的模型服务密钥
 LLM_BASE_URL=https://api.deepseek.com
+LLM_MODEL2=备用模型名称
+LLM_API_KEY2=备用模型服务密钥
+LLM_BASE_URL2=https://备用模型服务地址/v1
+LLM_TIMEOUT=10
+WEBHOOK_RAG_TIMEOUT_SECONDS=30
 ```
 
 主要配置分组：
@@ -159,7 +164,9 @@ LLM_BASE_URL=https://api.deepseek.com
 | 配置 | 作用 |
 | --- | --- |
 | `POSTGRES_*` / `POSTGRES_DSN` | PostgreSQL 连接 |
-| `LLM_MODEL`、`LLM_MODEL_PROVIDER`、`LLM_API_KEY`、`LLM_BASE_URL` | 云端 LLM |
+| `LLM_MODEL`、`LLM_MODEL_PROVIDER`、`LLM_API_KEY`、`LLM_BASE_URL` | 主云端 LLM |
+| `LLM_MODEL2`、`LLM_MODEL_PROVIDER2`、`LLM_API_KEY2`、`LLM_BASE_URL2` | 主模型失败、超时或空回复时使用的备用 LLM；提供商留空时复用主模型提供商 |
+| `LLM_TIMEOUT`、`WEBHOOK_RAG_TIMEOUT_SECONDS` | 主模型单次最多 10 秒、一次查询总时限 30 秒；备用模型使用剩余时间 |
 | `RAG_WARM_UP_ON_STARTUP`、`RAG_INTENT_DATASET_PATH` | 是否在启动时加载本地模型、意图分类 CSV 路径 |
 | `CHATWOOT_*` | Chatwoot Webhook 和自动回复 |
 | `ADMIN_*` | 管理员认证 |

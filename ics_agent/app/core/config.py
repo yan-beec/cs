@@ -112,6 +112,13 @@ class AppSettings(BaseSettings):
     # 云端 LLM 提供商连接和运行时限制。
     llm_model: str = "deepseek-flash"
     llm_model_provider: str = "openai"
+    # 首次模型失败、超时或返回空内容时使用的备用模型。
+    # provider 为空时复用主模型的 provider；API key 和 base URL 不自动复用，
+    # 这样可以明确区分两个模型的凭据和服务地址。
+    llm_model2: str = ""
+    llm_model_provider2: str = ""
+    llm_api_key2: str = ""
+    llm_base_url2: str = ""
     llm_temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     llm_max_tokens: int = Field(default=1024, ge=1)
     llm_timeout: float = Field(default=30.0, gt=0)

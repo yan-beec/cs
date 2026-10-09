@@ -1,4 +1,7 @@
+import asyncio
 import unittest
+from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from ics_agent.rag.graph import nodes
@@ -9,159 +12,124 @@ class _LLMResponse:
         self.content = content
 
 
-class LLMReplyRetryTest(unittest.IsolatedAsyncioTestCase):
-    async def test_llm_reply_retries_with_backoff_then_succeeds(self) -> None:
-        call_cloud_llm = AsyncMock(
-            side_effect=[
-                RuntimeError("temporary outage"),
-                RuntimeError("still unavailable"),
-                _LLMResponse("重连后回复成功"),
-            ]
-        )
-        sleep = AsyncMock()
+def _state() -> dict[str, object]:
+    return {
+        "query": "怎么提现？",
+        "intent_label": "提现",
+        "reranked_documents": [],
+    }
 
+
+class LLMReplyFallbackTest(unittest.IsolatedAsyncioTestCase):
+    @contextmanager
+    def _settings_patches(self, *, llm_timeout: float = 10.0):
         with (
-            patch.object(nodes, "call_cloud_llm", call_cloud_llm),
-            patch("ics_agent.retry.reconnect.asyncio.sleep", sleep),
+            patch.object(
+                nodes,
+                "get_settings",
+                return_value=SimpleNamespace(llm_timeout=llm_timeout),
+            ),
+            patch.object(
+                nodes,
+                "get_rag_settings",
+                return_value=SimpleNamespace(webhook_rag_timeout_seconds=30.0),
+            ),
         ):
-            result = await nodes.llm_reply_node(
-                {
-                    "query": "怎么提现？",
-                    "intent_label": "提现",
-                    "reranked_documents": [],
-                }
-            )
+            yield
 
-        self.assertEqual(result["answer"], "重连后回复成功")
-        self.assertEqual(call_cloud_llm.await_count, 3)
-        self.assertEqual(
-            [call.args[0] for call in sleep.await_args_list],
-            [1.0, 3.0],
-        )
+    async def test_primary_success_does_not_call_fallback(self) -> None:
+        response = _LLMResponse("主模型回复成功")
+        call_cloud_llm = AsyncMock(return_value=response)
+        with patch.object(nodes, "call_cloud_llm", call_cloud_llm), self._settings_patches():
+            result = await nodes.llm_reply_node(_state())
 
-    async def test_empty_replies_retry_then_return_maintenance_fallback(self) -> None:
-        responses = {
-            "empty_string": _LLMResponse(""),
-            "whitespace": _LLMResponse(" \t\r\n\u3000"),
-            "empty_content_blocks": _LLMResponse([]),
-            "null_content": _LLMResponse(None),
-            "null_response": None,
-            "non_text_content_blocks": _LLMResponse(
-                [{"type": "tool_use", "id": "call-1", "name": "lookup"}]
-            ),
-            "empty_text_content_blocks": _LLMResponse(
-                [{"type": "text", "text": "  "}, {"type": "text", "text": None}]
-            ),
-        }
+        self.assertEqual(result["answer"], "主模型回复成功")
+        call_cloud_llm.assert_awaited_once()
+        self.assertFalse(call_cloud_llm.await_args.kwargs["use_fallback_model"])
+        self.assertEqual(call_cloud_llm.await_args.kwargs["timeout"], 10.0)
+        self.assertEqual(call_cloud_llm.await_args.kwargs["max_retries"], 0)
 
-        for case, response in responses.items():
-            with self.subTest(case=case):
-                call_cloud_llm = AsyncMock(return_value=response)
-                sleep = AsyncMock()
-                with (
-                    patch.object(nodes, "call_cloud_llm", call_cloud_llm),
-                    patch("ics_agent.retry.reconnect.asyncio.sleep", sleep),
-                ):
-                    result = await nodes.llm_reply_node(
-                        {
-                            "query": "怎么提现？",
-                            "intent_label": "提现",
-                            "reranked_documents": [],
-                        }
-                    )
-
-                self.assertEqual(
-                    result["answer"],
-                    "当前智能客服正在维护，请您发送「转人工」申请人工客服协助！",
-                )
-                self.assertIsNone(result["llm_response"])
-                self.assertIn("empty reply", result["error"])
-                self.assertEqual(call_cloud_llm.await_count, 3)
-                self.assertEqual(
-                    [call.args[0] for call in sleep.await_args_list],
-                    [1.0, 3.0],
-                )
-
-    async def test_empty_reply_can_recover_on_retry(self) -> None:
-        response = _LLMResponse("重试后回复成功")
+    async def test_primary_error_immediately_calls_fallback_model(self) -> None:
+        response = _LLMResponse("备用模型回复成功")
         call_cloud_llm = AsyncMock(
-            side_effect=[_LLMResponse(" \n"), response]
+            side_effect=[RuntimeError("primary unavailable"), response]
         )
-        sleep = AsyncMock()
+        with patch.object(nodes, "call_cloud_llm", call_cloud_llm), self._settings_patches():
+            result = await nodes.llm_reply_node(_state())
 
-        with (
-            patch.object(nodes, "call_cloud_llm", call_cloud_llm),
-            patch("ics_agent.retry.reconnect.asyncio.sleep", sleep),
-        ):
-            result = await nodes.llm_reply_node(
-                {
-                    "query": "怎么提现？",
-                    "intent_label": "提现",
-                    "reranked_documents": [],
-                }
-            )
-
-        self.assertEqual(result["answer"], "重试后回复成功")
-        self.assertIs(result["llm_response"], response)
-        self.assertNotIn("error", result)
+        self.assertEqual(result["answer"], "备用模型回复成功")
         self.assertEqual(call_cloud_llm.await_count, 2)
-        sleep.assert_awaited_once_with(1.0)
+        first, second = call_cloud_llm.await_args_list
+        self.assertFalse(first.kwargs["use_fallback_model"])
+        self.assertTrue(second.kwargs["use_fallback_model"])
+        self.assertEqual(first.kwargs["timeout"], 10.0)
+        self.assertLessEqual(second.kwargs["timeout"], 30.1)
+        self.assertEqual(second.kwargs["max_retries"], 0)
 
-    async def test_valid_text_blocks_return_answer_without_retry(self) -> None:
+    async def test_primary_timeout_after_ten_seconds_switches_to_fallback(self) -> None:
+        async def call_with_timeout(*args, **kwargs):
+            if not kwargs["use_fallback_model"]:
+                await asyncio.sleep(10)
+            return _LLMResponse("备用模型及时回复")
+
+        call_cloud_llm = AsyncMock(side_effect=call_with_timeout)
+        with patch.object(nodes, "call_cloud_llm", call_cloud_llm), self._settings_patches(llm_timeout=0.01):
+            result = await nodes._call_llm_reply("prompt", total_timeout=0.1)
+
+        self.assertEqual(result.content, "备用模型及时回复")
+        self.assertEqual(call_cloud_llm.await_count, 2)
+        self.assertFalse(
+            call_cloud_llm.await_args_list[0].kwargs["use_fallback_model"]
+        )
+        self.assertTrue(
+            call_cloud_llm.await_args_list[1].kwargs["use_fallback_model"]
+        )
+
+    async def test_empty_primary_reply_switches_to_fallback(self) -> None:
+        call_cloud_llm = AsyncMock(
+            side_effect=[_LLMResponse("  "), _LLMResponse("备用模型非空回复")]
+        )
+        with patch.object(nodes, "call_cloud_llm", call_cloud_llm), self._settings_patches():
+            result = await nodes.llm_reply_node(_state())
+
+        self.assertEqual(result["answer"], "备用模型非空回复")
+        self.assertEqual(call_cloud_llm.await_count, 2)
+
+    async def test_text_content_blocks_are_joined_without_retry(self) -> None:
         response = _LLMResponse(
             [
                 {"type": "text", "text": "第一步：打开设置。"},
-                {"type": "tool_use", "id": "call-1", "name": "lookup"},
+                {"type": "tool_use", "id": "call-1"},
                 "第二步：选择账号安全。",
             ]
         )
         call_cloud_llm = AsyncMock(return_value=response)
-        sleep = AsyncMock()
-
-        with (
-            patch.object(nodes, "call_cloud_llm", call_cloud_llm),
-            patch("ics_agent.retry.reconnect.asyncio.sleep", sleep),
-        ):
-            result = await nodes.llm_reply_node(
-                {
-                    "query": "如何修改手机号？",
-                    "intent_label": "账号",
-                    "reranked_documents": [],
-                }
-            )
+        with patch.object(nodes, "call_cloud_llm", call_cloud_llm), self._settings_patches():
+            result = await nodes.llm_reply_node(_state())
 
         self.assertEqual(
             result["answer"],
             "第一步：打开设置。\n第二步：选择账号安全。",
         )
-        self.assertIs(result["llm_response"], response)
-        self.assertNotIn("error", result)
         call_cloud_llm.assert_awaited_once()
-        sleep.assert_not_awaited()
 
-    async def test_llm_reply_returns_fallback_after_retry_exhausted(self) -> None:
-        call_cloud_llm = AsyncMock(side_effect=RuntimeError("provider down"))
-        sleep = AsyncMock()
-
-        with (
-            patch.object(nodes, "call_cloud_llm", call_cloud_llm),
-            patch("ics_agent.retry.reconnect.asyncio.sleep", sleep),
-        ):
-            result = await nodes.llm_reply_node(
-                {
-                    "query": "怎么提现？",
-                    "intent_label": "提现",
-                    "reranked_documents": [],
-                }
-            )
+    async def test_fallback_failure_returns_maintenance_answer(self) -> None:
+        call_cloud_llm = AsyncMock(
+            side_effect=[RuntimeError("primary down"), RuntimeError("fallback down")]
+        )
+        with patch.object(nodes, "call_cloud_llm", call_cloud_llm), self._settings_patches():
+            result = await nodes.llm_reply_node(_state())
 
         self.assertEqual(result["answer"], nodes.LLM_REPLY_FALLBACK_ANSWER)
         self.assertIsNone(result["llm_response"])
-        self.assertEqual(call_cloud_llm.await_count, 3)
-        self.assertEqual(
-            [call.args[0] for call in sleep.await_args_list],
-            [1.0, 3.0],
-        )
+        self.assertEqual(call_cloud_llm.await_count, 2)
+
+    async def test_primary_timeout_cap_remains_ten_seconds(self) -> None:
+        call_cloud_llm = AsyncMock(return_value=_LLMResponse("主模型回复"))
+        with patch.object(nodes, "call_cloud_llm", call_cloud_llm), self._settings_patches(llm_timeout=60.0):
+            await nodes._call_llm_reply("prompt", total_timeout=30.0)
+
+        self.assertEqual(call_cloud_llm.await_args.kwargs["timeout"], 10.0)
 
 
 if __name__ == "__main__":
