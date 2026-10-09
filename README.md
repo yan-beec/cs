@@ -4,6 +4,8 @@
 
 首次部署到 Ubuntu 服务器并连接已有 Chatwoot，请按[服务器首次部署测试手册](docs/server-first-deployment.md)操作；手册和服务器模板已按当前配置更新，包含从模型包上传完成后继续部署的步骤、SSH 别名与 Git 读取权限、数据库和模型初始化、Chatwoot 内网接入、故障验收、更新和备份。推荐 Git 同步后端、模型单独上传，复用已有前端；第 5.7 节列出当前并发、超时和资源调整方法。
 
+国内网络的 Docker 构建使用清华普通 PyPI 镜像和南大 CPU PyTorch 镜像：服务器 `.env` 设置 `BUILD_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple`、`BUILD_TORCH_INDEX_URL=https://mirrors.nju.edu.cn/pytorch/whl/cpu`，然后重新 build；服务器模板已包含这两项。CPU 源备用为 `https://mirror.sjtu.edu.cn/pytorch-wheels/cpu`。构建保留 CPU 精确版本约束和 pip 缓存，已有下载失败按手册第 7.1A 节恢复。
+
 一次查询的处理顺序如下：
 
 ```text

@@ -29,6 +29,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        PIP_INDEX_URL: ${BUILD_PIP_INDEX_URL:-https://pypi.org/simple}
+        TORCH_INDEX_URL: ${BUILD_TORCH_INDEX_URL:-https://mirrors.nju.edu.cn/pytorch/whl/cpu}
+        PIP_DEFAULT_TIMEOUT: ${BUILD_PIP_TIMEOUT:-120}
+        PIP_RETRIES: ${BUILD_PIP_RETRIES:-8}
     image: ics-agent:py310
     restart: unless-stopped
     env_file:
