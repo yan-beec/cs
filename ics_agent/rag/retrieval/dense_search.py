@@ -7,10 +7,12 @@ import asyncio
 import json
 import logging
 import sys
-from threading import Lock
+import time
+import weakref
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from threading import Lock
+from typing import Any, Callable
 
 if __package__ in {None, ""}:
     _project_root = Path(__file__).resolve().parents[3]
@@ -32,6 +34,132 @@ from knowledge_base_in.vector_store_lock import vector_store_lock
 logger = logging.getLogger(__name__)
 _retriever: DenseRetriever | None = None
 _retriever_lock = Lock()
+
+
+@dataclass
+class _EmbeddingRequest:
+    """一个等待加入在线 embedding 微批次的 query。"""
+
+    text: str
+    future: asyncio.Future[list[float]]
+
+
+class _EmbeddingBatchBroker:
+    """在一个事件循环内收集 query，并批量调用共享 embedding 模型。"""
+
+    def __init__(
+        self,
+        embed: Callable[[list[str]], list[list[float]]],
+        *,
+        max_batch_size: int,
+        max_wait_ms: int,
+    ) -> None:
+        self._embed = embed
+        self._max_batch_size = max_batch_size
+        self._max_wait_seconds = max_wait_ms / 1000.0
+        self._queue: asyncio.Queue[_EmbeddingRequest] = asyncio.Queue()
+        self._task: asyncio.Task[None] | None = None
+
+    def submit(self, request: _EmbeddingRequest) -> None:
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(
+                self._run(),
+                name="rag-embedding-micro-batch",
+            )
+        self._queue.put_nowait(request)
+
+    async def _run(self) -> None:
+        while True:
+            first = await self._queue.get()
+            batch = [first]
+            deadline = asyncio.get_running_loop().time() + self._max_wait_seconds
+
+            while len(batch) < self._max_batch_size:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    break
+                try:
+                    request = await asyncio.wait_for(
+                        self._queue.get(),
+                        timeout=remaining,
+                    )
+                except asyncio.TimeoutError:
+                    break
+                batch.append(request)
+
+            active_requests = [
+                request for request in batch if not request.future.cancelled()
+            ]
+            if not active_requests:
+                continue
+
+            started_at = time.perf_counter()
+            try:
+                vectors = await asyncio.to_thread(
+                    self._embed,
+                    [request.text for request in active_requests],
+                )
+                if len(vectors) != len(active_requests):
+                    raise RuntimeError(
+                        "Embedding model returned an unexpected vector count."
+                    )
+            except asyncio.CancelledError:
+                for request in active_requests:
+                    if not request.future.done():
+                        request.future.cancel()
+                raise
+            except Exception as exc:
+                for request in active_requests:
+                    if not request.future.done():
+                        request.future.set_exception(exc)
+            else:
+                for request, vector in zip(active_requests, vectors):
+                    if not request.future.done():
+                        request.future.set_result(vector)
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "knowledge_base.embedding.micro_batch.completed",
+                    batch_size=len(active_requests),
+                    elapsed_ms=round(
+                        (time.perf_counter() - started_at) * 1000,
+                        1,
+                    ),
+                )
+
+
+class _EmbeddingBatchRegistry:
+    """为每个事件循环保存一个微批处理器，避免跨 loop 复用 asyncio 对象。"""
+
+    def __init__(
+        self,
+        embed: Callable[[list[str]], list[list[float]]],
+        *,
+        max_batch_size: int,
+        max_wait_ms: int,
+    ) -> None:
+        self._embed = embed
+        self._max_batch_size = max_batch_size
+        self._max_wait_ms = max_wait_ms
+        self._lock = Lock()
+        self._brokers: weakref.WeakKeyDictionary[
+            asyncio.AbstractEventLoop, _EmbeddingBatchBroker
+        ] = weakref.WeakKeyDictionary()
+
+    def for_current_loop(self) -> _EmbeddingBatchBroker:
+        loop = asyncio.get_running_loop()
+        broker = self._brokers.get(loop)
+        if broker is None:
+            with self._lock:
+                broker = self._brokers.get(loop)
+                if broker is None:
+                    broker = _EmbeddingBatchBroker(
+                        self._embed,
+                        max_batch_size=self._max_batch_size,
+                        max_wait_ms=self._max_wait_ms,
+                    )
+                    self._brokers[loop] = broker
+        return broker
 
 
 @dataclass(frozen=True)
@@ -115,6 +243,15 @@ class DenseRetriever:
                 self.settings.knowledge_base_embedding_cpu_interop_threads
             ),
         )
+        self._embedding_batches = _EmbeddingBatchRegistry(
+            self.embedder.embed,
+            max_batch_size=(
+                self.settings.knowledge_base_embedding_micro_batch_max_size
+            ),
+            max_wait_ms=(
+                self.settings.knowledge_base_embedding_micro_batch_wait_ms
+            ),
+        )
         log_event(
             logger,
             logging.INFO,
@@ -132,6 +269,7 @@ class DenseRetriever:
         query: str,
         *,
         top_k: int | None = None,
+        query_embedding: list[float] | None = None,
     ) -> list[DenseSearchResult]:
         normalized_query = query.strip()
         if not normalized_query:
@@ -140,7 +278,8 @@ class DenseRetriever:
         if result_limit < 1:
             raise ValueError("top_k must be at least 1.")
 
-        query_embedding = self.embedder.embed([normalized_query])[0]
+        if query_embedding is None:
+            query_embedding = self.embedder.embed([normalized_query])[0]
         with vector_store_lock:
             active_collection_name = _read_active_collection_name(
                 self.persist_dir,
@@ -193,10 +332,27 @@ class DenseRetriever:
         top_k: int | None = None,
     ) -> list[DenseSearchResult]:
         """异步执行 embedding 和 ChromaDB 查询。"""
+        normalized_query = query.strip()
+        if not normalized_query:
+            raise ValueError("Query cannot be empty.")
+        query_embedding_future = asyncio.get_running_loop().create_future()
+        self._embedding_batches.for_current_loop().submit(
+            _EmbeddingRequest(
+                text=normalized_query,
+                future=query_embedding_future,
+            )
+        )
+        try:
+            query_embedding = await query_embedding_future
+        except asyncio.CancelledError:
+            query_embedding_future.cancel()
+            raise
+
         return await asyncio.to_thread(
             self._search_sync,
-            query,
+            normalized_query,
             top_k=top_k,
+            query_embedding=query_embedding,
         )
 
 

@@ -1,5 +1,6 @@
+import json
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, Mock, patch
 
 from ics_agent.app.chatwoot import routes as main
@@ -8,6 +9,7 @@ from ics_agent.app.core.models import ChatwootWebhookEvent
 from ics_agent.app.chatwoot.payload import (
     contact_block_change_from_payload,
     contact_blocked_from_payload,
+    parse_event,
 )
 
 
@@ -121,8 +123,83 @@ class ContactBlockedPayloadTest(unittest.TestCase):
         self.assertTrue(main._is_contact_block_event(event))
         self.assertTrue(main._should_process_webhook_event(event))
 
+    def test_reads_contact_id_from_flat_conversation_event_sender(self) -> None:
+        for event_name in ("conversation_updated", "conversation_status_changed"):
+            with self.subTest(event=event_name):
+                event = parse_event(json.dumps({
+                    "event": event_name,
+                    "id": 58,
+                    "account": {"id": 1},
+                    "status": "resolved",
+                    "meta": {"sender": {"id": 42, "blocked": True}},
+                }).encode())
+
+                self.assertEqual(main._webhook_contact_id(event), "42")
+
+    def test_does_not_use_conversation_id_as_missing_contact_id(self) -> None:
+        event = parse_event(json.dumps({
+            "event": "conversation_updated",
+            "id": 58,
+            "account": {"id": 1},
+            "status": "resolved",
+            "meta": {"sender": {"blocked": True}},
+        }).encode())
+
+        self.assertIsNone(main._webhook_contact_id(event))
+
 
 class ContactBlockEventTest(unittest.IsolatedAsyncioTestCase):
+    async def test_flat_conversation_update_arms_twenty_four_hour_contact_block(
+        self,
+    ) -> None:
+        event = parse_event(json.dumps({
+            "event": "conversation_updated",
+            "id": 58,
+            "account": {"id": 1},
+            "inbox_id": 7,
+            "status": "resolved",
+            "meta": {
+                "sender": {"id": 42, "blocked": True, "type": "contact"},
+                "assignee": {"id": 9, "type": "user"},
+                "assignee_type": "User",
+            },
+            "changed_attributes": [{
+                "last_activity_at": {
+                    "previous_value": "2026-10-09T06:44:00Z",
+                    "current_value": "2026-10-09T06:44:39Z",
+                },
+            }],
+        }).encode())
+        now = datetime(2026, 10, 9, 6, 44, 39, tzinfo=timezone.utc)
+        expected_expiry = now + timedelta(hours=24)
+        repository = Mock()
+
+        self.assertTrue(main._is_contact_block_event(event))
+        self.assertTrue(main._should_process_webhook_event(event))
+        with (
+            patch.object(main, "contact_block_repository", repository),
+            patch.object(
+                main,
+                "settings",
+                main.settings.model_copy(
+                    update={"chatwoot_block_duration_seconds": 86400}
+                ),
+            ),
+            patch.object(main, "datetime") as datetime_mock,
+        ):
+            datetime_mock.now.return_value = now
+            result = await main._process_contact_block_event(event)
+
+        repository.arm.assert_called_once_with(
+            account_id="1",
+            contact_id="42",
+            blocked_until=expected_expiry,
+            refresh_existing=False,
+        )
+        repository.deactivate.assert_not_called()
+        self.assertEqual(result["route"], "contact_block_armed")
+        self.assertEqual(result["blocked_until"], expected_expiry.isoformat())
+
     async def test_contact_update_arms_seven_day_block(self) -> None:
         event = ChatwootWebhookEvent(
             event="contact_updated",

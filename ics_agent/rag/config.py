@@ -106,6 +106,18 @@ class RAGSettings(BaseSettings):
         ge=1,
         le=32,
     )
+    # 在线查询将短时间内到达的 query 合并为一次 BGE-M3 encode 调用。
+    # 这是批处理等待窗口和单批上限，不是整个 RAG 请求的超时。
+    knowledge_base_embedding_micro_batch_wait_ms: int = Field(
+        default=20,
+        ge=0,
+        le=1000,
+    )
+    knowledge_base_embedding_micro_batch_max_size: int = Field(
+        default=4,
+        ge=1,
+        le=64,
+    )
     knowledge_base_embedding_batch_pause_seconds: float = Field(
         default=0.1,
         ge=0,

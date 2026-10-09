@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 ARG PIP_INDEX_URL=https://pypi.org/simple
-ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+ARG TORCH_INDEX_URL=https://mirrors.nju.edu.cn/pytorch/whl/cpu
 ARG PIP_DEFAULT_TIMEOUT=120
 ARG PIP_RETRIES=8
 

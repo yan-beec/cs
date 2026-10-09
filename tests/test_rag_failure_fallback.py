@@ -60,7 +60,7 @@ class RagFailureFallbackTest(unittest.IsolatedAsyncioTestCase):
             "当前智能客服正在维护，请您发送「转人工」申请人工客服协助！",
         )
         self.assertIsNone(result["llm_response"])
-        self.assertEqual(call_cloud_llm.await_count, 3)
+        self.assertEqual(call_cloud_llm.await_count, 2)
 
     async def test_build_webhook_answer_returns_maintenance_fallback(self) -> None:
         with patch.object(

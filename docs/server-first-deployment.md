@@ -71,7 +71,7 @@ f161f5bab8e534700fc9c1891c9132388e9cef733222974f7f83a608b9210831
 
 服务器模板现已与根 `.env.example` 的业务参数对齐：封禁 1 天、会话记忆 15 天、Webhook 并发 10、重排并发 4、LLM 并发 8、数据库连接池 12、获取连接等待 1 秒、LLM 单次超时 10 秒、Webhook 查询总预算 30 秒。完整配置表及资源不足时的调整见第 5.7 节。
 
-国内网络构建现支持普通 Python 依赖使用清华 PyPI 镜像、CPU PyTorch 单独下载，以及 pip 下载缓存、超时和重试。已经卡在 `pip install` 的服务器直接按第 7.1A 节更新构建文件和参数；无需重新上传模型包。
+国内网络构建默认使用清华普通 PyPI 镜像和南京大学 CPU PyTorch 镜像，并保留 pip 下载缓存、超时和重试。CPU 下载也使用国内来源；上海交大 CPU 镜像作为备用。已经卡在 `pip install` 的服务器直接按第 7.1A 节继续；无需重新上传模型包。
 
 `deploy/server/bot.env.example` 是本手册唯一的服务器起始模板，根 `.env.example` 是通用示例；二者都不是实际密钥文件。旧版服务器 `.env` 不会自动更新，已经配置过的服务器需按第 5.7、13.1 节逐项修改。
 
@@ -394,7 +394,7 @@ git diff --stat
 **先提交并推送当前代码、最新手册和服务器配置模板。** `.gitattributes` 和 `Dockerfile.backend-only` 已纳入本地仓库，但本轮模板修订仍需发布；只在本机保存文件，服务器无法取得它们。确认改动内容后，可在 Windows 暂存部署相关文件：
 
 ```powershell
-git add -- .gitattributes Dockerfile docker-compose.yml README.md docs/server-first-deployment.md deploy/server/Dockerfile.backend-only deploy/server/bot.env.example deploy/server/nginx-bot.conf.example
+git add -- .gitattributes Dockerfile docker-compose.yml requirements.txt README.md docs/server-first-deployment.md deploy/server/Dockerfile.backend-only deploy/server/bot.env.example deploy/server/nginx-bot.conf.example
 if ($LASTEXITCODE -ne 0) { throw '暂存失败，请检查。' }
 git diff --cached --stat
 ```
@@ -621,11 +621,15 @@ LLM_MODEL=gpt-5.6-sol
 LLM_MODEL_PROVIDER=openai
 LLM_BASE_URL=https://ai-sfo.apiveer.com/v1
 LLM_API_KEY=你的模型API密钥
+LLM_MODEL2=deepseek-flash
+LLM_MODEL_PROVIDER2=openai
+LLM_BASE_URL2=https://备用模型服务地址/v1
+LLM_API_KEY2=你的备用模型API密钥
 ```
 
-上面的模型名和 Base URL 来自你当前根 `.env.example`，API Key 仍需自行填写。若已切换服务商，三者应一起按本机验证成功的配置更新。本项目可接 OpenAI 兼容接口；是否带 `/v1` 以实际服务商为准，不自行拼接 `/chat/completions` 到 Base URL。
+主模型名称和 Base URL 来自根 `.env.example`；备用模型地址及两组 API Key 需自行填写。主备模型分别核对模型名称、提供商、地址和密钥。`LLM_MODEL_PROVIDER2` 留空时沿用主模型提供商，备用地址和密钥不会自动复用主模型值。本项目可接 OpenAI 兼容接口；是否带 `/v1` 以实际服务商为准，不自行拼接 `/chat/completions` 到 Base URL。
 
-当前设置是 **LLM 单次请求 10 秒、Webhook 查询阶段总预算 30 秒**。前者不是整轮最大等待时间；后者也不是“用户一定在 30 秒内收到回复”的承诺。排队、重试与故障兜底的准确含义见第 5.7、12.5 节。
+当前设置是 **主模型最多等待 10 秒、Webhook 查询阶段总预算 30 秒**。主模型超时、异常或空回复后立即调用备用模型，备用模型使用同一次查询的剩余预算，切换时不重新计满 30 秒。排队与回复写回的时间边界见第 5.7、12.5 节。
 
 ### 5.5 数据库配置保持一致
 
@@ -675,11 +679,13 @@ ADMIN_WEB_PORT=3001
 | `LLM_MAX_CONCURRENCY` | `8` | 共享云模型调用并发上限 |
 | `LLM_CONCURRENCY_WAIT_TIMEOUT` | `15` | 等待模型并发槽位的最长秒数，也会消耗查询预算 |
 | `POSTGRES_POOL_SIZE` / `POSTGRES_POOL_ACQUIRE_TIMEOUT` | `12` / `1.0` | 同步数据库连接池容量 / 获取连接等待秒数 |
-| `LLM_TIMEOUT` / `LLM_MAX_RETRIES` | `10` / `2` | SDK 单次超时 / SDK 最大重试数 |
+| `LLM_TIMEOUT` / `LLM_MAX_RETRIES` | `10` / `2` | 普通工厂调用的 SDK 超时 / 重试默认值；回复节点主模型最多 10 秒，主备模型均显式禁用 SDK 重试 |
 | `WEBHOOK_RAG_TIMEOUT_SECONDS` | `30` | worker 开始查询后，FAQ、记忆、检索、重排与生成的总预算 |
 | `WEBHOOK_PROCESSING_TIMEOUT_SECONDS` | `300` | worker 每次任务处理的外层时限，包含查询以外的 Chatwoot 操作 |
 | `WEBHOOK_MAX_RETRIES` | `3` | 未被查询兜底吸收的任务异常，最多额外重试 3 次 |
 | `CHATWOOT_SESSION_IDLE_TIMEOUT_SECONDS` | `21600` | 用户消息间隔达到 6 小时，下一条消息开启新上下文 |
+
+在线 RAG 的 Query 向量化现在使用微批处理：`KNOWLEDGE_BASE_EMBEDDING_MICRO_BATCH_WAIT_MS=20` 最多等待 20 毫秒，`KNOWLEDGE_BASE_EMBEDDING_MICRO_BATCH_MAX_SIZE=4` 最多合并 4 个 Query，然后一次调用 BGE-M3 并按原请求分别继续检索。它只合并短时间内到达的 embedding 请求，不合并不同用户的最终回复；同一会话仍按原顺序处理。
 
 为降低首次部署的积压和批次内存占用，服务器模板还显式使用 `WEBHOOK_QUEUE_MAX_SIZE=100`、`KNOWLEDGE_BASE_EMBEDDING_BATCH_SIZE=2`、`RAG_RERANKER_BATCH_SIZE=2`；代码默认分别为 1000、8、8。这三项属于部署取值，与上表当前业务超时和并发基线分开记录。
 
@@ -715,12 +721,24 @@ ADMIN_WEB_PORT=3001
 
 ```dotenv
 BUILD_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-BUILD_TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+BUILD_TORCH_INDEX_URL=https://mirrors.nju.edu.cn/pytorch/whl/cpu
 BUILD_PIP_TIMEOUT=120
 BUILD_PIP_RETRIES=8
 ```
 
 这四项由 Compose 的 `build.args` 传给镜像构建，修改后必须重新 `build`；它们不会修改 Windows `cs` 环境的 pip 配置。仅执行 `restart` 或把它们放入没有对应 `build.args` 的旧 Compose 文件，不会改变依赖下载方式。
+
+2026-10-08 已核对南大和交大镜像：均列出了 `torch-2.6.0+cpu-cp310-cp310-linux_x86_64.whl`，并能以 HTTP 206 返回真实 wheel 文件的开头；文件约 170 MiB，实际下载没有跳回官方站点。此项验证只确认所需版本及下载入口可用，不代表已经在你的服务器完成整包下载或测速。
+
+若南大线路在你的服务器上不畅，将 CPU 源那一行改为下列备用地址，再重新 build：
+
+```dotenv
+BUILD_TORCH_INDEX_URL=https://mirror.sjtu.edu.cn/pytorch-wheels/cpu
+```
+
+普通 PyPI 镜像与 CPU 轮子专用镜像是两种仓库，PyTorch 并不要求使用官方源。这里保留 `torch==2.6.0+cpu` 精确版本，使用国内镜像提供的对应安装包。CPU 索引参数应填到 `/cpu` 层级，不要多加 `/torch`，pip 会自己拼接包名。
+
+也已核对阿里专用目录 `https://mirrors.aliyun.com/pytorch-wheels/cpu/`：它提供同一个 CPU 安装包，但这是平铺文件目录，pip 使用方式为 `--no-index --find-links`，不能直接填进当前的 `BUILD_TORCH_INDEX_URL`（对应的 `/cpu/torch/` 不存在）。本手册采用与现有 `--index-url` 构建参数兼容的南大 / 交大地址，服务器可以直接改一行继续构建。清华普通 PyPI 的 torch 页面未列出本次所需 `2.6.0+cpu` 文件；这不影响它用于其他普通依赖。
 
 ```bash
 cd /opt/cs
@@ -744,6 +762,10 @@ docker compose --progress plain -f docker-compose.yml build ics-agent
 入口采用内网并不表示完全离线部署：服务器仍需能够访问 Git 仓库、Docker 镜像源、Python 包源、CPU PyTorch 下载源，以及你配置的云模型服务。图片 OCR 也可能初始化额外资源。如果没有任何出站网络，本手册的在线构建步骤不能直接使用，需另行准备离线镜像和依赖。
 
 ### 7.1A 已因 pip 下载慢而失败：从当前进度恢复
+
+**如果你已经同步过上一版“两个源分别下载”的构建文件，现在只需切换 CPU 源：** 编辑 `/opt/cs/.env`，把原 `BUILD_TORCH_INDEX_URL` 的值改为 `https://mirrors.nju.edu.cn/pytorch/whl/cpu`（或上面的交大备用地址），保存后执行 `docker compose --progress plain -f docker-compose.yml build ics-agent`。旧 `.env` 的官方地址会覆盖新版默认值，因此要修改实际 `.env` 中的原行。已有构建支持该参数时，无需等待新代码即可切换；模型和业务配置保持原值。
+
+若还没同步过支持 `build.args` 的构建文件，执行下面的完整恢复流程：
 
 1. **Windows 开发端：** 按第 4.6 节第二步提交并推送本次改动，尤其是 `docker-compose.yml`、`deploy/server/Dockerfile.backend-only` 和 `deploy/server/bot.env.example`。
 2. **Ubuntu 服务器：** 确认源码仓库干净，再拉取：
@@ -787,7 +809,7 @@ docker compose --progress plain -f docker-compose.yml build ics-agent
 | 卡住位置 / 现象 | 下一步 |
 | --- | --- |
 | `pandas`、`FastAPI`、`LangChain` 等普通依赖下载超时 | 查看实际 `Looking in indexes` 是否是所设国内源；确认新 Compose、Dockerfile、`.env` 都已生效。可将 `BUILD_PIP_INDEX_URL` 换为你网络可达的其他可信 PyPI 镜像，再 build |
-| `torch-2.6.0+cpu` 下载慢 | 仍属于独立的 PyTorch CPU 源。普通清华 PyPI 镜像不保证提供 `+cpu` 轮子；需让服务器可访问官方 CPU 源，或把 `BUILD_TORCH_INDEX_URL` 配成已确认包含该版本 Linux x86_64 / Python 3.10 轮子的可信 CPU 索引 |
+| `torch-2.6.0+cpu` 下载慢 | 核对实际 `.env` 是否已将旧官方地址换成南大 CPU 镜像；若南大线路不畅，改用第 7.1 节已核对版本的交大 CPU 镜像，再 build |
 | `No matching distribution found for torch==2.6.0+cpu` | 核对 CPU 源、架构和 Python 版本；不要改成不带 `+cpu` 的版本来绕过，否则可能拉入大型 CUDA 依赖 |
 | `load metadata for ... python` 或 `postgres` 镜像拉取失败 | 属于 Docker 镜像源网络问题，修改 pip 源无效；按主机现有 Docker 镜像代理 / 企业镜像仓库配置处理，不覆盖正在运行 Chatwoot 的 Docker 设置 |
 | 反复出现 `pip is looking at multiple versions` | 可能是依赖解析回溯，换源不能保证解决；保留末尾冲突信息，再按具体约束处理，不盲目升级全部依赖 |
@@ -1499,13 +1521,13 @@ AgentBot 通常不负责独立的 `contact_updated` 事件。若还要验证“�
 | 情况 | 当前行为 |
 | --- | --- |
 | FAQ 基础设施查询异常 | 尝试转到 RAG；后续 RAG 也失败时才走维护提示 |
-| 大模型请求异常，或返回空字符串、全空白、`None`、没有有效文本的内容块 | 回复节点在首次失败后间隔 1 秒、3 秒重连，最多 3 次节点调用；仍失败则返回维护提示 |
+| 主模型等待达到 10 秒、请求异常，或返回空字符串、全空白、`None`、没有有效文本的内容块 | 立即切换 `LLM_MODEL2`，主备各调用一次；备用模型使用剩余查询预算，仍失败或空回复则返回维护提示 |
 | 意图识别、检索、重排、查询中的记忆访问异常 | Chatwoot 查询外层捕获，返回维护提示；不为这类已兜底的查询继续重试整个 Webhook 任务 |
-| 查询阶段达到当前 30 秒预算 | Chatwoot 查询外层取消等待并返回维护提示；不保证内部所有重试都完成 |
+| 查询阶段达到当前 30 秒预算 | Chatwoot 查询外层取消等待并返回维护提示，包括正在进行的备用模型调用 |
 | 检索正常完成但没有命中文档 | 不等同于“检索异常”，仍可能进入回复生成；验收知识库时不能仅凭无报错判定成功 |
 | Chatwoot API 回复发送失败、查询外的数据库控制状态失败 | 不属于上述查询兜底保证；任务可能重试并最终失败，用户可能收不到维护提示 |
 
-SDK 自身仍有 `LLM_MAX_RETRIES=2`，它与回复节点的重连是两层机制；二者共同消耗外层 30 秒查询预算。30 秒不包含进入 worker 前的队列等待、查询前的部分会话控制操作，以及查询后的 Chatwoot 写回耗时。CPU 线程或第三方调用的取消也可能存在延迟，因此它是应用等待预算，不是用户侧严格的送达时限。
+回复节点对主备模型都显式设置 `max_retries=0`，不再执行原来的 1 秒、3 秒退避重连。`LLM_MAX_RETRIES=2` 仅作为其他直接工厂调用的默认值。30 秒查询预算包含 FAQ、记忆、检索、重排、模型并发槽位等待和主备模型调用；不包含进入 worker 前的队列等待、查询前的部分会话控制操作，以及查询后的 Chatwoot 写回耗时。CPU 线程或第三方调用的取消也可能存在延迟，因此它是应用等待预算，不是用户侧严格的送达时限。
 
 以下命令在容器里的独立进程模拟三种故障，不修改运行服务，不调用真实模型，不给 Chatwoot 发消息。为了不用等待 30 秒，超时分支仅在这个独立进程临时用 0.01 秒测试：
 
@@ -1519,11 +1541,12 @@ from ics_agent.rag.graph import nodes
 
 async def check():
     model = AsyncMock(return_value=SimpleNamespace(content=None))
-    with patch.object(nodes, 'call_cloud_llm', model), patch('ics_agent.retry.reconnect.asyncio.sleep', new=AsyncMock()):
+    with patch.object(nodes, 'call_cloud_llm', model):
         result = await nodes.llm_reply_node({'query': '服务器空回复测试', 'reranked_documents': []})
     assert result['answer'] == nodes.LLM_REPLY_FALLBACK_ANSWER
-    assert model.await_count == 3
-    print('PASS: 空回复重试后返回指定维护提示')
+    assert model.await_count == 2
+    assert [call.kwargs['use_fallback_model'] for call in model.await_args_list] == [False, True]
+    print('PASS: 主备模型均空回复后返回指定维护提示')
 
     with patch.object(routes, '_run_rag_query', new=AsyncMock(side_effect=RuntimeError('retrieval unavailable'))):
         result = await routes._build_webhook_answer(
@@ -1602,6 +1625,10 @@ LLM_MAX_CONCURRENCY=8
 LLM_CONCURRENCY_WAIT_TIMEOUT=15
 POSTGRES_POOL_SIZE=12
 POSTGRES_POOL_ACQUIRE_TIMEOUT=1.0
+LLM_MODEL2=deepseek-flash
+LLM_MODEL_PROVIDER2=openai
+LLM_API_KEY2=你的备用模型API密钥
+LLM_BASE_URL2=https://备用模型服务地址/v1
 LLM_TIMEOUT=10
 WEBHOOK_RAG_TIMEOUT_SECONDS=30
 ```

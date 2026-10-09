@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from ics_agent.app.core.config import PROJECT_ROOT
+from ics_agent.app.core.config import PROJECT_ROOT, get_settings
 from ics_agent.app.core.logging_config import log_event
 from ics_agent.rag.config import RAGSettings, get_rag_settings
 from ics_agent.rag.intent_classifier.data import (
@@ -18,7 +19,6 @@ from ics_agent.rag.intent_classifier.data import (
     load_intent_csv,
 )
 from ics_agent.llm_factory import call_cloud_llm
-from ics_agent.retry import async_reconnect
 from ics_agent.rag.prompt import SYSTEM_PROMPT, build_dynamic_prompt
 from ics_agent.rag.reranker import arerank_documents
 from ics_agent.rag.retrieval import aretrieve_documents
@@ -32,6 +32,7 @@ CHITCHAT_INTENT_LABEL = "闲聊"
 LLM_REPLY_FALLBACK_ANSWER = (
     "当前智能客服正在维护，请您发送「转人工」申请人工客服协助！"
 )
+PRIMARY_LLM_TIMEOUT_SECONDS = 10.0
 
 
 class IntentClassifierModel:
@@ -388,20 +389,75 @@ def _response_content(response: Any) -> str:
     return str(content)
 
 
-@async_reconnect(
-    delays=(1.0, 3.0),
-    logger=logger,
-    operation="rag.llm_reply",
-)
-async def _call_llm_reply(prompt: str) -> Any:
-    """调用云端 LLM 生成最终回复，异常或空回复由装饰器重连。"""
+async def _call_llm_once(
+    prompt: str,
+    *,
+    use_fallback_model: bool,
+    timeout: float,
+) -> Any:
+    """单次调用指定模型；模型自身不再额外重试。"""
     response = await call_cloud_llm(
         prompt,
         system_prompt=SYSTEM_PROMPT,
+        use_fallback_model=use_fallback_model,
+        timeout=timeout,
+        max_retries=0,
     )
     if not _response_content(response).strip():
         raise ValueError("LLM returned an empty reply.")
     return response
+
+
+async def _call_llm_reply(
+    prompt: str,
+    *,
+    total_timeout: float | None = None,
+) -> Any:
+    """先调用主模型，失败或超时后在同一总时限内调用备用模型。"""
+    if total_timeout is None:
+        total_timeout = get_rag_settings().webhook_rag_timeout_seconds
+    if total_timeout <= 0:
+        raise ValueError("LLM total response timeout must be positive.")
+    started_at = time.perf_counter()
+    primary_timeout = min(
+        PRIMARY_LLM_TIMEOUT_SECONDS,
+        get_settings().llm_timeout,
+        total_timeout,
+    )
+    try:
+        return await asyncio.wait_for(
+            _call_llm_once(
+                prompt,
+                use_fallback_model=False,
+                timeout=primary_timeout,
+            ),
+            timeout=max(0.001, primary_timeout),
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as primary_exc:
+        elapsed = time.perf_counter() - started_at
+        remaining_timeout = total_timeout - elapsed
+        log_event(
+            logger,
+            logging.WARNING,
+            "rag.graph.node.llm_reply.fallback_started",
+            error_type=type(primary_exc).__name__,
+            elapsed_seconds=round(elapsed, 3),
+            remaining_seconds=round(max(0.0, remaining_timeout), 3),
+        )
+        if remaining_timeout <= 0:
+            raise TimeoutError(
+                "LLM total response deadline expired before fallback model."
+            ) from primary_exc
+        return await asyncio.wait_for(
+            _call_llm_once(
+                prompt,
+                use_fallback_model=True,
+                timeout=remaining_timeout,
+            ),
+            timeout=remaining_timeout,
+        )
 
 
 async def llm_reply_node(state: RAGState) -> dict[str, Any]:
@@ -411,7 +467,10 @@ async def llm_reply_node(state: RAGState) -> dict[str, Any]:
         raise ValueError("RAG state query cannot be empty.")
 
     try:
-        response = await _call_llm_reply(build_dynamic_prompt(state))
+        response = await _call_llm_reply(
+            build_dynamic_prompt(state),
+            total_timeout=get_rag_settings().webhook_rag_timeout_seconds,
+        )
     except Exception as exc:
         log_event(
             logger,

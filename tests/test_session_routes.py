@@ -89,6 +89,23 @@ def _status_payload(status: str = "resolved") -> dict[str, object]:
     }
 
 
+def _conversation_update_payload(
+    *, blocked: bool, status_changed: bool = False,
+) -> dict[str, object]:
+    payload = _status_payload()
+    payload["event"] = "conversation_updated"
+    payload["meta"] = {"sender": {"id": 42, "blocked": blocked}}
+    payload["changed_attributes"] = [
+        {"status": {"previous_value": "pending", "current_value": "resolved"}}
+        if status_changed else
+        {"last_activity_at": {
+            "previous_value": STARTED_AT.timestamp(),
+            "current_value": CLOSED_AT.timestamp(),
+        }}
+    ]
+    return payload
+
+
 def _event(payload: dict[str, object]):
     return parse_event(json.dumps(payload).encode())
 
@@ -148,6 +165,7 @@ class SessionRoutesTest(unittest.IsolatedAsyncioTestCase):
             ("settings", self.settings),
             ("rag_settings", self.rag_settings),
             ("conversation_control_repository", self.repository),
+            ("contact_block_repository", Mock()),
             ("webhook_repository", self.webhook_repository),
             ("webhook_queue", self.queue),
             ("_run_rag_query", self.rag),
@@ -191,6 +209,16 @@ class SessionRoutesTest(unittest.IsolatedAsyncioTestCase):
         self.set_status.assert_not_awaited()
 
     async def test_resolved_webhook_suppresses_answer_while_rag_is_running(self) -> None:
+        await self._assert_resolved_event_suppresses_answer(_status_payload())
+
+    async def test_explicit_resolved_update_suppresses_answer_while_rag_is_running(self) -> None:
+        await self._assert_resolved_event_suppresses_answer(
+            _conversation_update_payload(blocked=True, status_changed=True)
+        )
+
+    async def _assert_resolved_event_suppresses_answer(
+        self, payload: dict[str, object],
+    ) -> None:
         rag_started = asyncio.Event()
         release_rag = asyncio.Event()
 
@@ -205,7 +233,7 @@ class SessionRoutesTest(unittest.IsolatedAsyncioTestCase):
         try:
             await asyncio.wait_for(rag_started.wait(), timeout=2)
             self.set_status.reset_mock()
-            response = await asyncio.wait_for(self.receive(_status_payload()), timeout=2)
+            response = await asyncio.wait_for(self.receive(payload), timeout=2)
             self.assertEqual(response.status_code, 202)
             self.assertEqual(self.control.session_closed_at, CLOSED_AT)
             self.assertEqual(len(self.queued), 1)
@@ -218,6 +246,66 @@ class SessionRoutesTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["chatwoot_reply"]["sent"])
         self.client.send_message.assert_not_called()
         self.set_status.assert_not_awaited()
+
+    async def test_muted_resolved_activity_snapshot_keeps_queued_message_reply(self) -> None:
+        payload = _message_payload()
+        payload["conversation"]["status"] = "resolved"
+        payload["conversation"]["meta"] = {"sender": {"id": 42, "blocked": True}}
+        await self.receive(payload)
+        message_job = self.queued[0]
+        await self.receive(_conversation_update_payload(blocked=True))
+        # Process the activity event first to cover both HTTP ingress and worker
+        # handling before the waiting user message is allowed to run.
+        await routes._process_webhook_job(self.queued[1])
+        result = await routes._process_webhook_job(message_job)
+
+        self.assertIsNone(self.control.session_closed_at)
+        self.rag.assert_awaited_once_with("如何修改手机号？", thread_id=THREAD_ID)
+        self.assertTrue(result["chatwoot_reply"]["sent"])
+        self.client.send_message.assert_called_once()
+
+    async def test_muted_resolved_activity_snapshot_keeps_answer_while_rag_is_running(self) -> None:
+        rag_started = asyncio.Event()
+        release_rag = asyncio.Event()
+
+        async def generate_answer(*args, **kwargs):
+            rag_started.set()
+            await release_rag.wait()
+            return ANSWER
+
+        self.rag.side_effect = generate_answer
+        payload = _message_payload()
+        payload["conversation"]["status"] = "resolved"
+        payload["conversation"]["meta"] = {"sender": {"id": 42, "blocked": True}}
+        processing = asyncio.create_task(routes._process_webhook_job(
+            WebhookJob("muted-in-progress", _event(payload), received_at=RECEIVED_AT)
+        ))
+        try:
+            await asyncio.wait_for(rag_started.wait(), timeout=2)
+            response = await self.receive(_conversation_update_payload(blocked=True))
+            self.assertEqual(response.status_code, 202)
+            self.assertFalse(processing.done())
+        finally:
+            release_rag.set()
+            result = await asyncio.wait_for(processing, timeout=2)
+
+        self.assertIsNone(self.control.session_closed_at)
+        self.assertEqual(result["route"], "rag")
+        self.assertTrue(result["chatwoot_reply"]["sent"])
+        self.client.send_message.assert_called_once()
+
+    async def test_unmuted_resolved_activity_snapshot_does_not_end_consultation(self) -> None:
+        await self.receive(_conversation_update_payload(blocked=False))
+        for job in self.queued:
+            await routes._process_webhook_job(job)
+        result = await routes._process_webhook_job(WebhookJob(
+            "unmuted-snapshot", _event(_message_payload()), received_at=RECEIVED_AT,
+        ))
+
+        self.assertIsNone(self.control.session_closed_at)
+        self.rag.assert_awaited_once_with("如何修改手机号？", thread_id=THREAD_ID)
+        self.assertTrue(result["chatwoot_reply"]["sent"])
+        self.client.send_message.assert_called_once()
 
     async def test_resolved_during_external_send_prevents_trailing_pending_update(self) -> None:
         send_started = asyncio.Event()
