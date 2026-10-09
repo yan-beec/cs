@@ -130,6 +130,42 @@ class ChatwootClient:
             access_token=self._contact_api_token(),
         )
 
+    def list_contact_conversations(
+        self,
+        *,
+        account_id: str,
+        contact_id: str,
+    ) -> list[dict[str, Any]]:
+        """读取联系人的会话，供静音时自动结束当前人工接待。"""
+        account_id = str(account_id or "").strip()
+        contact_id = str(contact_id or "").strip()
+        if not account_id:
+            raise ChatwootAPIError("Chatwoot account_id is missing.")
+        if not contact_id:
+            raise ChatwootAPIError("Chatwoot contact_id is missing.")
+        result = self._request_json(
+            "GET",
+            (
+                f"/api/v1/accounts/{quote(account_id, safe='')}"
+                f"/contacts/{quote(contact_id, safe='')}/conversations"
+            ),
+            access_token=self._user_api_token(
+                "Chatwoot contact conversation operations"
+            ),
+        )
+        if not isinstance(result, dict):
+            raise ChatwootAPIError("Chatwoot contact conversation list is invalid.")
+        data = result.get("data")
+        envelope = data if isinstance(data, dict) else result
+        payload = data if isinstance(data, list) else envelope.get("payload")
+        if payload is None:
+            payload = result.get("payload")
+        if not isinstance(payload, list):
+            raise ChatwootAPIError("Chatwoot contact conversation list is missing.")
+        if any(not isinstance(conversation, dict) for conversation in payload):
+            raise ChatwootAPIError("Chatwoot contact conversation entry is invalid.")
+        return payload
+
     def list_agents(
         self,
         *,

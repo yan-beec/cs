@@ -83,6 +83,7 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
             conversation={"id": 56, "account_id": 1, "status": "open"},
             message_type="incoming",
             content="我补充一句",
+            raw={"sender": {"id": 42, "blocked": False}},
         )
         job = main.WebhookJob(event_key="test-active-handoff", event=event)
 

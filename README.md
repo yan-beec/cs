@@ -313,7 +313,14 @@ Chatwoot 的 Mute 会将联系人标记为 `blocked`，但不会阻止外部 Age
 已静音联系人不会被转入人工队列，并会收到“非常抱歉，当前人工座席繁忙，请稍后再试。”
 的提示。静音期间普通消息仍由智能客服回复。座席通过 Chatwoot 静音联系人后，服务默认将该状态记录 24 小时，
 后台任务到期后调用 Chatwoot 联系人 API 自动设置 `blocked=false`。
+拉黑动作会自动将该联系人由 ICS 管理的当前接待标记为 `resolved`，释放人工接管和坐席容量；下一条用户消息可进入 AI。
+需要在 Chatwoot 的 Account Webhook 中订阅 `contact_updated` 并配置其签名密钥 `CHATWOOT_WEBHOOK_SECRET`，
+才能在座席点击拉黑或解除拉黑时立即处理。普通联系人资料更新和重复的静音快照不会延长期限或反复结束 AI 咨询。
 可通过 `CHATWOOT_BLOCK_DURATION_SECONDS` 调整时长；设置为 `86400` 即 24 小时。
+该值只用于新的拉黑事件；数据库中的 `blocked_until` 是已经写入的绝对截止时间，修改配置不会把已有的 24 小时记录改成新时长。
+修改服务器 `.env` 后必须执行 `docker compose up -d --force-recreate ics-agent`，仅 `restart` 不会更新容器环境。
+到期扫描任务启动时会先扫描一次，之后按 `CHATWOOT_BLOCK_REAPER_INTERVAL_SECONDS` 轮询；例如时长为 60 秒时建议将轮询设为 5 秒，实际解除通常在 60～65 秒内完成。
+若测试联系人已经有旧的 active 记录，请先在 Chatwoot 解除拉黑并重新拉黑，或只将该联系人的记录置为到期后再测试，不要按新时长批量重算全部历史记录。
 联系人 API 必须使用用户 API Token，不能使用 AgentBot Token；可配置
 `CHATWOOT_CONTACT_API_TOKEN`，未配置时回退到 `CHATWOOT_API_TOKEN`。
 

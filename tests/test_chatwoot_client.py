@@ -244,6 +244,111 @@ class ChatwootContactTokenTest(unittest.TestCase):
         self.assertEqual(request_json.call_count, 2)
 
 
+class ChatwootContactConversationsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client = ChatwootClient(
+            AppSettings(
+                _env_file=None,
+                chatwoot_base_url="http://chatwoot.test",
+                chatwoot_agent_bot_access_token="agent-bot-token",
+                chatwoot_contact_api_token="dedicated-user-token",
+                chatwoot_api_token="fallback-user-token",
+            )
+        )
+
+    def test_contact_conversations_use_user_token_and_encoded_identifiers(self) -> None:
+        conversations = [{"id": 56, "status": "open"}]
+        with patch.object(
+            self.client, "_request_json", return_value={"payload": conversations}
+        ) as request:
+            result = self.client.list_contact_conversations(
+                account_id=" 1/2 ", contact_id=" 42/43 "
+            )
+
+        self.assertEqual(result, conversations)
+        request.assert_called_once_with(
+            "GET",
+            "/api/v1/accounts/1%2F2/contacts/42%2F43/conversations",
+            access_token="dedicated-user-token",
+        )
+
+    def test_falls_back_to_user_api_token(self) -> None:
+        self.client._settings.chatwoot_contact_api_token = ""
+        with patch.object(
+            self.client, "_request_json", return_value={"payload": []}
+        ) as request:
+            self.assertEqual(
+                self.client.list_contact_conversations(account_id="1", contact_id="42"),
+                [],
+            )
+        self.assertEqual(request.call_args.kwargs["access_token"], "fallback-user-token")
+
+    def test_agent_bot_token_alone_is_insufficient(self) -> None:
+        self.client._settings.chatwoot_contact_api_token = ""
+        self.client._settings.chatwoot_api_token = ""
+        with patch.object(self.client, "_request_json") as request:
+            with self.assertRaisesRegex(ChatwootAPIError, "CHATWOOT_CONTACT_API_TOKEN"):
+                self.client.list_contact_conversations(account_id="1", contact_id="42")
+        request.assert_not_called()
+
+    def test_accepts_response_envelopes_and_empty_lists(self) -> None:
+        for conversations in ([], [{"id": 56, "status": "open"}]):
+            for wrap in (
+                lambda items: {"payload": items},
+                lambda items: {"data": items},
+                lambda items: {"data": {"payload": items}},
+            ):
+                response = wrap(conversations)
+                with self.subTest(response=response), patch.object(
+                    self.client, "_request_json", return_value=response
+                ):
+                    self.assertEqual(
+                        self.client.list_contact_conversations(
+                            account_id="1", contact_id="42"
+                        ),
+                        conversations,
+                    )
+
+    def test_missing_identifiers_do_not_make_a_request(self) -> None:
+        for account_id, contact_id, missing in (
+            ("", "42", "account_id"),
+            ("   ", "42", "account_id"),
+            (None, "42", "account_id"),
+            ("1", "", "contact_id"),
+            ("1", "   ", "contact_id"),
+            ("1", None, "contact_id"),
+        ):
+            with self.subTest(account_id=account_id, contact_id=contact_id), patch.object(
+                self.client, "_request_json"
+            ) as request:
+                with self.assertRaisesRegex(ChatwootAPIError, missing):
+                    self.client.list_contact_conversations(
+                        account_id=account_id, contact_id=contact_id
+                    )
+                request.assert_not_called()
+
+    def test_malformed_responses_never_look_like_no_conversations(self) -> None:
+        for response in (
+            None,
+            [],
+            {},
+            {"payload": None},
+            {"payload": {}},
+            {"data": "invalid"},
+            {"data": {}},
+            {"data": {"payload": None}},
+            {"payload": [{"id": 56}, None]},
+            {"data": ["invalid"]},
+        ):
+            with self.subTest(response=response), patch.object(
+                self.client, "_request_json", return_value=response
+            ):
+                with self.assertRaises(ChatwootAPIError):
+                    self.client.list_contact_conversations(
+                        account_id="1", contact_id="42"
+                    )
+
+
 class ChatwootConversationLoadTest(unittest.TestCase):
     def setUp(self) -> None:
         self.client = ChatwootClient(

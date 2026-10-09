@@ -1,7 +1,7 @@
 import json
 import unittest
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from ics_agent.app.chatwoot import routes as main
 from ics_agent.app.chatwoot.state import ContactBlockRepository
@@ -123,6 +123,21 @@ class ContactBlockedPayloadTest(unittest.TestCase):
         self.assertTrue(main._is_contact_block_event(event))
         self.assertTrue(main._should_process_webhook_event(event))
 
+    def test_conversation_update_with_unblocked_sender_is_block_event(self) -> None:
+        event = parse_event(json.dumps({
+            "event": "conversation_updated",
+            "id": 58,
+            "account": {"id": 1},
+            "conversation": {
+                "id": 58,
+                "account_id": 1,
+                "meta": {"sender": {"id": 42, "blocked": False}},
+            },
+        }).encode())
+
+        self.assertTrue(main._is_contact_block_event(event))
+        self.assertTrue(main._should_process_webhook_event(event))
+
     def test_reads_contact_id_from_flat_conversation_event_sender(self) -> None:
         for event_name in ("conversation_updated", "conversation_status_changed"):
             with self.subTest(event=event_name):
@@ -178,6 +193,7 @@ class ContactBlockEventTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(main._should_process_webhook_event(event))
         with (
             patch.object(main, "contact_block_repository", repository),
+            patch.object(main, "_resolve_blocked_contact_conversations", AsyncMock()),
             patch.object(
                 main,
                 "settings",
@@ -210,6 +226,9 @@ class ContactBlockEventTest(unittest.IsolatedAsyncioTestCase):
                 "id": 42,
                 "account": {"id": 1},
                 "contact": {"id": 42, "blocked": True},
+                "changed_attributes": [
+                    {"blocked": {"previous_value": False, "current_value": True}}
+                ],
             },
         )
         blocked_until = datetime.now(timezone.utc)
@@ -218,6 +237,7 @@ class ContactBlockEventTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(main, "contact_block_repository", repository),
+            patch.object(main, "_resolve_blocked_contact_conversations", AsyncMock()),
             patch.object(
                 main,
                 "settings",
@@ -267,7 +287,10 @@ class ContactBlockEventTest(unittest.IsolatedAsyncioTestCase):
         repository = Mock()
         repository.arm = Mock()
 
-        with patch.object(main, "contact_block_repository", repository):
+        with (
+            patch.object(main, "contact_block_repository", repository),
+            patch.object(main, "_resolve_blocked_contact_conversations", AsyncMock()),
+        ):
             result = await main._process_contact_block_event(event)
 
         repository.arm.assert_called_once()
@@ -276,6 +299,32 @@ class ContactBlockEventTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call["contact_id"], "42")
         self.assertFalse(call["refresh_existing"])
         self.assertEqual(result["route"], "contact_block_armed")
+
+    async def test_contact_update_with_unblocked_contact_deactivates_block(self) -> None:
+        event = ChatwootWebhookEvent(
+            event="contact_updated",
+            id=42,
+            account={"id": 1},
+            raw={
+                "event": "contact_updated",
+                "id": 42,
+                "account": {"id": 1},
+                "contact": {"id": 42, "blocked": False},
+                "changed_attributes": [
+                    {"blocked": {"previous_value": True, "current_value": False}}
+                ],
+            },
+        )
+        repository = Mock()
+
+        with patch.object(main, "contact_block_repository", repository):
+            result = await main._process_contact_block_event(event)
+
+        repository.deactivate.assert_called_once_with(
+            account_id="1", contact_id="42",
+        )
+        repository.arm.assert_not_called()
+        self.assertEqual(result["route"], "contact_block_deactivated")
 
 
 class ContactBlockRepositoryTest(unittest.TestCase):

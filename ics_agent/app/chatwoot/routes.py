@@ -569,73 +569,81 @@ def _is_contact_block_event(event: ChatwootWebhookEvent) -> bool:
         return True
     return (
         event_name == "conversation.updated"
-        and contact_blocked_from_payload(event.raw) is True
+        and contact_blocked_from_payload(event.raw) is not None
     )
 
 
 async def _contact_block_reaper_loop() -> None:
     """定期将到期的 Chatwoot 联系人解除 blocked。"""
     while True:
+        await _expire_due_contact_blocks_once()
         await asyncio.sleep(settings.chatwoot_block_reaper_interval_seconds)
-        try:
-            due_blocks = await asyncio.to_thread(
-                contact_block_repository.list_due,
-                now=datetime.now(timezone.utc),
-                limit=settings.chatwoot_block_reaper_batch_size,
-            )
-            for block in due_blocks:
-                try:
-                    await asyncio.to_thread(
-                        get_chatwoot_client().set_contact_blocked,
-                        account_id=block.account_id,
-                        contact_id=block.contact_id,
-                        blocked=False,
-                    )
-                    await asyncio.to_thread(
-                        contact_block_repository.deactivate,
-                        account_id=block.account_id,
-                        contact_id=block.contact_id,
-                    )
-                    log_event(
-                        logger,
-                        logging.INFO,
-                        "contact_block.expired",
-                        account_id=block.account_id,
-                        contact_id=block.contact_id,
-                        blocked_until=block.blocked_until.isoformat(),
-                    )
-                except ChatwootAPIError as exc:
-                    log_event(
-                        logger,
-                        logging.WARNING,
-                        "contact_block.expire_failed",
-                        account_id=block.account_id,
-                        contact_id=block.contact_id,
-                        status_code=exc.status_code,
-                        error=str(exc),
-                    )
-                except Exception as exc:
-                    logger.exception(
-                        "事件=Chatwoot联系人静音解除失败 account_id=%s contact_id=%s",
-                        block.account_id,
-                        block.contact_id,
-                    )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.exception(
-                "事件=应用.Chatwoot联系人静音到期扫描失败 错误类型=%s",
-                type(exc).__name__,
-            )
+
+
+async def _expire_due_contact_blocks_once() -> None:
+    """扫描并解除一批到期联系人静音；失败记录留待下一轮重试。"""
+    try:
+        due_blocks = await asyncio.to_thread(
+            contact_block_repository.list_due,
+            now=datetime.now(timezone.utc),
+            limit=settings.chatwoot_block_reaper_batch_size,
+        )
+        for block in due_blocks:
+            try:
+                await asyncio.to_thread(
+                    get_chatwoot_client().set_contact_blocked,
+                    account_id=block.account_id,
+                    contact_id=block.contact_id,
+                    blocked=False,
+                )
+                await asyncio.to_thread(
+                    contact_block_repository.deactivate,
+                    account_id=block.account_id,
+                    contact_id=block.contact_id,
+                )
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "contact_block.expired",
+                    account_id=block.account_id,
+                    contact_id=block.contact_id,
+                    blocked_until=block.blocked_until.isoformat(),
+                )
+            except ChatwootAPIError as exc:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "contact_block.expire_failed",
+                    account_id=block.account_id,
+                    contact_id=block.contact_id,
+                    status_code=exc.status_code,
+                    error=str(exc),
+                )
+            except Exception as exc:
+                logger.exception(
+                    "事件=Chatwoot联系人静音解除失败 account_id=%s contact_id=%s",
+                    block.account_id,
+                    block.contact_id,
+                )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception(
+            "事件=应用.Chatwoot联系人静音到期扫描失败 错误类型=%s",
+            type(exc).__name__,
+        )
 
 
 async def _process_contact_block_event(
     event: ChatwootWebhookEvent,
+    *,
+    received_at: datetime | None = None,
 ) -> dict[str, object]:
     """记录 Chatwoot 座席发起的静音或解除静音动作。"""
     account_id = _webhook_account_id(event)
     contact_id = _webhook_contact_id(event)
-    blocked = contact_block_change_from_payload(event.raw)
+    block_change = contact_block_change_from_payload(event.raw)
+    blocked = block_change
     if blocked is None:
         blocked = contact_blocked_from_payload(event.raw)
     if not account_id or not contact_id or blocked is None:
@@ -646,19 +654,19 @@ async def _process_contact_block_event(
         }
 
     if blocked:
-        blocked_until = datetime.now(timezone.utc) + timedelta(
+        observed_at = webhook_status_time(event) or received_at or datetime.now(timezone.utc)
+        blocked_until = observed_at + timedelta(
             seconds=settings.chatwoot_block_duration_seconds
         )
-        event_name = event.event.strip().lower().replace("_", ".")
         await asyncio.to_thread(
             contact_block_repository.arm,
             account_id=account_id,
             contact_id=contact_id,
             blocked_until=blocked_until,
-            # conversation_updated 会伴随坐席后续操作重复发送；
-            # 只有明确的 contact_updated 才刷新已有封禁的起算时间。
-            refresh_existing=event_name in CONTACT_BLOCK_EVENTS,
+            # 姓名等普通联系人更新、会话活动快照不能延长屏蔽期限。
+            refresh_existing=block_change is True,
         )
+        await _resolve_blocked_contact_conversations(event, received_at=observed_at)
         log_event(
             logger,
             logging.INFO,
@@ -691,6 +699,77 @@ async def _process_contact_block_event(
         "faq_route": "contact_block_deactivated",
         "answer": "",
     }
+
+
+async def _resolve_blocked_contact_conversations(
+    event: ChatwootWebhookEvent,
+    *,
+    received_at: datetime,
+) -> None:
+    """拉黑包含结束当前接待；重复快照不得结束已经恢复的 AI 咨询。"""
+    account_id, conversation_id = _webhook_conversation_reference(event)
+    contact_id = _webhook_contact_id(event)
+    if not account_id or not contact_id:
+        return
+    event_at = webhook_status_time(event) or received_at
+    explicit_block = contact_block_change_from_payload(event.raw) is True
+    client = get_chatwoot_client()
+
+    async def resolve_one(target_id: str) -> None:
+        control = await asyncio.to_thread(
+            conversation_control_repository.get,
+            account_id=account_id, conversation_id=target_id,
+        )
+        # 只接管 ICS 管理的会话，不干预该联系人在其他收件箱的业务。
+        if control is None or (
+            control.session_started_at is not None and event_at < control.session_started_at
+        ):
+            return
+        if _session_is_closed(control) and not control.handoff_required:
+            return
+        if not explicit_block and not control.handoff_required:
+            return
+        conversation = await asyncio.to_thread(
+            client.get_conversation, account_id=account_id, conversation_id=target_id,
+        )
+        # 延迟的拉黑通知不能覆盖座席刚刚执行的解除拉黑。部分 Chatwoot
+        # 版本的会话详情不回传 sender.blocked，此时信任本次明确的拉黑事件。
+        current_blocked = contact_blocked_from_payload(conversation)
+        event_blocked = contact_blocked_from_payload(event.raw) is True
+        if current_blocked is False or (current_blocked is None and not event_blocked):
+            return
+        status = str(conversation.get("status") or "").strip().lower()
+        if status != "resolved":
+            await asyncio.to_thread(
+                client.set_conversation_status,
+                account_id=account_id, conversation_id=target_id, status="resolved",
+            )
+        await asyncio.to_thread(
+            conversation_control_repository.record_conversation_status,
+            account_id=account_id, conversation_id=target_id,
+            status="resolved", event_at=event_at,
+        )
+        log_event(
+            logger, logging.INFO, "contact_block.conversation_resolved",
+            account_id=account_id, contact_id=contact_id, conversation_id=target_id,
+        )
+
+    if conversation_id:
+        # 会话事件已经由 _process_webhook_job 持有同一把锁。
+        await resolve_one(conversation_id)
+        return
+
+    conversations = await asyncio.to_thread(
+        client.list_contact_conversations, account_id=account_id, contact_id=contact_id,
+    )
+    for conversation in conversations:
+        target_id = str(conversation.get("display_id") or conversation.get("id") or "").strip()
+        if not target_id:
+            continue
+        # 联系人事件没有会话分区，必须等待在途转人工结束后再设置 resolved。
+        lock = _conversation_locks.setdefault(f"{account_id}:{target_id}", asyncio.Lock())
+        async with lock:
+            await resolve_one(target_id)
 
 
 def _is_handoff_release_status(status: str | None) -> bool:
@@ -1080,7 +1159,7 @@ async def _process_webhook_job_unlocked(
 
     block_result = None
     if _is_contact_block_event(event):
-        block_result = await _process_contact_block_event(event)
+        block_result = await _process_contact_block_event(event, received_at=job.received_at)
         if not _is_conversation_status_event(event):
             return block_result
 
@@ -1145,6 +1224,20 @@ async def _process_webhook_job_unlocked(
                 thread_id = control.active_thread_id or thread_id
             if _session_is_closed(control):
                 return _session_suppressed_result("consultation_ended_or_changed")
+
+        if control.handoff_required and await _chatwoot_contact_blocked(event) is True:
+            # 补救漏掉联系人事件的旧人工会话。当前消息已记入咨询，
+            # 只释放人工锁，不能用当前时间再关闭一次而吞掉这条消息。
+            released = await asyncio.to_thread(
+                conversation_control_repository.release_handoff,
+                account_id=account_id, conversation_id=conversation_id, status="resolved",
+            )
+            if released is not None:
+                control = released
+            log_event(
+                logger, logging.INFO, "contact_block.handoff_released_on_message",
+                account_id=account_id, conversation_id=conversation_id,
+            )
 
         # 同一触发消息的队列重试需要继续完成未完成的接管动作；
         # 其他人工轮次中的新消息仍保持静默，避免重复转接。

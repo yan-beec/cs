@@ -1449,12 +1449,15 @@ unset CW_DEPLOY_TOKEN
 
 本地验证的 Chatwoot 4.17.1 AgentBot 会投递消息创建、会话状态变化及会话更新事件，足以支持当前的消息处理和“已解决”边界。你的已有服务器版本可能不同，务必通过第 12 节的“已解决后再咨询”实测确认。
 
-AgentBot 通常不负责独立的 `contact_updated` 事件。若还要验证“坐席静音联系人后，按配置天数自动解除”的功能，可在 Chatwoot“设置 → 集成 / Integrations → Webhooks”增加 Account Webhook：
+AgentBot 通常不负责独立的 `contact_updated` 事件。为使拉黑立即自动结束当前人工接待、下一条消息恢复 AI，并按配置期限自动解除，需在 Chatwoot“设置 → 集成 / Integrations → Webhooks”增加 Account Webhook：
 
 - URL：与本次机器人的 `/webhooks/chatwoot` 地址相同。
 - 订阅 `contact_updated`；只有发现 AgentBot 没有送达状态变化时，再补 `conversation_status_changed` / `conversation_updated`。
 - 将此 **Account Webhook 自己的 Secret** 填入 `CHATWOOT_WEBHOOK_SECRET`，不要用它覆盖 AgentBot Secret。
 - 保存后执行 `docker compose -f docker-compose.yml up -d --force-recreate ics-agent`。
+- 若要测试短时长（例如 `CHATWOOT_BLOCK_DURATION_SECONDS=60`），同时设置
+  `CHATWOOT_BLOCK_REAPER_INTERVAL_SECONDS=5`；到期任务会在截止时间后最多再等待一个轮询周期。
+- 已经写入数据库的拉黑记录保存的是绝对 `blocked_until`，修改 `.env` 不会回溯旧记录。测试前请先在 Chatwoot 解除并重新拉黑该联系人；不要把新时长盲目套用到全部历史记录。
 
 不要额外订阅另一份 `message_created` 来重复驱动同一机器人。当前支持两个 Secret，是为了验证不同来源的签名，不是要求同一消息通过两路触发。
 
