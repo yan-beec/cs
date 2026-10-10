@@ -1064,9 +1064,9 @@ curl --fail-with-body --max-time 180 \
 
 - `route` 确实为 `rag`；`faq` 不能验证向量检索，`chitchat` 也不能验证知识库。
 - `retrieved_count` 大于 0，`documents` 中资料与问题相关。启用精排时 `reranked_count` 大于 0；关闭精排时 `retrieved_count` 最多为 5、`reranked_count=0`，文档 `rank` 为双塔召回排名、`score=null`。
-- `answer` 非空，内容符合知识库，且不是“当前智能客服正在维护……”的兜底文案。
+- `answer` 非空，内容符合知识库，且不是“不好意思，我刚刚卡了一下……”的故障兜底文案。
 
-RAG 测试会实际调用你配置的云端模型。手工 `/rag/query` 没有 Chatwoot 路径的 **30 秒查询整体兜底**；`curl --max-time` 只限制当前客户端等待，失败后先看日志，不要连续重复提交。检索故障在这个直接查询接口可能表现为 HTTP 错误，实际 Chatwoot 的维护回复路径按第 12.5 节验证。
+RAG 测试会实际调用你配置的云端模型。手工 `/rag/query` 没有 Chatwoot 路径的 **30 秒查询整体兜底**；`curl --max-time` 只限制当前客户端等待，失败后先看日志，不要连续重复提交。检索故障在这个直接查询接口可能表现为 HTTP 错误，实际 Chatwoot 的故障兜底回复路径按第 12.5 节验证。
 
 ### 9.6 通过 SSH 隧道访问管理后台
 
@@ -1485,13 +1485,13 @@ AgentBot 通常不负责独立的 `contact_updated` 事件。为使拉黑立即�
 | 顺序 | 操作 | 通过标准 |
 | --- | --- | --- |
 | 1 | 输入 Excel 中一个标准 FAQ 问题 | 收到正确答案；日志 route 为 faq |
-| 2 | 输入知识库有依据、FAQ 不能命中的问题 | 收到有依据的 RAG 回答；不是维护文案 |
+| 2 | 输入知识库有依据、FAQ 不能命中的问题 | 收到有依据的 RAG 回答；不是故障兜底文案 |
 | 3 | 问一个需要看图片的 FAQ | 支持的图片在 Widget 中显示；源图片地址可被浏览器访问 |
 | 4 | 问含链接的 FAQ | 点击后地址正确，没有把后面的中文句子带进 URL |
 | 5 | 一名测试坐席设为 online，用户发送“转人工” | 会话进入人工接管，分配至当前 Inbox 的可用坐席 |
 | 6 | 人工接管后用户补充一句问题 | 机器人不再抢答，人工可以正常回复 |
 | 7 | 坐席将会话标为“已解决”，用户重新发消息 | 恢复机器人处理，使用新一轮上下文 |
-| 8 | 没有在线空闲坐席时申请转人工 | 收到无可用坐席提示，不伪装成已转接成功 |
+| 8 | 没有在线空闲坐席时申请转人工或发送图片 | 开启转人工通知时，先收到“已为您转接人工客服，请稍等...”，再收到无可用坐席的繁忙提示；最终不分配坐席，AI 可继续接待 |
 | 9 | 重启机器人后，在测试会话继续提问 | 数据库和模型挂载仍有效，服务恢复正常 |
 
 普通 AI 处理期间，会话会尽力保持 `pending`，避免进入人工的 open 待接管队列。转人工时才进入对应人工流程。人工坐席必须加入 **Widget 所在的同一个 Inbox**；当前项目不执行跨 Inbox 迁移。
@@ -1530,12 +1530,12 @@ AgentBot 通常不负责独立的 `contact_updated` 事件。为使拉黑立即�
 
 | 情况 | 当前行为 |
 | --- | --- |
-| FAQ 基础设施查询异常 | 尝试转到 RAG；后续 RAG 也失败时才走维护提示 |
-| 主模型等待达到 10 秒、请求异常，或返回空字符串、全空白、`None`、没有有效文本的内容块 | 立即切换 `LLM_MODEL2`，主备各调用一次；备用模型使用剩余查询预算，仍失败或空回复则返回维护提示 |
-| 意图识别、检索、重排、查询中的记忆访问异常 | Chatwoot 查询外层捕获，返回维护提示；不为这类已兜底的查询继续重试整个 Webhook 任务 |
-| 查询阶段达到当前 30 秒预算 | Chatwoot 查询外层取消等待并返回维护提示，包括正在进行的备用模型调用 |
+| FAQ 基础设施查询异常 | 尝试转到 RAG；后续 RAG 也失败时才走故障提示 |
+| 主模型等待达到 10 秒、请求异常，或返回空字符串、全空白、`None`、没有有效文本的内容块 | 立即切换 `LLM_MODEL2`，主备各调用一次；备用模型使用剩余查询预算，仍失败或空回复则返回故障提示 |
+| 意图识别、检索、重排、查询中的记忆访问异常 | Chatwoot 查询外层捕获，返回故障提示；不为这类已兜底的查询继续重试整个 Webhook 任务 |
+| 查询阶段达到当前 30 秒预算 | Chatwoot 查询外层取消等待并返回故障提示，包括正在进行的备用模型调用 |
 | 检索正常完成但没有命中文档 | 不等同于“检索异常”，仍可能进入回复生成；验收知识库时不能仅凭无报错判定成功 |
-| Chatwoot API 回复发送失败、查询外的数据库控制状态失败 | 不属于上述查询兜底保证；任务可能重试并最终失败，用户可能收不到维护提示 |
+| Chatwoot API 回复发送失败、查询外的数据库控制状态失败 | 不属于上述查询兜底保证；任务可能重试并最终失败，用户可能收不到故障提示 |
 
 回复节点对主备模型都显式设置 `max_retries=0`，不再执行原来的 1 秒、3 秒退避重连。`LLM_MAX_RETRIES=2` 仅作为其他直接工厂调用的默认值。30 秒查询预算包含 FAQ、记忆、检索、重排、模型并发槽位等待和主备模型调用；不包含进入 worker 前的队列等待、查询前的部分会话控制操作，以及查询后的 Chatwoot 写回耗时。CPU 线程或第三方调用的取消也可能存在延迟，因此它是应用等待预算，不是用户侧严格的送达时限。
 
@@ -1556,7 +1556,7 @@ async def check():
     assert result['answer'] == nodes.LLM_REPLY_FALLBACK_ANSWER
     assert model.await_count == 2
     assert [call.kwargs['use_fallback_model'] for call in model.await_args_list] == [False, True]
-    print('PASS: 主备模型均空回复后返回指定维护提示')
+    print('PASS: 主备模型均空回复后返回指定故障提示')
 
     with patch.object(routes, '_run_rag_query', new=AsyncMock(side_effect=RuntimeError('retrieval unavailable'))):
         result = await routes._build_webhook_answer(
@@ -1564,7 +1564,7 @@ async def check():
         )
     assert result['route'] == 'rag_fallback'
     assert result['answer'] == nodes.LLM_REPLY_FALLBACK_ANSWER
-    print('PASS: 检索异常返回指定维护提示')
+    print('PASS: 检索异常返回指定故障提示')
 
     async def stalled_query(*args, **kwargs):
         await asyncio.sleep(1)
@@ -1577,7 +1577,7 @@ async def check():
         )
     assert result['answer'] == nodes.LLM_REPLY_FALLBACK_ANSWER
     assert 'TimeoutError' in result['rag_error']
-    print('PASS: 查询超时返回指定维护提示')
+    print('PASS: 查询超时返回指定故障提示')
 
 asyncio.run(check())
 PY
@@ -1585,11 +1585,17 @@ PY
 
 预期输出三条 PASS，期间出现模拟故障日志是正常的。不要通过修改正在使用的 API Key 来模拟故障。这个检查验证兜底分支；真实回复的 Chatwoot 投递能力仍以第 12.2 节前端验收为准。
 
-真实故障时固定维护文案为：
+故障时的固定兜底文案为：
 
-> 当前智能客服正在维护，请您发送「转人工」申请人工客服协助！
+```text
+不好意思，我刚刚卡了一下，没能及时回复您。您可以：
+1）重新发送；
+2）换个说法再问一次；
+3）回复“转人工”转接人工客服。
+感谢您的耐心～
+```
 
-它是提示用户申请人工，不代表系统已经自动完成转接。
+它提示用户重新发送、换个说法或回复“转人工”，不代表系统已经自动重试消息或完成转接。
 
 ### 12.6 模拟部署后的正常重启
 
@@ -1854,7 +1860,7 @@ git -C /opt/cs-src rev-parse HEAD > /opt/cs/deployment-records/source-commit.txt
 - 数据库、知识库和正常会话状态在持久化存储中；容器正常重启不会清空。
 - 已接收但尚未完成的请求排在内存队列，服务崩溃后没有自动重放所有待办消息的机制。
 - Chatwoot 已收到 202 的请求不能假设一定会再次投递。
-- 模型和检索异常有维护文案兜底；如果连 Chatwoot API 都无法发送消息，仍可能最终发送失败。
+- 模型和检索异常会返回故障兜底文案；如果连 Chatwoot API 都无法发送消息，仍可能最终发送失败。
 
 这些是当前 MVP 的实际能力边界，首次测试应记录结果，再决定是否增加任务恢复和人工告警。
 
@@ -1870,14 +1876,14 @@ git -C /opt/cs-src rev-parse HEAD > /opt/cs/deployment-records/source-commit.txt
 | 构建下载超时 | 具体失败包 / Docker Registry 与生效的构建参数 | 按第 7.1A 节区分普通 PyPI、CPU PyTorch 与 Docker 镜像；同步新构建文件和参数后保留缓存重试 |
 | 容器退出码 137 / `Killed` | `free -h`、`docker stats`、内核 OOM 日志 | 增加内存、减小批次/并发；检查是否在同机同时跑 Chatwoot 与向量化 |
 | 磁盘满 | `df -h`、`docker system df`、`du -sh models log knowledge_base_in/vector_store` | 优先清理已核对的上传临时包；不要删除数据库卷或盲目 prune |
-| `/health` 正常，但一直维护提示 | 应用 stderr 日志，不能只看 docker logs | 检查模型文件、向量库、数据库和模型 API；健康接口不是完整就绪检查 |
+| `/health` 正常，但一直故障提示 | 应用 stderr 日志，不能只看 docker logs | 检查模型文件、向量库、数据库和模型 API；健康接口不是完整就绪检查 |
 | FAQ 全走 RAG | FAQ 表行数、是否执行导入、是否已刷新服务内存 | 导入新库；若服务已先启动，导入后 restart 或使用后台更新 |
 | 意图模型 fingerprint mismatch | CSV 与 `labels.json` 是否配套 | 重新上传配套 CSV/训练产物，检查传输是否改变文件内容 |
 | `No such file` 或 Windows 路径 | `.env` 和模型元数据路径 | 使用 `/app` 相对路径，补齐模型实际权重；不复制 Windows 环境路径 |
 | OCR 初始化失败 | stderr 的缺失依赖或模型下载错误 | 按明确错误补齐资源并重新构建；确认所需图片已成功提取文字再验收 |
 | 数据库认证失败 | `.env`、数据库初始化时的密码 | 已有卷不会因改 env 自动改数据库密码，恢复正确配置或由管理员执行密码变更 |
 | 数据库连接池获取超时 | 生效的连接池配置、数据库状态、并发 | 核对当前 `POSTGRES_POOL_SIZE=12`、`POSTGRES_POOL_ACQUIRE_TIMEOUT=1.0` 已 recreate 生效；不要把连接池耗尽误当密码错误 |
-| Chatwoot 经常收到维护提示 | 查询耗时和失败日志、模型限流、CPU / 内存 | 按第 12.5 节区分空回复、检索异常与 30 秒查询预算耗尽；先排查瓶颈，再决定是否调整预算 |
+| Chatwoot 经常收到故障提示 | 查询耗时和失败日志、模型限流、CPU / 内存 | 按第 12.5 节区分空回复、检索异常与 30 秒查询预算耗尽；先排查瓶颈，再决定是否调整预算 |
 | 管理员密码不对 | 首次初始化时的配置、system_users 是否已有记录 | 改 `ADMIN_INITIAL_PASSWORD` 不会覆盖已有密码；走账号重置流程，不删除整个库 |
 | Webhook 401 | AgentBot Secret、Account Secret、时间同步 | Secret 与来源对应；recreate 应用；核对 Chatwoot 是否发送签名头 |
 | Chatwoot 收到消息但机器人没日志 | Outgoing URL、Inbox AgentBot 绑定、Sidekiq 网络 | 从 Chatwoot 实际任务容器探测机器人，检查 Sidekiq 投递日志 |

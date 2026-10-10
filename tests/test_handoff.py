@@ -1,6 +1,6 @@
 import unittest
 from dataclasses import replace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 
 from ics_agent.app.chatwoot import routes as main
 from ics_agent.app.chatwoot.state import ConversationControl
@@ -502,16 +502,187 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
             conversation_id="56",
             status="pending",
         )
-        client.send_message.assert_called_once_with(
-            account_id="1",
-            conversation_id="56",
-            content=main.HANDOFF_NO_AGENT_MESSAGE,
+        self.assertEqual(
+            client.send_message.call_args_list,
+            [
+                call(account_id="1", conversation_id="56", content=main.HANDOFF_NOTICE_MESSAGE),
+                call(account_id="1", conversation_id="56", content=main.HANDOFF_NO_AGENT_MESSAGE),
+            ],
         )
         record_status.assert_called_once()
         self.assertEqual(result["route"], "handoff_no_available_agent")
         self.assertFalse(result["handoff_required"])
         self.assertEqual(result["handoff_reason"], "no_available_agent")
         self.assertEqual(result["chatwoot_reply"]["message_id"], "88")
+
+    async def test_text_and_image_rejections_send_trigger_then_busy_notice(self) -> None:
+        cases = (
+            ("no_online_agent", False, False, None, "handoff_no_available_agent"),
+            ("availability_unknown", None, False, None, "handoff_no_available_agent"),
+            ("capacity_full", True, False, None, "handoff_no_available_agent"),
+            ("muted", True, True, "11", "muted_contact"),
+        )
+        for image in (False, True):
+            for name, available, blocked, selected, expected_route in cases:
+                with self.subTest(image=image, case=name):
+                    control = _control(handoff_required=False)
+                    repository = Mock()
+                    repository.record_user_message.return_value = control
+                    client = Mock()
+                    client.send_message.side_effect = [{"id": 201}, {"id": 202}]
+                    event = ChatwootWebhookEvent(
+                        event="message_created", id=1206, account={"id": 1},
+                        conversation={"id": 56, "account_id": 1, "status": "pending"},
+                        message_type="incoming", content="" if image else "转人工",
+                        raw={"attachments": [{"file_type": "image"}]} if image else {},
+                    )
+                    with (
+                        patch.object(main, "conversation_control_repository", repository),
+                        patch.object(main, "get_chatwoot_client", return_value=client),
+                        patch.object(main, "_refresh_handoff_from_chatwoot_status", AsyncMock(return_value=control)),
+                        patch.object(main, "_has_available_handoff_agent", AsyncMock(return_value=available)),
+                        patch.object(main, "_chatwoot_contact_blocked", AsyncMock(return_value=blocked)),
+                        patch.object(main, "_select_handoff_agent", AsyncMock(return_value=selected)),
+                        patch.object(main, "_set_ai_chatwoot_status", AsyncMock(return_value=True)),
+                        patch.object(main, "_build_webhook_answer", AsyncMock()) as answer,
+                        patch.object(main, "_complete_handoff", AsyncMock()) as complete,
+                        patch.object(main, "settings", main.settings.model_copy(update={
+                            "chatwoot_handoff_enabled": True,
+                            "chatwoot_handoff_notice_enabled": True,
+                        })),
+                    ):
+                        result = await main._process_webhook_job_unlocked(
+                            main.WebhookJob(event_key=f"reject-{image}-{name}", event=event),
+                        )
+
+                    busy_message = main.MUTED_HANDOFF_MESSAGE if blocked else main.HANDOFF_NO_AGENT_MESSAGE
+                    self.assertEqual(client.send_message.call_args_list, [
+                        call(account_id="1", conversation_id="56", content=main.HANDOFF_NOTICE_MESSAGE),
+                        call(account_id="1", conversation_id="56", content=busy_message),
+                    ])
+                    self.assertEqual(result["route"], expected_route)
+                    self.assertEqual(result["answer"], busy_message)
+                    self.assertEqual(result["chatwoot_reply"]["message_id"], "202")
+                    self.assertFalse(result["handoff_required"])
+                    repository.request_handoff.assert_not_called()
+                    repository.mark_handoff_action.assert_not_called()
+                    client.assign_conversation.assert_not_called()
+                    complete.assert_not_awaited()
+                    answer.assert_not_awaited()
+
+    async def test_trigger_send_failure_still_sends_busy_notice(self) -> None:
+        for muted in (False, True):
+            with self.subTest(muted=muted):
+                client = Mock()
+                client.send_message.side_effect = [
+                    main.ChatwootAPIError("notice failed", status_code=503),
+                    {"id": 202},
+                ]
+                event = ChatwootWebhookEvent(
+                    event="message_created", account={"id": 1},
+                    conversation={"id": 56}, content="转人工", message_type="incoming",
+                )
+                with (
+                    patch.object(main, "get_chatwoot_client", return_value=client),
+                    patch.object(main, "conversation_control_repository", Mock()),
+                    patch.object(main, "_set_ai_chatwoot_status", AsyncMock(return_value=True)),
+                    patch.object(main, "settings", main.settings.model_copy(update={
+                        "chatwoot_handoff_notice_enabled": True,
+                    })),
+                ):
+                    if muted:
+                        result = await main._suppress_muted_handoff(event=event, event_key="trigger-failed")
+                    else:
+                        result = await main._suppress_no_agent_handoff(
+                            event=event, event_key="trigger-failed", availability_known=True,
+                        )
+                self.assertEqual(client.send_message.call_count, 2)
+                self.assertEqual(
+                    client.send_message.call_args.kwargs["content"],
+                    main.MUTED_HANDOFF_MESSAGE if muted else main.HANDOFF_NO_AGENT_MESSAGE,
+                )
+                self.assertTrue(result["chatwoot_reply"]["sent"])
+                self.assertEqual(result["chatwoot_reply"]["message_id"], "202")
+
+    async def test_busy_send_failure_does_not_repeat_trigger_notice(self) -> None:
+        client = Mock()
+        client.send_message.side_effect = [
+            {"id": 201}, main.ChatwootAPIError("busy notice failed", status_code=503),
+        ]
+        event = ChatwootWebhookEvent(
+            event="message_created", account={"id": 1}, conversation={"id": 56},
+            content="转人工", message_type="incoming",
+        )
+        with (
+            patch.object(main, "get_chatwoot_client", return_value=client),
+            patch.object(main, "_set_ai_chatwoot_status", AsyncMock(return_value=True)),
+            patch.object(main, "settings", main.settings.model_copy(update={
+                "chatwoot_handoff_notice_enabled": True,
+            })),
+        ):
+            result = await main._suppress_no_agent_handoff(
+                event=event, event_key="busy-failed", availability_known=True,
+            )
+        self.assertEqual(client.send_message.call_count, 2)
+        self.assertFalse(result["chatwoot_reply"]["sent"])
+        self.assertIsNone(result["chatwoot_reply"]["message_id"])
+
+    async def test_disabled_notices_skip_trigger_and_preserve_muted_rejection(self) -> None:
+        for muted in (False, True):
+            with self.subTest(muted=muted):
+                client = Mock()
+                client.send_message.return_value = {"id": 202}
+                event = ChatwootWebhookEvent(
+                    event="message_created", account={"id": 1}, conversation={"id": 56},
+                    content="转人工", message_type="incoming",
+                )
+                with (
+                    patch.object(main, "get_chatwoot_client", return_value=client),
+                    patch.object(main, "conversation_control_repository", Mock()),
+                    patch.object(main, "_set_ai_chatwoot_status", AsyncMock(return_value=True)),
+                    patch.object(main, "settings", main.settings.model_copy(update={
+                        "chatwoot_handoff_notice_enabled": False,
+                    })),
+                ):
+                    if muted:
+                        await main._suppress_muted_handoff(event=event, event_key="notice-off")
+                    else:
+                        await main._suppress_no_agent_handoff(
+                            event=event, event_key="notice-off", availability_known=True,
+                        )
+                if muted:
+                    client.send_message.assert_called_once_with(
+                        account_id="1", conversation_id="56", content=main.MUTED_HANDOFF_MESSAGE,
+                    )
+                else:
+                    client.send_message.assert_not_called()
+
+    async def test_successful_handoff_sends_only_its_normal_notice(self) -> None:
+        for notice in (main.HANDOFF_NOTICE_MESSAGE, main.IMAGE_HANDOFF_NOTICE_MESSAGE):
+            with self.subTest(notice=notice):
+                control = replace(_control(handoff_required=True), handoff_notice_sent=False)
+                client = Mock()
+                client.send_message.return_value = {"id": 201}
+                event = ChatwootWebhookEvent(
+                    event="message_created", account={"id": 1}, conversation={"id": 56},
+                    content="转人工", message_type="incoming",
+                )
+                with (
+                    patch.object(main, "get_chatwoot_client", return_value=client),
+                    patch.object(main, "conversation_control_repository", Mock()),
+                    patch.object(main, "settings", main.settings.model_copy(update={
+                        "chatwoot_handoff_enabled": True,
+                        "chatwoot_handoff_notice_enabled": True,
+                    })),
+                ):
+                    result = await main._complete_handoff(
+                        event=event, job=main.WebhookJob(event_key="success", event=event),
+                        control=control, content="转人工", notice_message=notice,
+                    )
+                client.send_message.assert_called_once_with(
+                    account_id="1", conversation_id="56", content=notice,
+                )
+                self.assertEqual(result["route"], "handoff")
 
     async def test_agent_availability_is_read_from_chatwoot(self) -> None:
         event = ChatwootWebhookEvent(

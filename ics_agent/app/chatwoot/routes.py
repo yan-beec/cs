@@ -432,6 +432,35 @@ async def _arm_contact_block_from_message(
     )
 
 
+async def _send_handoff_trigger_notice(
+    *,
+    account_id: str,
+    conversation_id: str,
+    event_key: str,
+) -> None:
+    """拒接前先说明已触发转人工；提示发送失败仍应尝试发送拒接原因。"""
+    if not settings.chatwoot_handoff_notice_enabled:
+        return
+    try:
+        await asyncio.to_thread(
+            get_chatwoot_client().send_message,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            content=HANDOFF_NOTICE_MESSAGE,
+        )
+    except Exception as exc:
+        log_event(
+            logger,
+            logging.WARNING,
+            "webhook.handoff.trigger_notice_failed",
+            event_key=event_key,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            status_code=getattr(exc, "status_code", None),
+            error_type=type(exc).__name__,
+        )
+
+
 async def _suppress_muted_handoff(
     *,
     event: ChatwootWebhookEvent,
@@ -467,6 +496,11 @@ async def _suppress_muted_handoff(
 
     notice_sent = False
     notice_message_id: str | None = None
+    await _send_handoff_trigger_notice(
+        account_id=account_id,
+        conversation_id=conversation_id,
+        event_key=event_key,
+    )
     try:
         notice_result = await asyncio.to_thread(
             get_chatwoot_client().send_message,
@@ -1635,6 +1669,11 @@ async def _suppress_no_agent_handoff(
         and account_id
         and conversation_id
     ):
+        await _send_handoff_trigger_notice(
+            account_id=account_id,
+            conversation_id=conversation_id,
+            event_key=event_key,
+        )
         try:
             sent_message = await asyncio.to_thread(
                 get_chatwoot_client().send_message,

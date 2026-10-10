@@ -1,7 +1,7 @@
 import json
 import unittest
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, call, patch
 
 from ics_agent.app.chatwoot import routes as main
 from ics_agent.app.chatwoot.state import ContactBlockRepository
@@ -383,10 +383,12 @@ class MutedHandoffNoticeTest(unittest.IsolatedAsyncioTestCase):
             conversation_id="22",
             status="resolved",
         )
-        client.send_message.assert_called_once_with(
-            account_id="1",
-            conversation_id="22",
-            content="非常抱歉，当前人工座席繁忙，请稍后再试。",
+        self.assertEqual(
+            client.send_message.call_args_list,
+            [
+                call(account_id="1", conversation_id="22", content="已为您转接人工客服，请稍等..."),
+                call(account_id="1", conversation_id="22", content="非常抱歉，当前人工座席繁忙，请稍后再试。"),
+            ],
         )
         record_status.assert_called_once()
         self.assertEqual(result["route"], "muted_contact")

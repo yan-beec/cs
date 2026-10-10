@@ -30,7 +30,11 @@ logger = logging.getLogger(__name__)
 
 CHITCHAT_INTENT_LABEL = "闲聊"
 LLM_REPLY_FALLBACK_ANSWER = (
-    "当前智能客服正在维护，请您发送「转人工」申请人工客服协助！"
+    "不好意思，我刚刚卡了一下，没能及时回复您。您可以：\n"
+    "1）重新发送；\n"
+    "2）换个说法再问一次；\n"
+    "3）回复“转人工”转接人工客服。\n"
+    "感谢您的耐心～"
 )
 PRIMARY_LLM_TIMEOUT_SECONDS = 10.0
 DIRECT_RETRIEVAL_TOP_K = 5

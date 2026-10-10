@@ -85,8 +85,9 @@ SELECT updated_at, event_key, event_id, event_type, status,
        result->'chatwoot_reply'->>'message_id' AS reply_message_id,
        result->'chatwoot_reply'->>'reason' AS reply_reason,
        result->>'reason' AS suppression_reason,
-       coalesce(result->>'answer', '') LIKE '当前智能客服正在维护%'
-         AS maintenance_fallback,
+       (coalesce(result->>'answer', '') LIKE '不好意思，我刚刚卡了一下，没能及时回复您。您可以：%'
+        OR coalesce(result->>'answer', '') LIKE '当前智能客服正在维护%')
+         AS failure_fallback,
        round(extract(epoch FROM completed_at-first_seen_at)::numeric, 2)
          AS receipt_to_completion_seconds,
        split_part(last_error, ':', 1) AS error_type
@@ -102,10 +103,12 @@ ORDER BY updated_at DESC LIMIT 20;
 SQL
 ```
 
+查询中的 `failure_fallback` 同时识别新旧故障兜底文案，以便部署前产生的历史记录仍能正确计入降级。
+
 判读方法：
 
 - 普通成功问答应能找到相应任务，`status=completed`、`reply_enabled=true`、`reply_sent=true`；再用 `reply_message_id` 对照 Chatwoot，确认访客实际能看到回答。
-- `route=rag_fallback` 或固定维护提示表示降级，不能算正常答案通过。`route=rag` 也仍需检查答案有没有变成维护文案。
+- `route=rag_fallback` 或固定故障提示表示降级，不能算正常答案通过。`route=rag` 也仍需检查答案有没有变成故障兜底文案。
 - `completed` 但 `reply_enabled=false` 表示处理结束却没有开启发送。
 - `handoff_suppressed`、`session_suppressed` 可能是人工期或旧咨询的预期抑制，需要结合具体用例判断。
 - 长期停留 `queued`/`processing`，或 `failed`，需要查对应任务；返回 202 不是完成证明。
@@ -186,7 +189,7 @@ curl -sS --fail-with-body --max-time 180 \
 | 格式 | 测图片 FAQ、带中文标点的链接、多段文字、Markdown、Emoji | 访客端可读，链接地址正确，图片确实可加载 |
 | 长度边界 | 直接接口分别用 4096 和 4097 个字符构造问题；Widget 单独测其边界 | 按接口/渠道上限接受或明确拒绝，不崩溃；直接接口超过 4096 应被校验拒绝 |
 
-正确率按人工确认正确的条目数/总有效条目数计算；维护提示、空答案、错误 FAQ 命中不得计为正确答案。安全与资金题单独报告，不被普通题高分掩盖。
+正确率按人工确认正确的条目数/总有效条目数计算；故障提示、空答案、错误 FAQ 命中不得计为正确答案。安全与资金题单独报告，不被普通题高分掩盖。
 
 ## 6. 转人工测试（B01～B05）
 
@@ -200,7 +203,7 @@ curl -sS --fail-with-body --max-time 180 \
 
 ### 6.2 不可转接与容量
 
-依次用不同测试会话验证：坐席全部 offline、全部 busy、容量已满、坐席状态接口失败。预期明确提示没有可用人工，不伪装成转接完成；恢复 online/容量后再次申请可以正常处理。
+依次用不同测试会话验证：坐席全部 offline、全部 busy、容量已满、坐席状态接口失败。开启转人工通知时，应先收到“已为您转接人工客服，请稍等...”，再单独收到无可用坐席的繁忙提示；最终不分配坐席，AI 仍可接待。恢复 online/容量后再次申请可以正常处理。
 
 若测试上限为每人 5 个 open 人工会话，先让坐席 A 持有 4 个，再由两个不同访客同时申请。应最多新增 1 个给 A；多余请求按无容量路径处理。不要把已经 resolved 的历史会话算作占用。
 
@@ -209,7 +212,7 @@ curl -sS --fail-with-body --max-time 180 \
 ### 6.3 识别与时序
 
 - “不要转人工”“人工客服几点上班？”：不应触发直接接管。
-- 发送图片：当前项目会走图片转人工策略，按有坐席/无坐席分别验证。
+- 发送图片：当前项目会走图片转人工策略，按有坐席/无坐席/容量已满/已拉黑分别验证；拒接时先收到“已为您转接人工客服，请稍等...”，再收到对应繁忙提示，不能只出现后一条。
 - AI 生成期间请求人工：记录“用户请求时间”和“实际接管时间”；实际接管后不得继续抢答。如果业务要求用户一提出就立即取消生成，需另列需求，不能把当前串行处理等同于立即取消。
 - 重复投递同一转人工事件：用第 9 节方法，核对分配、标签、备注、提示与容量预留没有重复副作用。
 
@@ -331,7 +334,7 @@ python -m unittest tests.test_rag_failure_fallback tests.test_llm_reply_retry -v
 | 故障 | 操作方法 | 检查结果 |
 |---|---|---|
 | 模型超时 | 测试代理延迟超过实际单次/查询预算 | 有界等待与兜底；记录排队、查询和送达的分别耗时 |
-| 模型 429/5xx | 测试代理返回指定状态，再恢复正常响应 | 重试有上限；恢复后可正常回答；不重复发维护提示 |
+| 模型 429/5xx | 测试代理返回指定状态，再恢复正常响应 | 重试有上限；恢复后可正常回答；不重复发故障提示 |
 | 空回复 | 测试模型返回空文本、空白或无文本内容块 | 重试后有明确兜底，不给访客空消息 |
 | 检索异常 | 测试副本指向专用的空/缺失集合，或测试专用故障钩子抛异常 | 报错可定位，访客得到规定处理；不删除真实向量库 |
 | 数据库不可用 | 在测试网络阻断 ICS→测试 PostgreSQL，随后恢复 | 失败可见；会话状态不串线；恢复后对账未完成请求 |
@@ -432,7 +435,7 @@ curl -sS -o /dev/null -w 'HTTP=%{http_code}\n' --max-time 10 \
 
 这些数字不是服务器已验证容量。每会话发言间隔和 FAQ/RAG 比例使用真实业务估计；暂时没有数据时可以先按 60% FAQ / 40% RAG 开始，并分别补做全 FAQ、全 RAG。
 
-同时采集：消息进入速率、完整回复速率、P50/P95/P99、队列等待、维护提示比例、错误答案比例、未回复数、CPU、内存、数据库连接与模型 429、token 和费用。
+同时采集：消息进入速率、完整回复速率、P50/P95/P99、队列等待、故障提示比例、错误答案比例、未回复数、CPU、内存、数据库连接与模型 429、token 和费用。
 
 出现 OOM、持续队列增长、跨会话错误、明显漏答或重复发送时停止增加流量，记录可承受的前一级容量和失败点。保持单 ICS 实例；当前架构不能直接增加多个进程/副本作为通过压测的方法。
 

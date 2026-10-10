@@ -57,7 +57,11 @@ class RagFailureFallbackTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             result["answer"],
-            "当前智能客服正在维护，请您发送「转人工」申请人工客服协助！",
+            "不好意思，我刚刚卡了一下，没能及时回复您。您可以：\n"
+            "1）重新发送；\n"
+            "2）换个说法再问一次；\n"
+            "3）回复“转人工”转接人工客服。\n"
+            "感谢您的耐心～",
         )
         self.assertIsNone(result["llm_response"])
         self.assertEqual(call_cloud_llm.await_count, 2)
