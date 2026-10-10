@@ -386,7 +386,7 @@ class MutedHandoffNoticeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             client.send_message.call_args_list,
             [
-                call(account_id="1", conversation_id="22", content="已为您转接人工客服，请稍等..."),
+                call(account_id="1", conversation_id="22", content="正在为您转接人工客服，请稍等..."),
                 call(account_id="1", conversation_id="22", content="非常抱歉，当前人工座席繁忙，请稍后再试。"),
             ],
         )
