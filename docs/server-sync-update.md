@@ -149,12 +149,12 @@ git -C /opt/cs-src branch --show-current
 
 status 必须为空，分支必须是 test。发现本地修改时不要直接 reset --hard。
 
-### 2．只快进拉取
+### 2．使用 HTTPS 地址单次快进拉取
+
+确认当前分支为 test 后，使用以下仓库地址单次拉取 test 分支。该地址仅用于本次拉取，无需修改 origin 配置。
 
 ~~~bash
-git -C /opt/cs-src fetch origin test
-git -C /opt/cs-src checkout test
-git -C /opt/cs-src pull --ff-only origin test
+git -C /opt/cs-src pull --ff-only https://code-sayu.xingyongshe.com/backend/chatwoot.git test
 git -C /opt/cs-src log -1 --oneline
 ~~~
 
