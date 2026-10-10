@@ -126,6 +126,8 @@ class RAGSettings(BaseSettings):
     knowledge_base_retrieval_top_k: int = Field(default=8, ge=1)
 
     # Cross-encoder 重排器。
+    # 未显式配置时保持原精排链路；关闭后固定使用双塔 Top5 回复。
+    rag_reranker_enabled: bool = True
     rag_reranker_model_dir: str = "models/bge-reranker-v2-m3"
     rag_reranker_input_top_k: int = Field(default=8, ge=1)
     rag_reranker_output_top_k: int = Field(default=3, ge=1)

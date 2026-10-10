@@ -1,4 +1,4 @@
-# 模块职责：将 RAG MVP 节点按固定顺序连接为可异步执行的 LangGraph。
+# 模块职责：构建支持可选精排的异步 RAG LangGraph。
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 
 from ics_agent.app.core.logging_config import log_event
+from ics_agent.rag.config import get_rag_settings
 from ics_agent.rag.memory import (
     memory_finalize_node,
     memory_prepare_node,
@@ -60,7 +61,11 @@ def build_rag_graph(*, checkpointer: Any | None = None) -> Any:
             "rag": "retrieval",
         },
     )
-    graph.add_edge("retrieval", "reranker")
+    graph.add_conditional_edges(
+        "retrieval",
+        route_after_retrieval,
+        {"reranker": "reranker", "llm_reply": "llm_reply"},
+    )
     graph.add_edge("reranker", "llm_reply")
     graph.add_edge("llm_reply", "memory_finalize")
     graph.add_edge("memory_finalize", END)
@@ -83,12 +88,19 @@ def route_after_intent_recognition(state: RAGState) -> str:
     return "rag"
 
 
+def route_after_retrieval(state: RAGState) -> str:
+    """关闭精排时，双塔召回结果直接进入回复节点。"""
+    return (
+        "reranker" if get_rag_settings().rag_reranker_enabled else "llm_reply"
+    )
+
+
 def get_rag_graph(
     *,
     warm_up: bool = False,
     checkpointer: Any | None = None,
 ) -> Any:
-    """返回进程级编译图，可选地预热意图分类模型。"""
+    """返回进程级编译图，可选地预热当前链路使用的本地模型。"""
     global _graph
     graph_key = 0 if checkpointer is None else id(checkpointer)
     if graph_key not in _graphs:
@@ -101,7 +113,8 @@ def get_rag_graph(
     if warm_up:
         get_intent_classifier(warm_up=True)
         get_retrieval_service(warm_up=True)
-        get_reranker_service(warm_up=True)
+        if get_rag_settings().rag_reranker_enabled:
+            get_reranker_service(warm_up=True)
     return _graph
 
 

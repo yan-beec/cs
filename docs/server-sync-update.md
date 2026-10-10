@@ -313,12 +313,15 @@ print("port=", s.port)
 print("worker_count=", r.webhook_worker_count)
 print("micro_batch_wait_ms=", r.knowledge_base_embedding_micro_batch_wait_ms)
 print("micro_batch_max_size=", r.knowledge_base_embedding_micro_batch_max_size)
+print("reranker_enabled=", r.rag_reranker_enabled)
 print("reranker_max_concurrency=", r.rag_reranker_max_concurrency)
 print("rag_timeout_seconds=", r.webhook_rag_timeout_seconds)
 '
 ~~~
 
 这条命令不打印 API Key、Token 或密码。
+
+`RAG_RERANKER_ENABLED=false` 表示直接使用双塔 Top5，启动时不加载或预热 reranker；`true` 沿用已有召回与精排参数。未配置的旧环境默认 `true`。修改服务器 `.env` 后需重新创建 `ics-agent` 容器，再用上面的命令确认实际值。
 
 ### 4．验证管理后台和 Webhook
 

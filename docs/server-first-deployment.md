@@ -675,7 +675,8 @@ ADMIN_WEB_PORT=3001
 | 配置项 | 当前服务器模板值 | 作用 |
 | --- | --- | --- |
 | `WEBHOOK_WORKER_COUNT` | `10` | 单进程内 Webhook 任务并发，不是 10 个 Uvicorn 进程 |
-| `RAG_RERANKER_MAX_CONCURRENCY` | `4` | 重排并发上限 |
+| `RAG_RERANKER_ENABLED` | `false` | 关闭精排，直接使用双塔 Top5；`true` 沿用原召回与精排策略 |
+| `RAG_RERANKER_MAX_CONCURRENCY` | `4` | 启用精排时的重排并发上限 |
 | `LLM_MAX_CONCURRENCY` | `8` | 共享云模型调用并发上限 |
 | `LLM_CONCURRENCY_WAIT_TIMEOUT` | `15` | 等待模型并发槽位的最长秒数，也会消耗查询预算 |
 | `POSTGRES_POOL_SIZE` / `POSTGRES_POOL_ACQUIRE_TIMEOUT` | `12` / `1.0` | 同步数据库连接池容量 / 获取连接等待秒数 |
@@ -684,6 +685,8 @@ ADMIN_WEB_PORT=3001
 | `WEBHOOK_PROCESSING_TIMEOUT_SECONDS` | `300` | worker 每次任务处理的外层时限，包含查询以外的 Chatwoot 操作 |
 | `WEBHOOK_MAX_RETRIES` | `3` | 未被查询兜底吸收的任务异常，最多额外重试 3 次 |
 | `CHATWOOT_SESSION_IDLE_TIMEOUT_SECONDS` | `21600` | 用户消息间隔达到 6 小时，下一条消息开启新上下文 |
+
+关闭精排时不加载或预热 reranker 模型，固定使用双塔 Top5，现有 `RAG_RERANKER_*` 调参仅在重新启用精排时生效。未填写 `RAG_RERANKER_ENABLED` 的旧环境默认 `true`，保持原链路；切换后需重新创建 `ics-agent` 容器，使新环境变量生效。
 
 在线 RAG 的 Query 向量化现在使用微批处理：`KNOWLEDGE_BASE_EMBEDDING_MICRO_BATCH_WAIT_MS=20` 最多等待 20 毫秒，`KNOWLEDGE_BASE_EMBEDDING_MICRO_BATCH_MAX_SIZE=4` 最多合并 4 个 Query，然后一次调用 BGE-M3 并按原请求分别继续检索。它只合并短时间内到达的 embedding 请求，不合并不同用户的最终回复；同一会话仍按原顺序处理。
 
@@ -860,7 +863,10 @@ assert rag.webhook_rag_timeout_seconds < rag.webhook_processing_timeout_seconds,
 
 model_dir = Path(rag.rag_output_dir)
 assert (model_dir / 'model.safetensors').is_file(), '缺少意图模型权重'
-for directory in (rag.knowledge_base_embedding_model_dir, rag.rag_reranker_model_dir, rag.rag_pretrained_model_dir):
+model_directories = [rag.knowledge_base_embedding_model_dir, rag.rag_pretrained_model_dir]
+if rag.rag_reranker_enabled:
+    model_directories.append(rag.rag_reranker_model_dir)
+for directory in model_directories:
     assert (Path(directory) / 'config.json').is_file(), '缺少模型配置：' + directory
 metadata = json.loads((model_dir / 'labels.json').read_text(encoding='utf-8'))
 expected = metadata.get('dataset', {}).get('sha256')
@@ -869,6 +875,7 @@ assert expected and actual == expected, '意图 CSV 与模型指纹不一致，�
 print('PASS: 配置必填项、类型、模型基础文件和意图 CSV 指纹检查通过')
 print('当前策略：', {
     'worker': rag.webhook_worker_count,
+    'reranker_enabled': rag.rag_reranker_enabled,
     'reranker': rag.rag_reranker_max_concurrency,
     'llm_concurrency': app.llm_max_concurrency,
     'llm_timeout': app.llm_timeout,
@@ -1056,7 +1063,7 @@ curl --fail-with-body --max-time 180 \
 第二条必须替换成真实测试问题再执行。验收应同时满足：
 
 - `route` 确实为 `rag`；`faq` 不能验证向量检索，`chitchat` 也不能验证知识库。
-- `retrieved_count`、`reranked_count` 大于 0，`documents` 中资料与问题相关。
+- `retrieved_count` 大于 0，`documents` 中资料与问题相关。启用精排时 `reranked_count` 大于 0；关闭精排时 `retrieved_count` 最多为 5、`reranked_count=0`，文档 `rank` 为双塔召回排名、`score=null`。
 - `answer` 非空，内容符合知识库，且不是“当前智能客服正在维护……”的兜底文案。
 
 RAG 测试会实际调用你配置的云端模型。手工 `/rag/query` 没有 Chatwoot 路径的 **30 秒查询整体兜底**；`curl --max-time` 只限制当前客户端等待，失败后先看日志，不要连续重复提交。检索故障在这个直接查询接口可能表现为 HTTP 错误，实际 Chatwoot 的维护回复路径按第 12.5 节验证。
@@ -1623,6 +1630,7 @@ docker compose -f docker-compose.yml up -d --force-recreate ics-agent
 CHATWOOT_BLOCK_DURATION_SECONDS=86400
 RAG_MEMORY_RETENTION_DAYS=15
 WEBHOOK_WORKER_COUNT=10
+RAG_RERANKER_ENABLED=false
 RAG_RERANKER_MAX_CONCURRENCY=4
 LLM_MAX_CONCURRENCY=8
 LLM_CONCURRENCY_WAIT_TIMEOUT=15

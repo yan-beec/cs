@@ -50,7 +50,7 @@ def _document_value(document: Any, key: str, default: Any = "") -> Any:
 
 
 def _render_documents(documents: Sequence[Any] | None) -> str:
-    """将精排文档渲染为稳定、可读且不暴露过多内部字段的上下文。"""
+    """将回复依据文档渲染为稳定、可读的上下文。"""
     if not documents:
         return "没有检索到可用的知识库内容。"
 
@@ -159,7 +159,10 @@ def build_dynamic_prompt(
     actual_documents = (
         documents
         if documents is not None
-        else payload.get("reranked_documents", [])
+        # 显式空列表也代表本轮没有参考资料，不能回退到 checkpoint 旧结果。
+        else payload.get(
+            "context_documents", payload.get("reranked_documents", [])
+        )
     )
     actual_intent = (
         intent_label

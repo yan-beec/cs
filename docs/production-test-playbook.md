@@ -62,7 +62,8 @@ for key in ('chatwoot_api_token', 'chatwoot_agent_bot_access_token',
             'chatwoot_agent_bot_secret', 'chatwoot_webhook_secret'):
     print(key + '_configured', '=', bool(getattr(s, key).strip()))
 for key in ('webhook_worker_count', 'webhook_queue_max_size',
-            'webhook_rag_timeout_seconds', 'rag_memory_retention_days'):
+            'webhook_rag_timeout_seconds', 'rag_memory_retention_days',
+            'rag_reranker_enabled'):
     print(key, '=', getattr(r, key))
 PY
 ```
@@ -153,7 +154,9 @@ curl -sS --fail-with-body --max-time 180 \
   http://172.20.48.12:3001/rag/query
 ```
 
-检查五件事：`route=rag`；`retrieved_count>0`；`reranked_count>0`；`documents` 有相关依据；答案符合依据。当前本地隐私政策对应要点为“原则上收到请求后 15 日内”，验收仍要以本次发布的有效业务政策为准。
+检查：`route=rag`；`retrieved_count>0`；`documents` 有相关依据；答案符合依据。启用精排时还应有 `reranked_count>0`；关闭精排时应有 `retrieved_count<=5`、`reranked_count=0`，文档 `rank` 为双塔召回排名、`score=null`。当前本地隐私政策对应要点为“原则上收到请求后 15 日内”，验收仍要以本次发布的有效业务政策为准。
+
+在隔离测试环境分别验证 `RAG_RERANKER_ENABLED=true` 和 `false`：切换后重新创建容器并读回开关值；关闭时不应加载或预热 reranker，直接使用双塔 Top5。采用相同知识库与独立会话对比最终答案，由业务方确认依据覆盖和回答质量。
 
 如果走了 FAQ 或 chitchat，换题，不能记为 RAG 通过。接口没有强制 RAG 参数。`success=true` 与 HTTP 200 也不能排除维护兜底。
 

@@ -16,9 +16,11 @@
   -> FAQ 未命中
   -> 意图识别
   -> ChromaDB + BGE-M3 向量召回
-  -> Cross-Encoder 精排
+  -> 可选 Cross-Encoder 精排（RAG_RERANKER_ENABLED=true）
   -> 云端 LLM 生成回复
 ```
+
+`.env` 中的 `RAG_RERANKER_ENABLED` 控制精排：`true` 沿用现有召回数量、精排输入和输出数量配置；`false` 直接将双塔召回 Top5 按原顺序交给云端模型，且不加载或预热 reranker 模型。根配置示例和服务器模板显式设置为 `false`；未配置该项的旧环境默认 `true`，保持原链路。修改开关后需重启服务；Compose 部署需重新创建 `ics-agent` 容器以读取新的环境变量。
 
 服务还包含：
 
@@ -50,7 +52,7 @@ models/
 └── intent_classifier_bert/
 ```
 
-其中 `intent_classifier_bert` 是项目运行时使用的意图分类模型，可以通过后文的训练命令生成。模型文件不包含在 Git 仓库中。
+其中 `intent_classifier_bert` 是项目运行时使用的意图分类模型，可以通过后文的训练命令生成。`bge-reranker-v2-m3` 仅在启用精排时需要。模型文件不包含在 Git 仓库中。
 
 ### 2. 启动 PostgreSQL
 
@@ -210,7 +212,9 @@ Chatwoot Webhook 在同一个 `conversation_id` 下按咨询轮次使用独立�
 - FAQ 命中信息和匹配度。
 - 意图分类结果。
 - 召回和精排数量。
-- 最终答案及精排文档摘要。
+- 最终答案及回复使用的文档摘要。
+
+关闭精排时，RAG 的 `retrieved_count` 最多为 5，`reranked_count` 为 0，`documents` 仍包含回复依据，其中 `rank` 为双塔召回排名、`score` 为 `null`。启用精排时沿用原有数量、精排排名和分数语义。
 
 ### Chatwoot Webhook
 

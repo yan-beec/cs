@@ -24,6 +24,8 @@ class RAGState(TypedDict, total=False):
     # 检索和精排节点输出。
     retrieved_documents: list[RetrievedDocument]
     reranked_documents: list[RerankedDocument]
+    # 本轮实际交给 LLM 的文档：精排结果或直接召回的 Top5。
+    context_documents: list[RetrievedDocument | RerankedDocument]
 
     # 大模型回复节点输出。
     llm_response: Any

@@ -33,6 +33,7 @@ LLM_REPLY_FALLBACK_ANSWER = (
     "当前智能客服正在维护，请您发送「转人工」申请人工客服协助！"
 )
 PRIMARY_LLM_TIMEOUT_SECONDS = 10.0
+DIRECT_RETRIEVAL_TOP_K = 5
 
 
 class IntentClassifierModel:
@@ -324,33 +325,47 @@ async def intent_recognition_node(state: RAGState) -> dict[str, Any]:
             {
                 "retrieved_documents": [],
                 "reranked_documents": [],
+                "context_documents": [],
             }
         )
     return result
 
 
 async def retrieval_node(state: RAGState) -> dict[str, Any]:
-    """使用 BGE-M3 从 ChromaDB 召回 dense Top-20。"""
+    """按精排配置召回候选，或直接召回用于回复的双塔 Top5。"""
     query = state.get("query", "").strip()
     if not query:
         raise ValueError("RAG state query cannot be empty.")
 
     settings = get_rag_settings()
+    top_k = (
+        settings.knowledge_base_retrieval_top_k
+        if settings.rag_reranker_enabled
+        else DIRECT_RETRIEVAL_TOP_K
+    )
     documents = await aretrieve_documents(
         query,
-        top_k=settings.knowledge_base_retrieval_top_k,
+        top_k=top_k,
     )
     log_event(
         logger,
         logging.INFO,
         "rag.graph.node.retrieval.completed",
         candidates=len(documents),
+        reranker_enabled=settings.rag_reranker_enabled,
     )
-    return {"retrieved_documents": documents}
+    return {
+        "retrieved_documents": documents,
+        # 每轮覆盖 checkpoint 中的旧结果，防止旁路精排时引用上一轮文档。
+        "reranked_documents": [],
+        "context_documents": (
+            [] if settings.rag_reranker_enabled else documents
+        ),
+    }
 
 
 async def reranker_node(state: RAGState) -> dict[str, Any]:
-    """对召回结果执行 cross-encoder 精排并保留 Top-5。"""
+    """沿用现有候选数量和输出数量配置执行 cross-encoder 精排。"""
     query = state.get("query", "").strip()
     documents = state.get("retrieved_documents", [])
     if not query:
@@ -368,7 +383,10 @@ async def reranker_node(state: RAGState) -> dict[str, Any]:
         candidates=len(documents),
         results=len(reranked_documents),
     )
-    return {"reranked_documents": reranked_documents}
+    return {
+        "reranked_documents": reranked_documents,
+        "context_documents": reranked_documents,
+    }
 
 
 def _response_content(response: Any) -> str:

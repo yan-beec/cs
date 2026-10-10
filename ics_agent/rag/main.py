@@ -16,13 +16,19 @@ logger = logging.getLogger(__name__)
 
 
 def _document_summaries(state: Mapping[str, Any]) -> list[dict[str, object]]:
-    """将重排结果转换为 API 使用的 JSON 安全结构。"""
+    """将本轮回复依据转换为 API 摘要，兼容只有精排字段的旧状态。"""
     summaries: list[dict[str, object]] = []
-    for document in state.get("reranked_documents", []) or []:
+    documents = state.get(
+        "context_documents", state.get("reranked_documents", [])
+    )
+    for document in documents or []:
         metadata = getattr(document, "metadata", {}) or {}
         summaries.append(
             {
-                "rank": getattr(document, "rerank_rank", None),
+                "rank": (
+                    getattr(document, "rerank_rank", None)
+                    or getattr(document, "rank", None)
+                ),
                 "score": getattr(document, "rerank_score", None),
                 "source": metadata.get("source", ""),
                 "chunk_id": getattr(document, "chunk_id", ""),
