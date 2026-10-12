@@ -17,6 +17,7 @@ DEVICES = "reminder_devices"
 FIELDS = (
     "id", "account_id", "conversation_id", "source_key", "agent_id", "version",
     "state", "customer_name", "message", "created_at", "is_test",
+    "inbox_id", "inbox_name",
 )
 
 
@@ -78,12 +79,19 @@ class ReminderRepository:
                         state TEXT NOT NULL DEFAULT 'pending'
                             CHECK (state IN ('pending', 'acknowledged', 'closed', 'waiting')),
                         customer_name TEXT NOT NULL DEFAULT '', message TEXT NOT NULL DEFAULT '',
+                        inbox_id TEXT NOT NULL DEFAULT '', inbox_name TEXT NOT NULL DEFAULT '',
                         is_test BOOLEAN NOT NULL DEFAULT FALSE,
                         created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
                         acknowledged_at TIMESTAMPTZ,
                         UNIQUE(account_id, conversation_id, source_key)
                     )
                 """)
+                # 已部署版本自动补齐展示元数据，不影响提醒确认状态和版本。
+                for column in ("inbox_id", "inbox_name"):
+                    connection.execute(
+                        f"ALTER TABLE {NOTIFICATIONS} ADD COLUMN IF NOT EXISTS "
+                        f"{column} TEXT NOT NULL DEFAULT ''"
+                    )
                 connection.execute(f"""
                     CREATE INDEX IF NOT EXISTS reminder_active_idx
                     ON {NOTIFICATIONS}(account_id, agent_id, created_at)
@@ -217,16 +225,28 @@ class ReminderRepository:
         finally:
             connection.close()
 
-    def capture(self, cursor: Any, control: Any, name: str = "", message: str = "") -> None:
+    def capture(
+        self, cursor: Any, control: Any, name: str = "", message: str = "", *,
+        inbox_id: str = "", inbox_name: str = "",
+    ) -> None:
         cursor.execute(f"""INSERT INTO {NOTIFICATIONS}
-            (id,account_id,conversation_id,source_key,agent_id,customer_name,message)
-            VALUES (%s,%s,%s,%s,%s,%s,%s)
-            ON CONFLICT (account_id,conversation_id,source_key) DO NOTHING""",
+            (id,account_id,conversation_id,source_key,agent_id,customer_name,message,inbox_id,inbox_name)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (account_id,conversation_id,source_key) DO UPDATE SET
+                inbox_id=CASE WHEN EXCLUDED.inbox_id<>'' THEN EXCLUDED.inbox_id
+                              ELSE {NOTIFICATIONS}.inbox_id END,
+                inbox_name=CASE WHEN EXCLUDED.inbox_name<>'' THEN EXCLUDED.inbox_name
+                    WHEN EXCLUDED.inbox_id<>'' AND EXCLUDED.inbox_id<>{NOTIFICATIONS}.inbox_id THEN ''
+                    ELSE {NOTIFICATIONS}.inbox_name END""",
             (uuid4().hex, control.account_id, control.conversation_id,
              handoff_key(control.handoff_trigger_message_id, control.handoff_at),
-             control.assigned_agent_id, name[:100], message[:500]))
+             control.assigned_agent_id, name[:100], message[:500],
+             str(inbox_id or "").strip()[:100], str(inbox_name or "").strip()[:200]))
 
-    def ensure_handoff(self, expected: Any, name: str = "", message: str = "") -> None:
+    def ensure_handoff(
+        self, expected: Any, name: str = "", message: str = "", *,
+        inbox_id: str = "", inbox_name: str = "",
+    ) -> None:
         connection = self.connections.acquire()
         try:
             with connection.transaction():
@@ -237,7 +257,8 @@ class ReminderRepository:
                     if (current_handoff(latest) and latest.handoff_conversation_updated
                             and handoff_key(latest.handoff_trigger_message_id, latest.handoff_at)
                             == handoff_key(expected.handoff_trigger_message_id, expected.handoff_at)):
-                        self.capture(cursor, latest, name, message)
+                        self.capture(cursor, latest, name, message,
+                                     inbox_id=inbox_id, inbox_name=inbox_name)
         finally:
             connection.close()
 
@@ -300,6 +321,21 @@ class ReminderRepository:
                     (account_id, notification_id),
                 ).fetchone()
                 return as_dict(row) if row else None
+        finally:
+            connection.close()
+
+    def update_inbox(self, item: dict[str, Any], inbox_id: str, inbox_name: str) -> None:
+        """补充或更新收件箱元数据；不使已确认提醒重新出现。"""
+        if inbox_id == item.get("inbox_id", "") and inbox_name == item.get("inbox_name", ""):
+            return
+        connection = self.connections.acquire()
+        try:
+            with connection.transaction():
+                connection.execute(f"""UPDATE {NOTIFICATIONS}
+                    SET inbox_id=%s, inbox_name=%s
+                    WHERE id=%s AND account_id=%s
+                      AND state IN ('pending','acknowledged','waiting')""",
+                    (inbox_id[:100], inbox_name[:200], item["id"], item["account_id"]))
         finally:
             connection.close()
 

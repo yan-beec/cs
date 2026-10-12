@@ -59,6 +59,38 @@ def test_dashboard_url_keeps_workbench_label_even_if_old_server_flag_is_missing(
     client.open_button.configure.assert_called_with(text="打开 Chatwoot 工作台", state="normal")
 
 
+@pytest.mark.parametrize("metadata, label, detail", [
+    ({"inbox_id": "7", "inbox_name": "官网咨询"}, "会话 56  ·  客户甲  ·  官网咨询", "收件箱：官网咨询"),
+    ({"inbox_id": "7", "inbox_name": ""}, "会话 56  ·  客户甲  ·  收件箱 7", "收件箱 7"),
+    ({}, "会话 56  ·  客户甲", None),
+    ({"inbox_id": None, "inbox_name": None}, "会话 56  ·  客户甲", None),
+    ({"is_test": True, "inbox_id": "7", "inbox_name": "官网咨询"}, "试验提醒  ·  客户甲", None),
+])
+def test_reminder_displays_inbox_and_accepts_older_server_data(metadata, label, detail):
+    from reminder.client.state import ReminderState
+
+    item = {"id": "inbox-test", "version": 1, "is_test": False, "conversation_id": "56",
+            "customer_name": "客户甲", "message": "需要人工帮助", "created_at": "2026-10-10T00:00:00+00:00",
+            "conversation_url": "http://localhost:3000/app/accounts/1/conversations/56", **metadata}
+    client = headless_reminder_client(item)
+    client.state = ReminderState()
+    client.state.replace([item])
+    client.count = Mock()
+    client.listbox = Mock()
+    client.popup = Mock()
+    client.render()
+    client.listbox.insert.assert_called_once_with("end", label)
+    content = client._set_detail.call_args.args[0]
+    assert "需要人工帮助" in content
+    if detail:
+        assert detail in content
+    else:
+        assert "收件箱：" not in content
+    client.open_button.configure.assert_called_with(text="打开 Chatwoot 工作台", state="normal")
+    assert client.state.confirmations == set()
+    client.popup.withdraw.assert_not_called()
+
+
 @pytest.mark.parametrize("result, error, pending, switching, requested_agent, visible", [
     (True, None, True, False, None, True),
     (False, None, True, False, None, True),
@@ -269,11 +301,15 @@ def test_browser_lookup_is_async_and_keeps_reminder_unconfirmed():
         try:
             item = {"id": "browser-test", "version": 1, "is_test": False,
                     "conversation_id": "56", "customer_name": "测试客户", "message": "转人工",
+                    "inbox_id": "7", "inbox_name": "官网咨询收件箱名称" * 12,
                     "created_at": "2026-10-10T00:00:00+00:00",
                     "conversation_url": "https://support.example/app/accounts/1/conversations/56"}
             client.state.replace([item])
             client.show_popup()
             root.update()
+            assert item["inbox_name"] in client.listbox.get(0)
+            assert "收件箱：" + item["inbox_name"] in client.detail.get("1.0", "end")
+            assert client.open_button.winfo_ismapped()
             client.open_conversation()
             assert started.wait(1)
             client.open_conversation()

@@ -29,7 +29,7 @@ from ics_agent.app.core.context import (
 )
 from .client import ChatwootAPIError, get_chatwoot_client
 from .state import ConversationControl
-from reminder.backend.service import capture_hook, ensure_notification
+from reminder.backend.service import capture_hook, ensure_notification, inbox_details
 from ics_agent.app.core.logging_config import log_event
 from ics_agent.app.core.models import ChatwootWebhookEvent
 from .payload import (
@@ -351,6 +351,17 @@ def _webhook_inbox_id(event: ChatwootWebhookEvent) -> int | None:
         return _optional_chatwoot_id(str(value or ""))
     except ValueError:
         return None
+
+
+def _webhook_reminder_inbox(event: ChatwootWebhookEvent) -> dict[str, str]:
+    """读取已有载荷中的收件箱信息，不在接管事务内查询 Chatwoot。"""
+    conversation_id, conversation_name = inbox_details(event.conversation or {})
+    payload_id, payload_name = inbox_details(event.raw)
+    inbox_id = conversation_id or payload_id
+    inbox_name = conversation_name
+    if not inbox_name and (not payload_id or payload_id == inbox_id):
+        inbox_name = payload_name
+    return {"inbox_id": inbox_id, "inbox_name": inbox_name}
 
 
 async def _chatwoot_contact_blocked(
@@ -1293,7 +1304,9 @@ async def _process_webhook_job_unlocked(
         if control.handoff_required and not handoff_action_retry:
             if settings.reminder_enabled:
                 # 已完成的原五个步骤不会再进入 _complete_handoff，单独补齐缺失提醒。
-                await asyncio.to_thread(ensure_notification, control)
+                await asyncio.to_thread(
+                    ensure_notification, control, **_webhook_reminder_inbox(event),
+                )
             log_event(
                 logger,
                 logging.INFO,
@@ -1885,6 +1898,7 @@ async def _complete_handoff(
         if settings.reminder_enabled:
             reminder_options["on_mark"] = capture_hook(
                 control, str((event.sender or {}).get("name") or "客户"), content,
+                **_webhook_reminder_inbox(event),
             )
         marked = await asyncio.to_thread(
             conversation_control_repository.mark_handoff_action,
@@ -1899,6 +1913,7 @@ async def _complete_handoff(
         await asyncio.to_thread(
             ensure_notification, control,
             str((event.sender or {}).get("name") or "客户"), content,
+            **_webhook_reminder_inbox(event),
         )
     actions["conversation_updated"] = True
     # assignment 成功后仍保留预留，直到 Chatwoot 真正 open；这样并发

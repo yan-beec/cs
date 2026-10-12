@@ -54,10 +54,46 @@ class ReminderPostgresTest(unittest.TestCase):
                                "WHERE account_id='1' AND conversation_id='56'")
         return self.controls.get(account_id="1", conversation_id="56")
 
-    def capture(self, control):
+    def capture(self, control, **inbox):
         with patch.object(service, "get_repository", return_value=self.repo):
             return self.controls.mark_handoff_action(account_id="1", conversation_id="56",
-                    action="conversation_updated", on_mark=service.capture_hook(control, "客户甲", "转人工"))
+                    action="conversation_updated", on_mark=service.capture_hook(control, "客户甲", "转人工", **inbox))
+
+    def test_existing_notification_table_migrates_without_changing_reminder_state(self):
+        self.capture(self.prepare())
+        before = self.repo.active("1")[0]
+        self.repo.acknowledge({"account_id": "1", "agent_id": "11"}, before["id"], before["version"])
+        with self.connections.acquire() as connection:
+            connection.execute("ALTER TABLE reminder_notifications DROP COLUMN inbox_id, DROP COLUMN inbox_name")
+        self.repo.ensure_table()
+        migrated = self.repo.active("1")[0]
+        self.assertEqual(migrated["state"], "acknowledged")
+        self.assertEqual(migrated["version"], before["version"])
+        self.assertEqual((migrated["inbox_id"], migrated["inbox_name"]), ("", ""))
+
+    def test_inbox_metadata_survives_capture_retry_and_confirmation(self):
+        control = self.prepare()
+        self.capture(control, inbox_id="7", inbox_name="官网咨询")
+        item = self.repo.active("1")[0]
+        self.assertEqual((item["inbox_id"], item["inbox_name"]), ("7", "官网咨询"))
+        self.assertTrue(self.repo.acknowledge({"account_id": "1", "agent_id": "11"}, item["id"], 1))
+        self.capture(control)
+        persisted = self.repo.active("1")[0]
+        self.assertEqual((persisted["inbox_id"], persisted["inbox_name"]), ("7", "官网咨询"))
+        self.repo.update_inbox(persisted, "8", "微信咨询")
+        updated = self.repo.active("1")[0]
+        self.assertEqual((updated["inbox_id"], updated["inbox_name"]), ("8", "微信咨询"))
+        self.assertEqual(updated["version"], 1)
+        self.assertEqual(updated["state"], "acknowledged")
+
+    def test_late_handoff_capture_enriches_existing_notification_without_new_version(self):
+        control = self.prepare()
+        self.capture(control)
+        self.repo.ensure_handoff(control, inbox_id="7", inbox_name="官网咨询")
+        item = self.repo.active("1")[0]
+        self.assertEqual((item["inbox_id"], item["inbox_name"]), ("7", "官网咨询"))
+        self.assertEqual(item["version"], 1)
+        self.assertEqual(len(self.repo.active("1")), 1)
 
     def test_atomic_capture_retry_and_confirmation_does_not_revive(self):
         control = self.prepare()

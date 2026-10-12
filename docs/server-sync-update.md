@@ -2,6 +2,8 @@
 
 本文用于项目已经部署完成后的日常发布：在 Windows 开发端修改代码，推送到 Git 远端，同步到 Ubuntu 的 /opt/cs，重新构建并验证机器人。
 
+转人工强弹窗提醒、工作台按钮及浏览器页面复用的专项更新，按[提醒功能服务器更新部署手册](reminder-server-update.md)执行；除服务器代码和配置外，还需更新客服电脑上的 Windows 客户端与浏览器插件。
+
 当前部署约定：
 
 | 项目 | 约定 |
@@ -23,6 +25,8 @@
 | 改动 | 动作 | 是否 build |
 | --- | --- | --- |
 | ics_agent/、knowledge_base_in/ Python 代码 | Git 拉取、同步、构建、重建应用 | 是 |
+| reminder/backend/、reminder/protocol.py 服务端代码 | Git 拉取、同步 reminder、构建、重建应用 | 是 |
+| reminder/client/、extension/、packaging/ 客户端或插件 | 按专项手册构建安装包、升级客服电脑、重新加载浏览器插件 | 服务器通常无需 build；混合后端变更时需要 |
 | requirements.txt、Dockerfile | Git 拉取、同步、构建、重建应用 | 是 |
 | docker-compose.yml | Git 拉取、同步、重建应用 | 建议执行 |
 | 服务器 /opt/cs/.env | 编辑后 force-recreate | 否 |
@@ -174,9 +178,10 @@ test "$actual_commit" = "$expected_commit" && echo '源码 SHA 校验通过' || 
 (
   set -e
   test -f /opt/cs-src/deploy/server/Dockerfile.backend-only
-  mkdir -p /opt/cs/ics_agent /opt/cs/knowledge_base_in /opt/cs/deploy /opt/cs/docs
+  mkdir -p /opt/cs/ics_agent /opt/cs/knowledge_base_in /opt/cs/reminder /opt/cs/deploy /opt/cs/docs
   rsync -a --delete --exclude='__pycache__/' --exclude='*.pyc' /opt/cs-src/ics_agent/ /opt/cs/ics_agent/
   rsync -a --delete --exclude='/output/' --exclude='/vector_store/' --exclude='__pycache__/' --exclude='*.pyc' /opt/cs-src/knowledge_base_in/ /opt/cs/knowledge_base_in/
+  rsync -a --delete --exclude='/build/' --exclude='/dist/' --exclude='__pycache__/' --exclude='*.pyc' --exclude='.pytest_cache/' /opt/cs-src/reminder/ /opt/cs/reminder/
   rsync -a /opt/cs-src/deploy/ /opt/cs/deploy/
   rsync -a /opt/cs-src/docs/ /opt/cs/docs/
   cp /opt/cs-src/docker-compose.yml /opt/cs-src/.dockerignore /opt/cs-src/requirements.txt /opt/cs-src/.env.example /opt/cs/

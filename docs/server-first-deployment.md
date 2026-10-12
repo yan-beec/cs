@@ -6,6 +6,8 @@
 
 当前 Chatwoot 根地址为 **`http://172.20.48.12:3000`，使用内网，没有公网域名**。前端已经单独部署，本次复用该前端。推荐通过 **Git 同步后端源码和配置模板，只单独上传模型包 `cs-models.tar.gz`**；服务器不能访问仓库时，仍可使用模型包与后端部署包 `cs-app.tar.gz` 分开上传的方案。
 
+已有服务器新增或升级转人工强弹窗提醒时，请按[提醒功能服务器更新部署手册](reminder-server-update.md)执行。提醒后端随 `ics-agent` 部署，Windows 客户端与浏览器插件则安装、更新在客服电脑上。
+
 服务器最初登录信息显示系统盘约 49.10 GB、当时约有 41.7 GB 可用；上传模型后应重新检查余量。`172.20.48.12` 是私网地址，Windows 已配置 SSH 别名 `ics`。CPU 核数、内存总量及机器人是否与 Chatwoot 同机，仍需按第 2 节确认。
 
 **你已完成的步骤：** 模型包已上传到 `/home/ubuntu/cs-models.tar.gz`，且与本机 SHA256 一致：
@@ -496,12 +498,15 @@ test -f /opt/cs-src/deploy/server/bot.env.example && echo 'server env template O
 (
   set -e
   test -f /opt/cs-src/deploy/server/Dockerfile.backend-only
-  mkdir -p /opt/cs/ics_agent /opt/cs/knowledge_base_in /opt/cs/deploy /opt/cs/docs
+  mkdir -p /opt/cs/ics_agent /opt/cs/knowledge_base_in /opt/cs/reminder /opt/cs/deploy /opt/cs/docs
   rsync -a --delete --exclude='__pycache__/' --exclude='*.pyc' \
     /opt/cs-src/ics_agent/ /opt/cs/ics_agent/
   rsync -a --delete --exclude='/output/' --exclude='/vector_store/' \
     --exclude='__pycache__/' --exclude='*.pyc' \
     /opt/cs-src/knowledge_base_in/ /opt/cs/knowledge_base_in/
+  rsync -a --delete --exclude='/build/' --exclude='/dist/' \
+    --exclude='__pycache__/' --exclude='*.pyc' --exclude='.pytest_cache/' \
+    /opt/cs-src/reminder/ /opt/cs/reminder/
   rsync -a /opt/cs-src/deploy/ /opt/cs/deploy/
   rsync -a /opt/cs-src/docs/ /opt/cs/docs/
   cp /opt/cs-src/docker-compose.yml /opt/cs-src/.dockerignore \
@@ -510,7 +515,7 @@ test -f /opt/cs-src/deploy/server/bot.env.example && echo 'server env template O
 )
 ```
 
-整段无报错、退出码为 0 后继续。`--delete` 只用于两个代码目录，清掉新版已移除的旧代码；被排除的 `output/` 和 `vector_store/` 会保留。不要加入 `--delete-excluded`，也不要把同步目标改成整个 `/opt/cs`。运行目录内的代码和模板视为可替换文件，定制代码应先在开发端修改并提交；实际配置修改在 `/opt/cs/.env` 中进行。
+整段无报错、退出码为 0 后继续。`--delete` 只用于 `ics_agent/`、`knowledge_base_in/`、`reminder/` 三个代码目录，清掉新版已移除的旧代码；被排除的 `output/`、`vector_store/`、提醒构建产物和缓存会保留。不要加入 `--delete-excluded`，也不要把同步目标改成整个 `/opt/cs`。运行目录内的代码和模板视为可替换文件，定制代码应先在开发端修改并提交；实际配置修改在 `/opt/cs/.env` 中进行。
 
 #### 第五步：首次复制业务数据
 
@@ -1608,6 +1613,8 @@ docker compose -f docker-compose.yml restart ics-agent
 等待启动和预热结束，重新检查健康、后台登录和一次 FAQ 问答。重启保留数据卷和挂载目录；但当前内存队列没有自动持久化重放能力，不要在有未完成请求时把强制重启当作正常操作。
 
 ## 13. 日常更新和配置修改
+
+提醒功能的服务端配置、Windows 安装包及浏览器插件升级，按[提醒功能服务器更新部署手册](reminder-server-update.md)执行，不能仅靠服务器 `git pull` 更新客服电脑的弹窗行为。
 
 | 改了什么 | 需要执行什么 |
 | --- | --- |

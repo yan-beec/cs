@@ -13,7 +13,7 @@ import zipfile
 
 from reminder.client.bridge import EXTENSION_ORIGIN, HOST_NAME
 
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 PRODUCT = "ICSReminder"
 HOST_REGISTRY = [
     rf"Software\Google\Chrome\NativeMessagingHosts\{HOST_NAME}",

@@ -14,25 +14,139 @@ from .repository import current_handoff, get_repository
 
 _locks: dict[str, asyncio.Lock] = {}
 _last_sync: dict[str, float] = {}
+_inbox_cache: dict[tuple[str, str], tuple[float, str]] = {}
+_inbox_locks: dict[tuple[str, str], asyncio.Lock] = {}
+_INBOX_SYNC_BUDGET_SECONDS = 2.0
 _logger = logging.getLogger(__name__)
 
 
-def capture_hook(expected: Any, name: str, message: str):
+def capture_hook(
+    expected: Any, name: str, message: str, *, inbox_id: str = "", inbox_name: str = "",
+):
     expected_key = handoff_key(expected.handoff_trigger_message_id, expected.handoff_at)
 
     def on_mark(cursor: Any, latest: Any) -> bool:
         if (not current_handoff(latest)
                 or handoff_key(latest.handoff_trigger_message_id, latest.handoff_at) != expected_key):
             return False
-        get_repository().capture(cursor, latest, name, message)
+        get_repository().capture(cursor, latest, name, message,
+                                 inbox_id=inbox_id, inbox_name=inbox_name)
         return True
 
     return on_mark
 
 
-def ensure_notification(control: Any, name: str = "", message: str = "") -> None:
+def ensure_notification(
+    control: Any, name: str = "", message: str = "", *, inbox_id: str = "", inbox_name: str = "",
+) -> None:
     if current_handoff(control) and control.handoff_conversation_updated:
-        get_repository().ensure_handoff(control, name, message)
+        get_repository().ensure_handoff(control, name, message,
+                                       inbox_id=inbox_id, inbox_name=inbox_name)
+
+
+def inbox_details(conversation: dict[str, Any]) -> tuple[str, str]:
+    """兼容会话/Webhook 只带 inbox_id 或嵌套 inbox 的响应。"""
+    inbox = conversation.get("inbox")
+    meta = conversation.get("meta")
+    if not isinstance(inbox, dict) and isinstance(meta, dict):
+        inbox = meta.get("inbox")
+    inbox = inbox if isinstance(inbox, dict) else {}
+    inbox_id = conversation.get("inbox_id")
+    if not isinstance(inbox_id, (str, int)) or not str(inbox_id).strip():
+        inbox_id = inbox.get("id")
+    name = inbox.get("name") or conversation.get("inbox_name")
+    return (
+        str(inbox_id).strip()[:100] if isinstance(inbox_id, (str, int)) else "",
+        name.strip()[:200] if isinstance(name, str) else "",
+    )
+
+
+async def _resolve_inbox(
+    account_id: str, conversation: dict[str, Any], item: dict[str, Any],
+    semaphore: asyncio.Semaphore | None,
+    deadline: float,
+) -> tuple[str, str]:
+    inbox_id, name = inbox_details(conversation)
+    inbox_id = inbox_id or item.get("inbox_id", "")
+    if not inbox_id:
+        return "", name or item.get("inbox_name", "")
+    key = (account_id, inbox_id)
+    if name:
+        _inbox_cache[key] = (time.monotonic() + 300, name)
+        return inbox_id, name
+    previous = item.get("inbox_name", "") if item.get("inbox_id") == inbox_id else ""
+    async with _inbox_locks.setdefault(key, asyncio.Lock()):
+        expires, cached = _inbox_cache.get(key, (0, ""))
+        if expires > time.monotonic():
+            return inbox_id, cached or previous
+        fetch_started = False
+        try:
+            async def fetch() -> dict[str, Any]:
+                def read_inbox() -> dict[str, Any]:
+                    nonlocal fetch_started
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError("Inbox synchronization budget exhausted.")
+                    fetch_started = True
+                    return get_chatwoot_client().get_inbox(
+                        account_id=account_id, inbox_id=inbox_id, timeout_seconds=remaining)
+
+                return await asyncio.to_thread(read_inbox)
+
+            if semaphore is None:
+                inbox = await fetch()
+            else:
+                async with semaphore:
+                    inbox = await fetch()
+            if not isinstance(inbox, dict) or not isinstance(inbox.get("name"), str):
+                raise ChatwootAPIError("Chatwoot inbox name is missing.")
+            name = inbox["name"].strip()[:200]
+            if not name:
+                raise ChatwootAPIError("Chatwoot inbox name is empty.")
+        except asyncio.CancelledError:
+            # 只缓存已经实际发起的查询失败；排队项下轮仍有机会查询。
+            if fetch_started:
+                _inbox_cache[key] = (time.monotonic() + 60, "")
+            raise
+        except Exception:
+            # 名称暂时不可读仍保留原提醒，并短暂缓存失败，避免频繁重试。
+            if fetch_started:
+                _inbox_cache[key] = (time.monotonic() + 60, "")
+            _logger.warning("Failed to read inbox %s for account %s", inbox_id, account_id,
+                            exc_info=True)
+            return inbox_id, previous
+        _inbox_cache[key] = (time.monotonic() + 300, name)
+        return inbox_id, name
+
+
+async def _enrich_inbox_safely(
+    repository: Any, account_id: str, item: dict[str, Any], conversation: dict[str, Any],
+    semaphore: asyncio.Semaphore, deadline: float,
+) -> None:
+    """名称同步的整批共享预算包含锁排队、信号量排队和网络等待。"""
+    inbox_id, name = inbox_details(conversation)
+    inbox_id = inbox_id or item.get("inbox_id", "")
+    previous = item.get("inbox_name", "") if item.get("inbox_id", "") == inbox_id else ""
+    try:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise asyncio.TimeoutError("Inbox synchronization budget exhausted.")
+        inbox_id, name = await asyncio.wait_for(
+            _resolve_inbox(account_id, conversation, item, semaphore, deadline),
+            timeout=remaining,
+        )
+    except asyncio.TimeoutError:
+        name = name or previous
+    except Exception:
+        _logger.warning("Failed to resolve inbox metadata for reminder %s", item.get("id"),
+                        exc_info=True)
+        name = name or previous
+    if inbox_id or name:
+        try:
+            await asyncio.to_thread(repository.update_inbox, item, inbox_id, name)
+        except Exception:
+            _logger.warning("Failed to update inbox metadata for reminder %s", item.get("id"),
+                            exc_info=True)
 
 
 def assignment(conversation: dict[str, Any]) -> tuple[str, str]:
@@ -58,6 +172,8 @@ def assignment(conversation: dict[str, Any]) -> tuple[str, str]:
 async def snapshot(device: dict[str, str], *, force: bool = False) -> list[dict[str, Any]]:
     account_id = device["account_id"]
     repository = get_repository()
+    synchronized: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    did_sync = False
     async with _locks.setdefault(account_id, asyncio.Lock()):
         items = await asyncio.to_thread(repository.active, account_id)
         if force or time.monotonic() - _last_sync.get(account_id, 0) >= 10:
@@ -66,7 +182,9 @@ async def snapshot(device: dict[str, str], *, force: bool = False) -> list[dict[
 
             async def sync_one_safely(item: dict[str, Any]) -> None:
                 try:
-                    await _synchronize_item(repository, account_id, item, semaphore)
+                    conversation = await _synchronize_item(repository, account_id, item, semaphore)
+                    if conversation is not None and str(conversation.get("status") or "").lower() != "resolved":
+                        synchronized.append((item, conversation))
                 except Exception:
                     # 一个会话的 Chatwoot 异常不能中断同一账户其他提醒的同步。
                     # 保留该条提醒当前状态，下一轮再重试，避免把临时故障误判为已结束。
@@ -77,7 +195,17 @@ async def snapshot(device: dict[str, str], *, force: bool = False) -> list[dict[
 
             await asyncio.gather(*(sync_one_safely(item) for item in items))
             _last_sync[account_id] = time.monotonic()
-            items = await asyncio.to_thread(repository.active, account_id)
+            did_sync = True
+    # 展示名称不持有账户锁；客服确认只需核对会话状态，毋须等待名称查询。
+    if synchronized:
+        deadline = time.monotonic() + _INBOX_SYNC_BUDGET_SECONDS
+        semaphore = asyncio.Semaphore(3)
+        await asyncio.gather(*(
+            _enrich_inbox_safely(repository, account_id, item, conversation, semaphore, deadline)
+            for item, conversation in synchronized
+        ))
+    if did_sync:
+        items = await asyncio.to_thread(repository.active, account_id)
     public_base = get_settings().chatwoot_public_base_url
     result = []
     for item in items:
@@ -96,7 +224,7 @@ async def _synchronize_item(
     account_id: str,
     item: dict[str, Any],
     semaphore: asyncio.Semaphore | None = None,
-) -> None:
+) -> dict[str, Any] | None:
     if item["is_test"]:
         return
     if semaphore is None:
@@ -111,6 +239,7 @@ async def _synchronize_item(
                 account_id=account_id, conversation_id=item["conversation_id"])
             agent_id, status = assignment(conversation)
     await asyncio.to_thread(repository.synchronize, item, agent_id, status)
+    return conversation
 
 
 async def synchronize_notification(

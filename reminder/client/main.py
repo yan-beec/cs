@@ -636,7 +636,11 @@ class ReminderClient:
         self.listbox.delete(0, tk.END)
         for item in self.visible:
             title = "试验提醒" if item["is_test"] else "会话 " + item["conversation_id"]
-            self.listbox.insert(tk.END, title + "  ·  " + (item["customer_name"] or "客户"))
+            labels = [title, item["customer_name"] or "客户"]
+            inbox = self._inbox_label(item)
+            if inbox:
+                labels.append(" ".join(inbox.split()))
+            self.listbox.insert(tk.END, "  ·  ".join(labels))
         if self.visible:
             selected = next((index for index, item in enumerate(self.visible) if previous and item["id"] == previous["id"]), 0)
             self.listbox.selection_set(selected)
@@ -650,13 +654,27 @@ class ReminderClient:
         indexes = self.listbox.curselection()
         return self.visible[indexes[0]] if indexes else None
 
+    @staticmethod
+    def _inbox_label(item: dict) -> str:
+        if item.get("is_test"):
+            return ""
+        name = str(item.get("inbox_name") or "").strip()
+        if name:
+            return name
+        inbox_id = str(item.get("inbox_id") or "").strip()
+        return "收件箱 " + inbox_id if inbox_id else ""
+
     def show_detail(self, _event=None) -> None:
         item = self.selected()
         if not item:
             return
         created = datetime.fromisoformat(item["created_at"])
         minutes = max(0, int((datetime.now(timezone.utc) - created).total_seconds() / 60))
-        detail = f'等待 {minutes} 分钟\n\n{item["message"] or "客户请求人工协助，请进入会话查看。"}'
+        header = f"等待 {minutes} 分钟"
+        inbox = self._inbox_label(item)
+        if inbox:
+            header += "\n" + ("收件箱：" + inbox if str(item.get("inbox_name") or "").strip() else inbox)
+        detail = header + "\n\n" + (item["message"] or "客户请求人工协助，请进入会话查看。")
         if not item.get("conversation_url"):
             reason = self._missing_chatwoot_url_message()
             detail += "\n\n" + reason

@@ -108,6 +108,27 @@ class ChatwootClient:
             self._conversation_path(account_id, conversation_id),
         )
 
+    def get_inbox(
+        self,
+        *,
+        account_id: str,
+        inbox_id: str,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """只读收件箱信息，供提醒显示渠道名称。"""
+        account_id = str(account_id or "").strip()
+        inbox_id = str(inbox_id or "").strip()
+        if not account_id:
+            raise ChatwootAPIError("Chatwoot account_id is missing.")
+        if not inbox_id:
+            raise ChatwootAPIError("Chatwoot inbox_id is missing.")
+        return self._request_json(
+            "GET",
+            f"/api/v1/accounts/{quote(account_id, safe='')}/inboxes/{quote(inbox_id, safe='')}",
+            access_token=self._user_api_token("Chatwoot inbox information"),
+            timeout_seconds=timeout_seconds,
+        )
+
     def get_contact(
         self,
         *,

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ICS Chatwoot 页面连接",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "配合 ICS 桌面提醒，在已登录的 Chatwoot 标签页中打开客户会话。",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvhmelJkJBaNiCVqUYc8YmSzoECKqOnZ+rCeaPfZCOR1F2o/dNGjKwOki1CJn43BYhlqnMiCR/DCboVZYJkcrIi2qK5mV9VQDJ2DLMX7uCzFArk6x82kIdcNlVt1ICdUqoTpIoziUjXUAn5PyjlXdoCHQ78ijSNilxUYRPtEmGC9SYo3qtQpegYme7a69NJ9ipw2CoLyO2aJN2L1vwudi3aDyesA6YYW/8XWbVMdKKozmlu93tHSrv76D4h2KhNDh4p9OIobU+xRJqMxHc9AhW+0KMouxV472egpGkpfRAnz79PLBlQ9NqVc2W5FkEqCUktuMj0d7ly5So2qmyC26bQIDAQAB",
   "permissions": ["nativeMessaging", "tabs", "scripting", "storage", "alarms"],
