@@ -100,6 +100,7 @@ class AppSettings(BaseSettings):
     reminder_plugin_password_hash: str = ""
     reminder_plugin_secret: str = ""
     reminder_plugin_allowed_agent_ids: str = ""
+    reminder_plugin_max_devices_per_agent: int = Field(default=3, ge=1, le=20)
     reminder_plugin_session_expire_seconds: int = Field(default=3600, ge=300, le=86400)
 
     # 单例管理员初始化和身份认证。

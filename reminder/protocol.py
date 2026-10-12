@@ -29,3 +29,13 @@ def conversation_url(base: str, account_id: str, conversation_id: str) -> str:
         + "/app/accounts/" + quote(account_id, safe="")
         + "/conversations/" + quote(conversation_id, safe="")
     )
+
+
+def workbench_url(base: str, account_id: str) -> str:
+    if not base:
+        return ""
+    return (
+        validate_base_url(base)
+        + "/app/accounts/" + quote(account_id, safe="")
+        + "/dashboard"
+    )

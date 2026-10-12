@@ -6,12 +6,118 @@ import subprocess
 import sys
 import threading
 import time
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 import pytest
 
 from reminder.client.instance import SingleInstance
+
+
+def headless_reminder_client(item, *, demo=False):
+    """只验证按钮与状态逻辑，不创建窗口或托盘。"""
+    from reminder.client.main import ReminderClient
+
+    client = ReminderClient.__new__(ReminderClient)
+    client.demo = demo
+    client.closing = False
+    client.browser_busy = False
+    client.selected = Mock(return_value=item)
+    client.open_button = Mock()
+    client.browser_status = Mock()
+    client.browser_executor = Mock()
+    client.browser_bridge = Mock()
+    client.ui_actions = Mock()
+    client._set_detail = Mock()
+    return client
+
+
+@pytest.mark.parametrize("is_test, path, label", [
+    (True, "dashboard", "打开 Chatwoot 工作台"),
+    (False, "conversations/56", "打开 Chatwoot 工作台"),
+])
+def test_server_trial_and_real_reminder_enable_the_correct_browser_action(is_test, path, label):
+    from reminder.client.main import open_conversation_url
+
+    url = "http://localhost:3000/app/accounts/1/" + path
+    client = headless_reminder_client({
+        "is_test": is_test, "message": "测试提醒", "created_at": "2026-10-10T00:00:00+00:00",
+        "conversation_url": url,
+    })
+    client.show_detail()
+    client.open_button.configure.assert_called_with(text=label, state="normal")
+    client.open_conversation()
+    client.browser_executor.submit.assert_called_once_with(open_conversation_url, url, bridge=client.browser_bridge)
+    assert client.browser_busy
+
+
+def test_dashboard_url_keeps_workbench_label_even_if_old_server_flag_is_missing():
+    item = {"is_test": False, "message": "测试提醒", "created_at": "2026-10-10T00:00:00+00:00",
+            "conversation_url": "http://localhost:3000/app/accounts/1/dashboard"}
+    client = headless_reminder_client(item)
+    client.show_detail()
+    client.open_button.configure.assert_called_with(text="打开 Chatwoot 工作台", state="normal")
+
+
+@pytest.mark.parametrize("result, error, pending, switching, requested_agent, visible", [
+    (True, None, True, False, None, True),
+    (False, None, True, False, None, True),
+    (None, RuntimeError("failed"), True, False, None, True),
+    (True, None, False, False, None, False),
+    (True, None, True, True, None, False),
+    (True, None, True, False, "12", False),
+])
+def test_open_completion_keeps_popup_visible_without_confirming(result, error, pending, switching, requested_agent, visible):
+    from reminder.client.main import ReminderClient
+
+    client = headless_reminder_client({
+        "is_test": True, "message": "测试提醒", "created_at": "2026-10-10T00:00:00+00:00",
+        "conversation_url": "http://localhost:3000/app/accounts/1/dashboard",
+    })
+    client.state = Mock()
+    client.state.visible.return_value = [{"id": "pending", "version": 1}] if pending else []
+    client.popup = Mock()
+    client.results = Mock()
+    client.next_ring = time.monotonic() + 30
+    client.repeat_seconds = 30
+    client.browser_status = Mock()
+    client.show_detail = Mock()
+    client.tick = ReminderClient.tick.__get__(client)
+    client.results.get_nowait.side_effect = [("browser", result, error), __import__("queue").Empty]
+    client.ui_actions.get_nowait.side_effect = __import__("queue").Empty
+    client.token = ""
+    client.switching = switching
+    client.requested_agent = requested_agent
+    client.browser_bridge = None
+    client.browser_connection = Mock()
+    client.browser_connection.get.return_value = ""
+    client.root = Mock()
+    client.root.after = Mock()
+    client._update_tray = Mock()
+    client.tick()
+    if visible:
+        client.popup.deiconify.assert_called_once()
+        client.popup.attributes.assert_any_call("-topmost", True)
+    else:
+        client.popup.deiconify.assert_not_called()
+    client.popup.withdraw.assert_not_called()
+    client.state.confirm.assert_not_called()
+
+
+@pytest.mark.parametrize("demo, explanation", [(True, "本机演示未连接 ICS"), (False, "未收到 Chatwoot 地址")])
+def test_missing_browser_url_explains_disabled_action(demo, explanation):
+    client = headless_reminder_client({
+        "is_test": True, "message": "测试提醒", "created_at": "2026-10-10T00:00:00+00:00",
+        "conversation_url": "",
+    }, demo=demo)
+    client.show_detail()
+    client.open_button.configure.assert_called_with(text="打开 Chatwoot 工作台", state="disabled")
+    assert explanation in client._set_detail.call_args.args[0]
+    assert explanation in client.browser_status.set.call_args.args[0]
+    client.open_conversation()
+    assert explanation in client.browser_status.set.call_args.args[0]
+    client.browser_executor.submit.assert_not_called()
+    assert not client.browser_busy
 
 
 def isolated_gui_case(name: str) -> bool:
@@ -88,6 +194,10 @@ def test_background_poll_popup_tray_restore_and_shutdown():
             assert root.state() == "withdrawn", "Background poll must not restore the main window"
             assert client.popup.state() == "normal"
             assert client.popup.attributes("-topmost")
+            client.close_popup()
+            root.update()
+            assert client.popup.state() == "normal"
+            assert client.state.confirmations == set()
             assert client.open_button.winfo_ismapped(), "Long messages must not hide action buttons"
             client.popup.geometry("400x300")
             root.update()
@@ -104,11 +214,20 @@ def test_background_poll_popup_tray_restore_and_shutdown():
             client.tick()
             root.update()
             assert root.state() == "normal"
+            second = {**item, "id": "gui-test-2", "message": "第二条提醒"}
+            request.return_value = {"notifications": [item, second], "poll_seconds": 2, "repeat_seconds": 30}
+            client.state.replace([item, second])
+            client.show_popup()
+            root.update()
+            client.confirm()
+            root.update()
+            assert [entry["id"] for entry in client.state.visible()] == ["gui-test-2"]
+            assert client.popup.state() == "normal"
             client.confirm()
             root.update()
             assert client.state.visible() == []
             assert client.popup.state() == "withdrawn"
-            assert ("gui-test", 1) in client.state.confirmations
+            assert {("gui-test", 1), ("gui-test-2", 1)} <= client.state.confirmations
 
             root.iconify()
             root.update()
@@ -138,7 +257,7 @@ def test_browser_lookup_is_async_and_keeps_reminder_unconfirmed():
     release = threading.Event()
     started = threading.Event()
 
-    def open_url(url):
+    def open_url(url, **kwargs):
         started.set()
         assert release.wait(3)
         return True
@@ -167,7 +286,7 @@ def test_browser_lookup_is_async_and_keeps_reminder_unconfirmed():
             while client.browser_busy and time.monotonic() < deadline:
                 root.update()
             assert not client.browser_busy
-            assert client.popup.state() == "withdrawn"
+            assert client.popup.state() == "normal"
             assert client.state.visible() == [item]
             assert client.state.confirmations == set()
         finally:

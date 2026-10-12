@@ -11,7 +11,7 @@ from ics_agent.app.main import app
 from reminder.backend import routes, service
 from reminder.client.state import ReminderState
 from reminder.client.storage import crypt
-from reminder.protocol import conversation_url, handoff_key
+from reminder.protocol import conversation_url, handoff_key, workbench_url
 from tests.test_handoff import _control
 
 
@@ -39,9 +39,14 @@ class ReminderRulesTest(unittest.TestCase):
     def test_url_rejects_credentials_and_uses_public_base(self):
         self.assertEqual(conversation_url("https://support.example", "1", "56"),
                          "https://support.example/app/accounts/1/conversations/56")
+        self.assertEqual(workbench_url("http://localhost:3000/", "1"),
+                         "http://localhost:3000/app/accounts/1/dashboard")
+        self.assertEqual(workbench_url("", "1"), "")
         for url in ("javascript:alert(1)", "https://user:password@example.com", "https://example.com?token=x"):
             with self.assertRaises(ValueError):
                 conversation_url(url, "1", "56")
+            with self.assertRaises(ValueError):
+                workbench_url(url, "1")
 
     def test_assignment_distinguishes_unassigned_from_missing_data(self):
         self.assertEqual(service.assignment({"status": "open", "meta": {"assignee": None}}), ("", "open"))
@@ -54,6 +59,69 @@ class ReminderRulesTest(unittest.TestCase):
         encrypted = crypt(b"test-device-token")
         self.assertNotEqual(encrypted, b"test-device-token")
         self.assertEqual(crypt(encrypted, decrypt=True), b"test-device-token")
+
+
+class ReminderSnapshotTest(unittest.IsolatedAsyncioTestCase):
+    async def test_trial_opens_workbench_and_handoff_keeps_its_conversation(self):
+        test_item = {"id": "test-reminder", "is_test": True, "conversation_id": "test-only",
+                     "agent_id": "11", "state": "pending"}
+        real_item = {**test_item, "id": "real-reminder", "is_test": False, "conversation_id": "56"}
+        repository = Mock()
+        repository.active.return_value = [test_item, real_item]
+        chatwoot = Mock()
+        chatwoot.get_conversation.return_value = {"status": "open", "meta": {"assignee": {"id": 11}}}
+        settings = get_settings().model_copy(update={"chatwoot_public_base_url": "http://localhost:3000"})
+        with (patch.object(service, "get_repository", return_value=repository),
+              patch.object(service, "get_chatwoot_client", return_value=chatwoot),
+              patch.object(service, "get_settings", return_value=settings),
+              patch.object(service, "_locks", {}), patch.object(service, "_last_sync", {})):
+            result = await service.snapshot({"account_id": "1", "agent_id": "11"}, force=True)
+        self.assertEqual([item["conversation_url"] for item in result], [
+            "http://localhost:3000/app/accounts/1/dashboard",
+            "http://localhost:3000/app/accounts/1/conversations/56",
+        ])
+        # 试验提醒只使用账户工作台，不把虚拟会话 ID 发给 Chatwoot。
+        chatwoot.get_conversation.assert_called_once_with(account_id="1", conversation_id="56")
+        repository.synchronize.assert_called_once_with(real_item, "11", "open")
+
+    async def test_one_failed_conversation_does_not_block_other_reminders(self):
+        failed = {"id": "failed", "is_test": False, "conversation_id": "55",
+                  "agent_id": "11", "state": "pending"}
+        healthy = {"id": "healthy", "is_test": False, "conversation_id": "56",
+                   "agent_id": "11", "state": "pending"}
+        repository = Mock()
+        repository.active.return_value = [failed, healthy]
+        chatwoot = Mock()
+        def conversation(**kwargs):
+            if kwargs["conversation_id"] == "55":
+                raise service.ChatwootAPIError("conversation unavailable")
+            return {"status": "open", "meta": {"assignee": {"id": 11}}}
+        chatwoot.get_conversation.side_effect = conversation
+        settings = get_settings().model_copy(update={"chatwoot_public_base_url": "http://localhost:3000"})
+        with (patch.object(service, "get_repository", return_value=repository),
+              patch.object(service, "get_chatwoot_client", return_value=chatwoot),
+              patch.object(service, "get_settings", return_value=settings),
+              patch.object(service, "_locks", {}), patch.object(service, "_last_sync", {})):
+            result = await service.snapshot({"account_id": "1", "agent_id": "11"}, force=True)
+        self.assertEqual([item["id"] for item in result], ["failed", "healthy"])
+        repository.synchronize.assert_called_once_with(healthy, "11", "open")
+
+    async def test_ack_sync_reads_only_target_notification(self):
+        item = {"id": "target", "is_test": False, "conversation_id": "56",
+                "agent_id": "11", "version": 4, "state": "pending"}
+        repository = Mock()
+        repository.active_notification.return_value = item
+        chatwoot = Mock()
+        chatwoot.get_conversation.return_value = {"status": "open", "meta": {"assignee": {"id": 11}}}
+        with (patch.object(service, "get_repository", return_value=repository),
+              patch.object(service, "get_chatwoot_client", return_value=chatwoot),
+              patch.object(service, "_locks", {})):
+            verified = await service.synchronize_notification(
+                {"account_id": "1", "agent_id": "11"}, "target", 4)
+        self.assertTrue(verified)
+        repository.active_notification.assert_called_once_with("1", "target")
+        repository.active.assert_not_called()
+        repository.synchronize.assert_called_once_with(item, "11", "open")
 
 
 class ReminderRoutesTest(unittest.TestCase):
@@ -101,11 +169,22 @@ class ReminderRoutesTest(unittest.TestCase):
 
     def test_stale_acknowledgment_conflicts(self):
         self.repo.authenticate_device.return_value = self.device
-        self.repo.acknowledge.return_value = False
-        with patch.object(routes, "snapshot", new=AsyncMock(return_value=[])):
+        with patch.object(routes, "synchronize_notification", new=AsyncMock(return_value=False)) as synchronize:
             response = self.client.post("/reminder/notifications/notification/ack", json={"version": 1},
                                         headers={"Authorization": "Bearer device-token"})
         self.assertEqual(response.status_code, 409)
+        synchronize.assert_awaited_once_with(self.device, "notification", 1)
+        self.repo.acknowledge.assert_not_called()
+
+    def test_acknowledgment_only_synchronizes_target_notification(self):
+        self.repo.authenticate_device.return_value = self.device
+        self.repo.acknowledge.return_value = True
+        with patch.object(routes, "synchronize_notification", new=AsyncMock(return_value=True)) as synchronize:
+            response = self.client.post("/reminder/notifications/notification/ack", json={"version": 3},
+                                        headers={"Authorization": "Bearer device-token"})
+        self.assertEqual(response.status_code, 200)
+        synchronize.assert_awaited_once_with(self.device, "notification", 3)
+        self.repo.acknowledge.assert_called_once_with(self.device, "notification", 3)
 
 
 class HandoffReminderHookTest(unittest.IsolatedAsyncioTestCase):

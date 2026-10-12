@@ -37,9 +37,10 @@ def main() -> None:
         updates["REMINDER_PLUGIN_PASSWORD_HASH"] = ""
     if not values.get("REMINDER_PLUGIN_SECRET"):
         updates["REMINDER_PLUGIN_SECRET"] = secrets.token_urlsafe(48)
-    for key in ("REMINDER_PLUGIN_ALLOWED_AGENT_IDS", "REMINDER_PLUGIN_SESSION_EXPIRE_SECONDS"):
+    for key in ("REMINDER_PLUGIN_ALLOWED_AGENT_IDS", "REMINDER_PLUGIN_MAX_DEVICES_PER_AGENT",
+                "REMINDER_PLUGIN_SESSION_EXPIRE_SECONDS"):
         if key not in values:
-            updates[key] = "" if key.endswith("IDS") else "3600"
+            updates[key] = "" if key.endswith("IDS") else ("3" if key.endswith("PER_AGENT") else "3600")
     for key, value in updates.items():
         set_key(path, key, value, quote_mode="always", encoding="utf-8")
     print("插件登录配置已保存到项目 .env；密码不显示在终端。重启原 ICS 后生效。")

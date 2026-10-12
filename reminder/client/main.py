@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 import queue
+import sys
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
@@ -25,6 +28,7 @@ from PIL import ImageTk
 
 from reminder.protocol import validate_base_url
 from .browser import BrowserOpenError, open_conversation_url
+from .bridge import BrowserBridge
 from .icons import reminder_icon
 from .instance import SingleInstance
 from .state import ReminderState
@@ -76,8 +80,9 @@ def request(base: str, path: str, *, token: str = "", payload: dict | None = Non
 
 
 class ReminderClient:
-    def __init__(self, root: tk.Tk, *, demo: bool = False) -> None:
+    def __init__(self, root: tk.Tk, *, demo: bool = False, browser_bridge: BrowserBridge | None = None) -> None:
         self.root, self.demo = root, demo
+        self.browser_bridge = browser_bridge
         self.root.title("ICS 客服提醒")
         self.root.geometry("820x720")
         self.root.minsize(740, 560)
@@ -126,6 +131,7 @@ class ReminderClient:
         self.status = tk.StringVar(value="使用提醒插件账号登录，之后可直接切换当前客服席位。")
         self.agent_name = tk.StringVar(value="尚未绑定客服坐席")
         self.browser_status = tk.StringVar(value="拖动窗口边框可调整大小")
+        self.browser_connection = tk.StringVar(value="浏览器插件尚未连接")
 
         self._build_main_window()
         self._build_popup()
@@ -181,6 +187,10 @@ class ReminderClient:
         ctk.CTkButton(footer, text="退出程序", width=90, height=30, fg_color="transparent", border_width=1, border_color="#475569", hover_color="#334155", text_color=MUTED, command=self.quit).pack(side="right")
         self.content = ctk.CTkFrame(outer, fg_color="transparent")
         self.content.pack(fill="both", expand=True, padx=30, pady=(0, 18))
+        plugin = ctk.CTkFrame(outer, fg_color="transparent")
+        plugin.pack(side="bottom", fill="x", padx=30, pady=(0, 12), before=self.content)
+        ctk.CTkLabel(plugin, textvariable=self.browser_connection, text_color=MUTED, font=ctk.CTkFont(size=11)).pack(side="left")
+        ctk.CTkButton(plugin, text="浏览器插件安装说明", width=155, height=30, fg_color=PANEL_2, command=self.open_browser_guide).pack(side="right")
         self.setup = ctk.CTkScrollableFrame(self.content, fg_color=PANEL, corner_radius=14)
         self.setup.pack(fill="both", expand=True)
         self._build_setup()
@@ -245,7 +255,7 @@ class ReminderClient:
         self.popup.resizable(True, True)
         self.popup.configure(fg_color=BG)
         self.popup.attributes("-topmost", True)
-        self.popup.protocol("WM_DELETE_WINDOW", self.popup.withdraw)
+        self.popup.protocol("WM_DELETE_WINDOW", self.close_popup)
         self.popup.withdraw()
         banner = ctk.CTkFrame(self.popup, fg_color="#7f1d1d", corner_radius=0, height=66)
         banner.pack(fill="x")
@@ -260,13 +270,13 @@ class ReminderClient:
         ctk.CTkLabel(actions, textvariable=self.browser_status, text_color=MUTED, font=ctk.CTkFont(size=10), wraplength=360, justify="left").pack(fill="x", pady=(0, 4))
         buttons = ctk.CTkFrame(actions, fg_color="transparent")
         buttons.pack(fill="x")
-        self.open_button = ctk.CTkButton(buttons, text="打开 Chatwoot 会话", width=170, height=32, fg_color=BLUE, hover_color=BLUE_HOVER, command=self.open_conversation)
+        self.open_button = ctk.CTkButton(buttons, text="打开 Chatwoot 工作台", width=190, height=32, fg_color=BLUE, hover_color=BLUE_HOVER, state="disabled", command=self.open_conversation)
         self.open_button.pack(side="left")
         ctk.CTkButton(buttons, text="确认收到", width=110, height=32, fg_color=GREEN, hover_color="#16a34a", command=self.confirm).pack(side="right")
-        self.listbox = tk.Listbox(panel, height=3, exportselection=False, bg="#17233b", fg=TEXT, selectbackground=BLUE, selectforeground="white", relief="flat", highlightthickness=1, highlightbackground="#334b70", font=("Microsoft YaHei UI", 10), activestyle="none")
+        self.listbox = tk.Listbox(panel, height=3, exportselection=False, bg="#17233b", fg=TEXT, selectbackground=BLUE, selectforeground="white", relief="flat", highlightthickness=1, highlightbackground="#334b70", font=("Microsoft YaHei UI", 12), activestyle="none")
         self.listbox.pack(fill="x", pady=(0, 6))
         self.listbox.bind("<<ListboxSelect>>", self.show_detail)
-        self.detail = ctk.CTkTextbox(panel, height=60, fg_color=PANEL, text_color="#dbeafe", font=ctk.CTkFont(size=12), corner_radius=9, wrap="word", state="disabled")
+        self.detail = ctk.CTkTextbox(panel, height=60, fg_color=PANEL, text_color="#dbeafe", font=ctk.CTkFont(size=10), corner_radius=9, wrap="word", state="disabled")
         self.detail.pack(fill="both", expand=True, pady=3)
 
     def _start_tray(self) -> None:
@@ -534,9 +544,13 @@ class ReminderClient:
                     if error:
                         self.browser_status.set(str(error) if isinstance(error, BrowserOpenError) else "打开浏览器失败，请重试。")
                     else:
-                        self.browser_status.set("已在原 Chatwoot 标签页打开会话。" if result else "未找到已登录工作台，已用默认浏览器打开。")
-                        self.popup.withdraw()
+                        self.browser_status.set("已在原 Chatwoot 标签页打开。" if result else "已在连接的浏览器内打开。")
                         self.next_ring = time.monotonic() + self.repeat_seconds
+                    # 打开工作台/会话只负责导航，不代表已确认提醒；弹窗继续保留。
+                    if self.state.visible() and not self.switching and not self.requested_agent:
+                        self.popup.deiconify()
+                        self.popup.lift()
+                        self.popup.attributes("-topmost", True)
                     self.show_detail()
                     continue
                 self.busy = False
@@ -609,6 +623,10 @@ class ReminderClient:
         if self.state.visible() and not self.switching and now >= self.next_ring:
             self.ring()
         self._update_tray()
+        count = self.browser_bridge.connected_count if self.browser_bridge else 0
+        connection = f"浏览器插件已连接 · {count} 个配置文件" if count else "浏览器插件尚未连接"
+        if connection != self.browser_connection.get():
+            self.browser_connection.set(connection)
         self._tick_job = self.root.after(200, self.tick)
 
     def render(self) -> None:
@@ -625,6 +643,7 @@ class ReminderClient:
             self.show_detail()
         else:
             self._set_detail("")
+            self.open_button.configure(state="disabled")
             self.popup.withdraw()
 
     def selected(self) -> dict | None:
@@ -637,8 +656,21 @@ class ReminderClient:
             return
         created = datetime.fromisoformat(item["created_at"])
         minutes = max(0, int((datetime.now(timezone.utc) - created).total_seconds() / 60))
-        self._set_detail(f'等待 {minutes} 分钟\n\n{item["message"] or "客户请求人工协助，请进入会话查看。"}')
-        self.open_button.configure(state="normal" if item.get("conversation_url") and not self.browser_busy else "disabled")
+        detail = f'等待 {minutes} 分钟\n\n{item["message"] or "客户请求人工协助，请进入会话查看。"}'
+        if not item.get("conversation_url"):
+            reason = self._missing_chatwoot_url_message()
+            detail += "\n\n" + reason
+            self.browser_status.set(reason)
+        self._set_detail(detail)
+        self.open_button.configure(
+            text="打开 Chatwoot 工作台",
+            state="normal" if item.get("conversation_url") and not self.browser_busy else "disabled",
+        )
+
+    def _missing_chatwoot_url_message(self) -> str:
+        if self.demo:
+            return "本机演示未连接 ICS，无法打开 Chatwoot。请正常启动客户端并发送试验提醒。"
+        return "未收到 Chatwoot 地址，请检查 ICS 的 Chatwoot 地址配置。"
 
     def _set_detail(self, text: str) -> None:
         self.detail.configure(state="normal")
@@ -671,6 +703,14 @@ class ReminderClient:
         self.popup.deiconify()
         self.popup.lift()
 
+    def close_popup(self) -> None:
+        if self.state.visible():
+            self.browser_status.set("请逐条点击“确认收到”，全部确认后提醒窗口会自动关闭。")
+            self.popup.deiconify()
+            self.popup.lift()
+            return
+        self.popup.withdraw()
+
     def ring(self) -> None:
         self.show_popup()
         self.next_ring = time.monotonic() + self.repeat_seconds
@@ -695,24 +735,36 @@ class ReminderClient:
         if self.browser_busy:
             return
         item = self.selected()
-        if item and item.get("conversation_url"):
+        if not item:
+            self.browser_status.set("请先选择一条提醒。")
+            return
+        if not item.get("conversation_url"):
+            self.browser_status.set(self._missing_chatwoot_url_message())
+            return
+        try:
+            url = validate_base_url(item["conversation_url"])
+        except ValueError:
+            self.browser_status.set("Chatwoot 地址无效，请检查 ICS 的 Chatwoot 公网地址配置。")
+            return
+        self.browser_busy = True
+        self.browser_status.set("正在查找已登录的 Chatwoot 标签页…")
+        self.open_button.configure(state="disabled")
+        future = self.browser_executor.submit(open_conversation_url, url, bridge=self.browser_bridge)
+
+        def done(completed):
             try:
-                url = validate_base_url(item["conversation_url"])
-            except ValueError:
-                self.browser_status.set("会话地址无效，请检查 ICS 的 Chatwoot 公网地址配置。")
-                return
-            self.browser_busy = True
-            self.browser_status.set("正在查找已登录的 Chatwoot 标签页…")
-            self.open_button.configure(state="disabled")
-            future = self.browser_executor.submit(open_conversation_url, url)
+                self.results.put(("browser", completed.result(), None))
+            except Exception as exc:
+                self.results.put(("browser", None, exc))
 
-            def done(completed):
-                try:
-                    self.results.put(("browser", completed.result(), None))
-                except Exception as exc:
-                    self.results.put(("browser", None, exc))
+        future.add_done_callback(done)
 
-            future.add_done_callback(done)
+    def open_browser_guide(self) -> None:
+        guide = (Path(sys.executable).parent / "安装说明.html") if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1] / "docs/browser-extension-install.md"
+        if guide.exists():
+            webbrowser.open(guide.as_uri())
+        else:
+            self.status.set("请使用 ICSReminderSetup.exe 安装客户端和浏览器插件。")
 
     def demo_item(self) -> None:
         value = {"id": uuid4().hex, "version": 1, "is_test": True, "conversation_id": "demo", "customer_name": "试验客户", "message": "本机演示：请切到其他软件，检查置顶窗口和提示音。", "created_at": datetime.now(timezone.utc).isoformat(), "conversation_url": ""}
@@ -766,6 +818,8 @@ class ReminderClient:
             self.tray_icon.stop()
         self.executor.shutdown(wait=False, cancel_futures=True)
         self.browser_executor.shutdown(wait=False, cancel_futures=True)
+        if self.browser_bridge:
+            self.browser_bridge.close()
         self.popup.destroy()
         self.root.destroy()
 
@@ -780,7 +834,16 @@ def main() -> None:
         return
     try:
         root = ctk.CTk()
-        client = ReminderClient(root, demo=args.demo)
+        bridge = None
+        bridge_error = False
+        if not args.demo:
+            try:
+                bridge = BrowserBridge()
+            except Exception:
+                bridge_error = True
+        client = ReminderClient(root, demo=args.demo, browser_bridge=bridge)
+        if bridge_error:
+            client.status.set("浏览器连接组件无法启动；提醒仍可使用，请重新安装客户端。")
         instance.watch(lambda: client.ui_actions.put("show"))
         if args.background and client.token:
             root.after(700, client.hide_window)

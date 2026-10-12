@@ -56,8 +56,11 @@ class ReminderRepository:
                         created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
+                # 插件席位允许多个活动设备；启动时把旧版“一席位唯一设备”索引
+                # 迁移为普通索引。实际数量由插件配置和下方事务内的容量检查控制。
+                connection.execute("DROP INDEX IF EXISTS reminder_device_agent_idx")
                 connection.execute(f"""
-                    CREATE UNIQUE INDEX IF NOT EXISTS reminder_device_agent_idx
+                    CREATE INDEX IF NOT EXISTS reminder_device_agent_idx
                     ON {DEVICES}(account_id, agent_id) WHERE active
                 """)
                 # 兼容已有设备表；旧管理员绑定的凭据仍只能访问原席位。
@@ -89,9 +92,36 @@ class ReminderRepository:
         finally:
             connection.close()
 
+    def _make_plugin_capacity(
+        self, connection: Any, account_id: str, agent_id: str, max_devices: int,
+    ) -> None:
+        """为一台新的/切入的插件设备腾出一个席位。
+
+        调用方已经持有账户级 advisory lock。超过上限时按最后心跳和创建时间
+        选择最旧设备吊销；前 max_devices 台设备可以同时保持有效并收到提醒。
+        """
+        limit = max(1, int(max_devices))
+        row = connection.execute(
+            f"SELECT COUNT(*) FROM {DEVICES} "
+            "WHERE account_id=%s AND agent_id=%s AND auth_kind='plugin' AND active=TRUE",
+            (account_id, agent_id),
+        ).fetchone()
+        revoke_count = max(0, int(row[0]) - limit + 1)
+        if revoke_count:
+            connection.execute(
+                f"""UPDATE {DEVICES} SET active=FALSE WHERE id IN (
+                    SELECT id FROM {DEVICES}
+                    WHERE account_id=%s AND agent_id=%s AND auth_kind='plugin' AND active=TRUE
+                    ORDER BY COALESCE(last_seen_at, created_at), created_at, id
+                    LIMIT %s
+                )""",
+                (account_id, agent_id, revoke_count),
+            )
+
     def bind_device(
         self, account_id: str, agent_id: str, agent_name: str, *,
         auth_kind: str = "admin", auth_version: str = "",
+        max_devices: int | None = None,
     ) -> dict[str, Any]:
         device_id, token = uuid4().hex, secrets.token_urlsafe(32)
         connection = self.connections.acquire()
@@ -99,8 +129,12 @@ class ReminderRepository:
             with connection.transaction():
                 connection.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
                                    (f"reminder:device:{account_id}",))
-                connection.execute(f"UPDATE {DEVICES} SET active=FALSE WHERE account_id=%s AND agent_id=%s",
-                                   (account_id, agent_id))
+                if auth_kind == "plugin" and max_devices is not None:
+                    self._make_plugin_capacity(connection, account_id, agent_id, max_devices)
+                else:
+                    # 管理员绑定保持旧行为：重新绑定会吊销该席位的已有设备。
+                    connection.execute(f"UPDATE {DEVICES} SET active=FALSE WHERE account_id=%s AND agent_id=%s",
+                                       (account_id, agent_id))
                 connection.execute(f"""INSERT INTO {DEVICES}
                     (id, account_id, agent_id, agent_name, token_hash, auth_kind, auth_version)
                     VALUES (%s,%s,%s,%s,%s,%s,%s)""",
@@ -113,11 +147,12 @@ class ReminderRepository:
 
     def switch_device_agent(
         self, device: dict[str, Any], agent_id: str, agent_name: str, expected_version: int,
+        max_devices: int | None = None,
     ) -> dict[str, Any] | None:
         """把同一台共享电脑切换到另一个客服席位。
 
-        切换时会吊销该目标席位在本账户中的其他活动设备，保持原有“一个
-        席位一个有效设备”的安全约束；当前设备凭据本身保持不变。
+        插件设备使用 max_devices 控制目标席位容量；未达到上限时保留所有设备，
+        超过上限时吊销最旧设备。max_devices 为空时保留旧版单设备行为。
         """
         connection = self.connections.acquire()
         try:
@@ -125,18 +160,22 @@ class ReminderRepository:
                 connection.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
                                    (f'reminder:device:{device["account_id"]}',))
                 current = connection.execute(
-                    "SELECT binding_version,auth_kind,auth_version FROM " + DEVICES
+                    "SELECT binding_version,auth_kind,auth_version,agent_id FROM " + DEVICES
                     + " WHERE id=%s AND account_id=%s AND active=TRUE FOR UPDATE",
                     (device["id"], device["account_id"]),
                 ).fetchone()
                 if (current is None or current[0] != expected_version or current[1] != "plugin"
                         or current[2] != device.get("auth_version")):
                     return None
-                connection.execute(
-                    "UPDATE " + DEVICES
-                    + " SET active=FALSE WHERE account_id=%s AND agent_id=%s AND id<>%s",
-                    (device["account_id"], agent_id, device["id"]),
-                )
+                if current[3] != agent_id:
+                    if max_devices is None:
+                        connection.execute(
+                            "UPDATE " + DEVICES
+                            + " SET active=FALSE WHERE account_id=%s AND agent_id=%s AND id<>%s",
+                            (device["account_id"], agent_id, device["id"]),
+                        )
+                    else:
+                        self._make_plugin_capacity(connection, device["account_id"], agent_id, max_devices)
                 updated = connection.execute(
                     "UPDATE " + DEVICES
                     + " SET agent_id=%s, agent_name=%s, binding_version=binding_version+1, "
@@ -246,6 +285,21 @@ class ReminderRepository:
                                           "WHERE account_id=%s AND state IN ('pending','acknowledged','waiting') "
                                           "ORDER BY created_at", (account_id,)).fetchall()
                 return [as_dict(row) for row in rows]
+        finally:
+            connection.close()
+
+    def active_notification(self, account_id: str, notification_id: str) -> dict[str, Any] | None:
+        """读取一条仍可处理的提醒，不执行账户范围的过期清理。"""
+        connection = self.connections.acquire()
+        try:
+            with connection.transaction():
+                row = connection.execute(
+                    f"SELECT {','.join(FIELDS)} FROM {NOTIFICATIONS} "
+                    "WHERE account_id=%s AND id=%s "
+                    "AND state IN ('pending','acknowledged','waiting')",
+                    (account_id, notification_id),
+                ).fetchone()
+                return as_dict(row) if row else None
         finally:
             connection.close()
 

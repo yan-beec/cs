@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ICS 客服提醒安装说明</title>
+<style>
+body{margin:0;background:#0f172a;color:#e2e8f0;font:16px/1.8 "Microsoft YaHei UI",sans-serif;padding:40px 20px}main{max-width:750px;margin:auto;background:#17233b;padding:30px;border-radius:16px}h1{font-size:26px}h2{font-size:20px;margin-top:28px}code,input{background:#0f172a;color:#dbeafe;border:1px solid #475569;border-radius:6px;padding:8px}input{box-sizing:border-box;width:100%;font-size:14px}li{margin:12px 0}a{color:#93c5fd}.note{color:#b7c4d7;font-size:14px}
+</style>
+<main>
+<h1>ICS 客服提醒已安装</h1>
+<p>桌面程序和浏览器连接组件已完成本机配置。首次使用只需在客服使用的浏览器中安装插件，然后填写 Chatwoot 地址。</p>
+<h2>1. 在浏览器加载插件</h2>
+<p class="note">当前为本地测试版，尚未上架浏览器商店。商店发布后，这一步可以改为点击安装。请保留安装目录，插件运行需要其中的文件。</p>
+<ol>
+<li>在实际登录 Chatwoot 的 Chrome/Edge 配置文件中，打开 <code>chrome://extensions</code> 或 <code>edge://extensions</code>。</li>
+<li>打开“开发者模式”，点击“加载已解压的扩展”（Edge 为“加载解压缩的扩展”）。</li>
+<li>选择下面的插件目录，它对应安装时选择的目录：</li>
+</ol>
+<input readonly value="{{EXTENSION_DIR}}" onclick="this.select()" aria-label="插件目录">
+<p class="note">例如安装时选择 D:\ICSReminder，插件目录就是 D:\ICSReminder\extension。请使用本页显示的实际路径。</p>
+<h2>2. 连接 Chatwoot</h2>
+<ol>
+<li>启动“ICS 客服提醒”，按原流程登录提醒账号、选择值班席位。</li>
+<li>打开浏览器插件设置，填写客服浏览器访问的 Chatwoot 地址，点击“保存地址并授权此站点”。协议、主机、端口和部署路径必须与服务端配置的 Chatwoot 公开地址及浏览器实际登录页面一致。</li>
+<li>确认插件显示“已连接桌面提醒程序”。如未连接，先启动桌面客户端，再点击“重新连接”。</li>
+</ol>
+<p class="note">本机开发浏览器打开 http://localhost:3000/app/accounts/1/dashboard 时，插件地址与服务端 CHATWOOT_PUBLIC_BASE_URL 均填写 http://localhost:3000。localhost 只适用于服务就在当前电脑上的测试；其他客服电脑应统一使用能访问服务的局域网或正式公开地址，不能直接照填 localhost。</p>
+<h2>3. 试验页面复用</h2>
+<p>在浏览器登录 Chatwoot，将该标签页切到后台。发送一次试验提醒，点击“打开 Chatwoot 工作台”，应复用原标签并恢复浏览器窗口，无需先创建客户会话。真实提醒也使用“打开 Chatwoot 工作台”按钮，进入对应客户会话。打开页面后提醒弹窗继续显示；多条提醒需逐条点击“确认收到”，最后一条确认后才自动收起。</p>
+<p class="note">插件已连接后仍提示地址不一致时，请核对服务端 CHATWOOT_PUBLIC_BASE_URL、插件地址和浏览器登录地址。localhost、127.0.0.1 和局域网 IP 是不同站点，不能混用。修改服务端配置后重启 ICS，插件重新保存地址并授权，再用相同地址登录 Chatwoot。</p>
+<p class="note">若试验提醒的打开按钮不可点击，请更新服务端、客户端和插件后重新发送试验提醒。旧版试验提醒没有工作台地址；新版按钮为“打开 Chatwoot 工作台”。--demo 仍只演示本地弹窗和声音，不验证登录或浏览器连接。以上是验收步骤，真实浏览器联测仍待完成。</p>
+<p class="note">如果登录过期，先登录后重试；没有工作台页面时会在已连接的浏览器内打开目标地址。插件不在无痕模式工作。每个浏览器配置文件需单独安装和授权。卸载客户端可通过 Windows 应用列表操作；浏览器插件需要在扩展管理页移除。</p>
+<h2>4. 升级、更换目录与卸载</h2>
+<p>升级前从托盘退出提醒程序，并关闭插件所在浏览器。新版安装向导会读取原安装目录，在原目录升级；之后重新加载插件或重启浏览器。</p>
+<p>首次安装可点击“选择安装目录”或直接输入路径。请选择当前 Windows 用户有写入权限的独立程序目录；使用可写目录时无需管理员权限，也不需要 Python 或 Conda。</p>
+<p>如需更换已安装程序的目录，先从 Windows 应用列表卸载，再运行安装包选择新目录。设备登录和席位配置保留在 <code>%APPDATA%\ICSReminder</code>。重装后移除浏览器中的原插件，加载新目录下的 <code>extension</code> 并完成站点授权。不要直接搬动已安装的文件夹。</p>
+<p class="note">卸载向导固定使用程序自身的安装目录，不提供目录修改。</p>
+</main>
+</html>

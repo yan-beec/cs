@@ -15,7 +15,7 @@ from ics_agent.app.chatwoot.client import ChatwootAPIError, get_chatwoot_client
 from ics_agent.app.core.auth import require_admin
 from ics_agent.app.core.config import get_settings
 from .repository import get_repository
-from .service import snapshot
+from .service import snapshot, synchronize_notification
 from .auth import (
     allowed_agents, credentials_version, login as plugin_login, require_plugin,
     validate_plugin_device,
@@ -119,7 +119,8 @@ async def bind_plugin_device(payload: BindRequest) -> dict[str, Any]:
     if target is None:
         raise HTTPException(403, "该坐席不在提醒插件授权范围内。")
     return await asyncio.to_thread(get_repository().bind_device, account_id(), payload.agent_id, target["name"],
-                                   auth_kind="plugin", auth_version=credentials_version(get_settings()))
+                                   auth_kind="plugin", auth_version=credentials_version(get_settings()),
+                                   max_devices=get_settings().reminder_plugin_max_devices_per_agent)
 
 
 @router.get("/reminder/device/agents")
@@ -136,7 +137,8 @@ async def switch_plugin_device(
     if target is None:
         raise HTTPException(403, "该坐席不在提醒插件授权范围内。")
     result = await asyncio.to_thread(get_repository().switch_device_agent, device, payload.agent_id,
-                                   target["name"], payload.binding_version)
+                                   target["name"], payload.binding_version,
+                                   max_devices=get_settings().reminder_plugin_max_devices_per_agent)
     if result is None:
         raise HTTPException(409, "设备席位已变化或凭据失效，请刷新席位列表后重试。")
     return result
@@ -215,9 +217,11 @@ async def acknowledge(
     if device.get("auth_kind") == "plugin" and payload.binding_version != device["binding_version"]:
         raise HTTPException(409, "当前席位已切换，旧席位的确认不能继续提交。")
     try:
-        await snapshot(device, force=True)
+        verified = await synchronize_notification(device, notification_id, payload.version)
     except ChatwootAPIError as exc:
         raise HTTPException(503, "暂时无法核对当前分配，请稍后确认。") from exc
+    if not verified:
+        raise HTTPException(409, "提醒已结束、改派或版本已变化，请刷新列表。")
     accepted = await asyncio.to_thread(get_repository().acknowledge, device, notification_id, payload.version)
     if not accepted:
         raise HTTPException(409, "提醒已结束、改派或版本已变化，请刷新列表。")

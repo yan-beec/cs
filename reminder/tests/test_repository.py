@@ -119,6 +119,22 @@ class ReminderPostgresTest(unittest.TestCase):
         self.assertIsNotNone(self.repo.authenticate_device(second["token"]))
         self.assertFalse(self.repo.revoke_device(second["device_id"], "other-account"))
 
+    def test_plugin_seat_keeps_three_devices_then_revokes_oldest(self):
+        devices = [self.repo.bind_device("1", "11", "张三", auth_kind="plugin",
+                                         auth_version="version", max_devices=3)
+                   for _ in range(3)]
+        for device in devices:
+            self.assertIsNotNone(self.repo.authenticate_device(device["token"]))
+
+        fourth = self.repo.bind_device("1", "11", "张三", auth_kind="plugin",
+                                       auth_version="version", max_devices=3)
+        active = []
+        for device in devices + [fourth]:
+            if self.repo.authenticate_device(device["token"]) is not None:
+                active.append(device)
+        self.assertEqual(len(active), 3)
+        self.assertIn(fourth, active)
+
     def test_legacy_handoff_time_key_and_trial_lifecycle(self):
         self.capture(self.prepare(None))
         self.assertTrue(self.repo.active("1")[0]["source_key"].startswith("at:"))

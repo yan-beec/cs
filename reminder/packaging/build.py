@@ -11,6 +11,7 @@ import argparse
 from pathlib import Path
 import subprocess
 import sys
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -20,6 +21,7 @@ FEATURE = ROOT / "reminder"
 def main() -> None:
     parser = argparse.ArgumentParser(description="构建 ICS Windows 提醒客户端")
     parser.add_argument("--output-dir", type=Path, default=FEATURE / "dist")
+    parser.add_argument("--installer", action="store_true", help="同时构建浏览器连接组件、插件和统一安装包")
     args = parser.parse_args()
     if sys.platform != "win32":
         raise SystemExit("Windows 客户端需要在 Windows 上打包。")
@@ -37,7 +39,6 @@ def main() -> None:
         "--noconfirm", "--clean", "--onefile", "--windowed",
         "--name", "ICSReminder", "--icon", str(icon),
         "--paths", str(ROOT), "--collect-all", "customtkinter",
-        "--add-data", str(FEATURE / "client" / "browser_windows.ps1") + ";reminder/client",
         "--hidden-import", "pystray._win32",
         "--exclude-module", "IPython", "--exclude-module", "matplotlib",
         "--exclude-module", "numpy", "--exclude-module", "pytest",
@@ -48,6 +49,41 @@ def main() -> None:
     ]
     subprocess.run(command, cwd=ROOT, env=environment, check=True)
     print(f"Windows 客户端已生成：{args.output_dir.resolve() / 'ICSReminder.exe'}")
+    if not args.installer:
+        return
+    output = args.output_dir.resolve()
+    host_command = [
+        sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--console",
+        "--name", "ICSBrowserHost", "--paths", str(ROOT),
+        "--distpath", str(output), "--workpath", str(work / "native"), "--specpath", str(work),
+        str(FEATURE / "packaging/native_entrypoint.py"),
+    ]
+    subprocess.run(host_command, cwd=ROOT, env=environment, check=True)
+    extension = FEATURE / "extension"
+    (extension / "icons").mkdir(exist_ok=True)
+    for size in (16, 48, 128):
+        reminder_icon(size=size).save(extension / "icons" / f"{size}.png")
+    extension_files = [path for path in extension.rglob("*") if path.is_file() and "tests" not in path.parts]
+    with zipfile.ZipFile(output / "ICSChatwootExtension.zip", "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in extension_files:
+            archive.write(path, path.relative_to(extension))
+    payload = work / "payload.zip"
+    with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name in ("ICSReminder.exe", "ICSBrowserHost.exe"):
+            archive.write(output / name, name)
+        for path in extension_files:
+            archive.write(path, Path("extension") / path.relative_to(extension))
+        archive.write(FEATURE / "packaging/install-guide.html", "安装说明.html")
+    setup_command = [
+        sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--windowed",
+        "--name", "ICSReminderSetup", "--icon", str(icon), "--paths", str(ROOT),
+        "--collect-all", "customtkinter", "--add-data", str(payload) + ";reminder/packaging",
+        "--exclude-module", "IPython", "--exclude-module", "matplotlib", "--exclude-module", "numpy", "--exclude-module", "pytest",
+        "--distpath", str(output), "--workpath", str(work / "installer"), "--specpath", str(work),
+        str(FEATURE / "packaging/setup_entrypoint.py"),
+    ]
+    subprocess.run(setup_command, cwd=ROOT, env=environment, check=True)
+    print(f"统一安装包已生成：{output / 'ICSReminderSetup.exe'}")
 
 
 if __name__ == "__main__":
