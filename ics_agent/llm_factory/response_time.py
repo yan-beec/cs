@@ -35,7 +35,7 @@ PROMPT2 = '''用户提问：“我给女神发消息要多少钱”
 **回答**：互相关注后文字聊天不收取资费；通话正常支付资费。”
 '''
 # 改为 "PROMPT2" 可测试检索回复；同一轮所有调用都使用相同提示词。
-PROMPT_NAME = "PROMPT"
+PROMPT_NAME = "PROMPT2"
 CONTINUOUS_CALLS = 3  # 首次调用之后，再连续调用的次数。
 LOG_PATH = PROJECT_ROOT / "log" / "llm_response_time.log"
 

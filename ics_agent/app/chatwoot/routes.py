@@ -29,6 +29,7 @@ from ics_agent.app.core.context import (
 )
 from .client import ChatwootAPIError, get_chatwoot_client
 from .state import ConversationControl
+from reminder.backend.service import capture_hook, ensure_notification
 from ics_agent.app.core.logging_config import log_event
 from ics_agent.app.core.models import ChatwootWebhookEvent
 from .payload import (
@@ -1290,6 +1291,9 @@ async def _process_webhook_job_unlocked(
             )
         )
         if control.handoff_required and not handoff_action_retry:
+            if settings.reminder_enabled:
+                # 已完成的原五个步骤不会再进入 _complete_handoff，单独补齐缺失提醒。
+                await asyncio.to_thread(ensure_notification, control)
             log_event(
                 logger,
                 logging.INFO,
@@ -1877,11 +1881,24 @@ async def _complete_handoff(
             conversation_id=conversation_id,
             status="open",
         )
-        await asyncio.to_thread(
+        reminder_options = {}
+        if settings.reminder_enabled:
+            reminder_options["on_mark"] = capture_hook(
+                control, str((event.sender or {}).get("name") or "客户"), content,
+            )
+        marked = await asyncio.to_thread(
             conversation_control_repository.mark_handoff_action,
             account_id=account_id,
             conversation_id=conversation_id,
             action="conversation_updated",
+            **reminder_options,
+        )
+        if marked is False:
+            return _session_suppressed_result("consultation_ended_or_changed")
+    elif settings.reminder_enabled:
+        await asyncio.to_thread(
+            ensure_notification, control,
+            str((event.sender or {}).get("name") or "客户"), content,
         )
     actions["conversation_updated"] = True
     # assignment 成功后仍保留预留，直到 Chatwoot 真正 open；这样并发

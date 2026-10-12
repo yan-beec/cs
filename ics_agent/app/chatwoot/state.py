@@ -971,7 +971,8 @@ class ConversationControlRepository:
         conversation_id: str,
         action: str,
         message_id: str | None = None,
-    ) -> None:
+        on_mark: Callable[[Any, ConversationControl], bool] | None = None,
+    ) -> bool:
         fields = {
             "conversation_updated": "handoff_conversation_updated",
             "label_applied": "handoff_label_applied",
@@ -991,6 +992,13 @@ class ConversationControlRepository:
             with connection.transaction():
                 cursor = connection.cursor()
                 try:
+                    if on_mark is not None:
+                        latest = self._fetch(
+                            cursor, account_id=account_id,
+                            conversation_id=conversation_id, for_update=True,
+                        )
+                        if latest is None or not on_mark(cursor, latest):
+                            return False
                     cursor.execute(
                         f"""
                         UPDATE {CONVERSATION_CONTROL_TABLE}
@@ -1008,6 +1016,8 @@ class ConversationControlRepository:
                     cursor.close()
         finally:
             connection.close()
+
+        return True
 
     def mark_ai_message(
         self,

@@ -90,6 +90,18 @@ class AppSettings(BaseSettings):
     )
     chatwoot_api_timeout: float = Field(default=15.0, gt=0)
 
+    # ICS 桌面提醒试验功能；客户端短轮询，不另起服务。
+    reminder_enabled: bool = False
+    reminder_poll_seconds: int = Field(default=2, ge=1, le=30)
+    reminder_repeat_seconds: int = Field(default=30, ge=5, le=300)
+    # 提醒插件独立登录，不复用 ICS 管理员密码。密码优先使用哈希配置。
+    reminder_plugin_username: str = "reminder"
+    reminder_plugin_password: str = ""
+    reminder_plugin_password_hash: str = ""
+    reminder_plugin_secret: str = ""
+    reminder_plugin_allowed_agent_ids: str = ""
+    reminder_plugin_session_expire_seconds: int = Field(default=3600, ge=300, le=86400)
+
     # 单例管理员初始化和身份认证。
     admin_username: str = "Denpans"
     admin_initial_password: str = ""

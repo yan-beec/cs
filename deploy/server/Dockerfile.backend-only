@@ -30,6 +30,7 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     && python -m pip check
 
 COPY ics_agent ./ics_agent
+COPY reminder ./reminder
 COPY knowledge_base_in ./knowledge_base_in
 
 EXPOSE 3001

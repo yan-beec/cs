@@ -23,6 +23,13 @@ server {
         proxy_pass http://127.0.0.1:3001;
     }
 
+    # 桌面提醒接口：插件独立密码登录、设备凭据轮询及切换席位。
+    # 原 /admin 和 /auth 管理接口仍走 SSH 隧道。
+    location /reminder/ {
+        limit_except GET POST { deny all; }
+        proxy_pass http://127.0.0.1:3001;
+    }
+
     # 复用已有前端，机器人不对外提供 /support-chat 页面。
     # /admin、/auth、/rag/query、/docs、/chatwoot/profile 等不直接向公网开放。
     # 管理和调试通过 SSH 隧道访问应用的本地 3001 端口。

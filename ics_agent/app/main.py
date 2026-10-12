@@ -30,6 +30,8 @@ from .public.routes import router as public_router
 from ics_agent.faq.repositories import ensure_faq_table
 from ics_agent.rag.graph import get_rag_graph
 from ics_agent.rag.memory import get_conversation_memory_manager
+from reminder.backend.routes import router as reminder_router
+from reminder.backend.repository import get_repository as get_reminder_repository
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +75,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
             "事件=应用.Chatwoot联系人静音.初始化失败 错误类型=%s",
             type(exc).__name__,
         )
+
+    if settings.reminder_enabled:
+        # 转人工的成功标记与提醒使用同一事务，先准备增量表再启动队列。
+        await asyncio.to_thread(get_reminder_repository().ensure_table)
+        log_event(logger, logging.INFO, "app.reminder.ready")
 
     await start_chatwoot_webhook_workers()
 
@@ -170,3 +177,4 @@ app.add_middleware(
 app.include_router(public_router)
 app.include_router(admin_router)
 app.include_router(chatwoot_webhook_router)
+app.include_router(reminder_router)

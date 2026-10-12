@@ -3,6 +3,7 @@ services:
     # 本地开发时直接使用工作区源码，修改 Python 文件后自动重载。
     volumes:
       - ./ics_agent:/app/ics_agent:ro
+      - ./reminder:/app/reminder:ro
     command:
       [
         "python",
@@ -10,5 +11,7 @@ services:
         "ics_agent.app.serve",
         "--reload",
         "--reload-dir",
-        "/app/ics_agent"
+        "/app/ics_agent",
+        "--reload-dir",
+        "/app/reminder"
       ]
