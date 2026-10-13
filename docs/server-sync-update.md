@@ -501,7 +501,7 @@ tail -n 120 log/uvicorn-admin.stderr.log
 
 ## 十、本次多渠道版本覆盖升级（首次执行）
 
-适用于服务器已经运行单渠道版本，现在覆盖为兴聊、言聊、星盈通、微信四渠道版本。按 **10.1 → 10.2 → … → 10.8** 顺序执行；源码来源在 10.1 和 10.3 中选择对应的一种方式。命令中的运行目录仍是 `/opt/cs`，SSH 别名仍是 `ics`，应用服务仍是 `ics-agent`。
+适用于服务器已经运行单渠道版本，现在覆盖为兴聊、言聊、星盈通、微信四渠道版本。按 **10.1 → 10.2 → … → 10.8** 顺序执行；源码来源在 10.1 和 10.3 中选择对应的一种方式。**本次跳过备份：10.2 只执行暂停应用的短代码块，然后进入 10.3。源码准备仍需执行，它与备份没有依赖关系。** 命令中的运行目录仍是 `/opt/cs`，SSH 别名仍是 `ics`，应用服务仍是 `ics-agent`。
 
 本次更新后的管理平台名称为“零新智能客服”，左侧管理四个渠道，系统日志单独成页。四个渠道共用回复流程，分别选择自己的 FAQ 表、知识库集合和提示词：
 
@@ -551,17 +551,23 @@ if ($LASTEXITCODE -ne 0) { throw '更新包上传失败。' }
 
 按第二节完成测试、提交并推送 `test` 分支。必须包括 `ics_agent/channels/`、相关后端修改、`database/channels.json`、四个 `prompt_*.md`、解析脚本、部署模板和文档。Git 方式的服务器拉取命令见 10.3，不需要再制作方式 A 的压缩包。
 
-### 10.2 在 Ubuntu 备份并暂停应用
+### 10.2 在 Ubuntu 准备运行目录并暂停应用
 
 先在 Windows 执行 `ssh ics`，以下命令均在 **Ubuntu 服务器** 执行。安排本次维护时间，等待正在处理的机器人请求结束，暂停后台 FAQ/知识库更新。数据库容器保持运行。
 
 ~~~bash
 cd /opt/cs
+mkdir -p deployment-records
+chmod 700 deployment-records
 docker compose -f docker-compose.yml ps -a
-df -h /opt/cs
+docker compose -f docker-compose.yml stop ics-agent
 ~~~
 
-确认 PostgreSQL 为 healthy，并有足够空间保存数据库、原始资料和向量库备份后，执行：
+确认 PostgreSQL 为 healthy。应用此前已停止时，重复执行 stop 也可以。**按本次选择，直接进入 10.3，跳过下面的可选备份。**
+
+#### 可选：另做备份（本次跳过）
+
+仅在需要备份时执行下面的代码块；先确认用户目录有足够空间保存数据库、原始资料和向量库。后续源码准备和更新不依赖此代码块。
 
 ~~~bash
 (
@@ -610,11 +616,13 @@ df -h /opt/cs
 )
 ~~~
 
-只有出现“备份完成”才继续。如果备份或后续构建失败、尚未替换应用容器，可执行 `docker compose -f docker-compose.yml start ics-agent` 恢复旧容器；先处理失败原因，再继续升级。完整备份放在当前服务器用户的 `~/cs-backups/`，位于 Docker 构建目录外；备份中的 `.env` 和数据库包含敏感数据，保留在这个受限目录中。
+选择备份时，只有出现“备份完成”才代表完整备份生成成功。若按本次选择跳过备份，直接进入 10.3。如果需要暂时恢复旧服务、尚未替换应用容器，可执行 `docker compose -f docker-compose.yml start ics-agent`。完整备份放在当前服务器用户的 `~/cs-backups/`，位于 Docker 构建目录外；备份中的 `.env` 和数据库包含敏感数据，保留在这个受限目录中。
 
 部分 FAQ、文档或向量文件由容器以 root 身份写入，`ubuntu` 用户可能无法读取，因此以上打包命令使用 `sudo tar`，归档后将备份文件所有者交回当前用户。若此前普通 `tar` 报 `Cannot open: Permission denied` 或 `Exiting with failure status`，整次备份未完成，生成的 `data-files.tar.gz` 不能当作完整备份。可直接重新执行本节完整备份代码块，它会创建新的时间戳目录；全部归档和校验成功后才打印“备份完成”。
 
 ### 10.3 准备服务器端新版源码（二选一）
+
+`deployment-records/multichannel-source-dir.txt` 由本节生成，用于告诉 10.4、10.5 新版源码在哪里。若报这个文件不存在，说明源码准备尚未完成或记录文件已被移除，请先完成本节所选方式；不要创建空记录文件或直接跳到覆盖代码。
 
 #### 对应方式 A：解压上传包到临时目录
 
@@ -627,11 +635,13 @@ sha256sum ~/cs-multichannel-update.tar.gz
 ~~~bash
 (
   set -e
-  mkdir -p /opt/cs/tmp
+  test -s "$HOME/cs-multichannel-update.tar.gz" || { echo '更新包不存在，请先完成 10.1 方式 A 的上传。'; exit 1; }
+  mkdir -p /opt/cs/deployment-records /opt/cs/tmp
   multi_source_dir=$(mktemp -d /opt/cs/tmp/multichannel-source.XXXXXX)
   tar -xzf ~/cs-multichannel-update.tar.gz -C "$multi_source_dir"
   test -f "$multi_source_dir/deploy/server/Dockerfile.backend-only"
   test -f "$multi_source_dir/database/channels.json"
+  test -f "$multi_source_dir/ics_agent/channels/config.py"
   printf '%s\n' "$multi_source_dir" > /opt/cs/deployment-records/multichannel-source-dir.txt
   sha256sum ~/cs-multichannel-update.tar.gz > /opt/cs/deployment-records/multichannel-package.sha256
   echo "新版源码目录：$multi_source_dir"
@@ -643,6 +653,7 @@ sha256sum ~/cs-multichannel-update.tar.gz
 #### 对应方式 B：拉取 Git 发布版本
 
 ~~~bash
+mkdir -p /opt/cs/deployment-records
 git -C /opt/cs-src status --short
 git -C /opt/cs-src branch --show-current
 ~~~
@@ -658,6 +669,7 @@ git -C /opt/cs-src pull --ff-only https://code-sayu.xingyongshe.com/backend/chat
 
 ~~~bash
 test -f /opt/cs-src/database/channels.json
+test -f /opt/cs-src/ics_agent/channels/config.py
 printf '%s\n' /opt/cs-src > /opt/cs/deployment-records/multichannel-source-dir.txt
 git -C /opt/cs-src rev-parse HEAD > /opt/cs/deployment-records/multichannel-new-source-commit.txt
 ~~~
@@ -669,6 +681,7 @@ git -C /opt/cs-src rev-parse HEAD > /opt/cs/deployment-records/multichannel-new-
 ~~~bash
 (
   set -e
+  test -s /opt/cs/deployment-records/multichannel-source-dir.txt || { echo '请先完成 10.3，生成新版源码目录记录。'; exit 1; }
   multi_source_dir=$(cat /opt/cs/deployment-records/multichannel-source-dir.txt)
   test -f "$multi_source_dir/deploy/server/Dockerfile.backend-only"
   mkdir -p /opt/cs/ics_agent /opt/cs/knowledge_base_in /opt/cs/reminder /opt/cs/deploy /opt/cs/docs
@@ -961,7 +974,9 @@ docker compose -f docker-compose.yml restart ics-agent
 
 ### 10.10 首次升级失败时回滚应用
 
-在尚未通过新后台更新业务资料的验收阶段，可以恢复备份的环境配置并切回旧镜像。10.5 保留了原兴聊文件路径，原 FAQ 表和向量集合也由迁移逻辑保留。
+以下命令适用于已执行 10.2 可选备份、拥有对应旧镜像和 `.env` 记录的情况；本次跳过备份时，不把该步骤作为后续操作。若尚未替换应用容器，可直接 `start ics-agent` 恢复旧容器。
+
+在尚未通过新后台更新业务资料的验收阶段，有备份时可以恢复备份的环境配置并切回旧镜像。10.5 保留了原兴聊文件路径，原 FAQ 表和向量集合也由迁移逻辑保留。
 
 ~~~bash
 (
