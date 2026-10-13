@@ -36,6 +36,7 @@ from .payload import (
     contact_block_change_from_payload,
     contact_blocked_from_payload,
     has_image_attachment,
+    has_video_attachment,
     is_emoji_only_text,
     is_explicit_handoff_request,
     parse_event,
@@ -98,7 +99,9 @@ def _should_process_webhook_event(event: ChatwootWebhookEvent) -> bool:
     if _is_conversation_status_event(event):
         return bool(event.conversation or _conversation_status(event))
     has_text = bool(event.content and event.content.strip())
-    if not has_text and not has_image_attachment(event):
+    if not has_text and not (
+        has_image_attachment(event) or has_video_attachment(event)
+    ):
         return False
     if event.message_type is None:
         return True
@@ -1203,8 +1206,10 @@ async def _process_webhook_job_unlocked(
     thread_id = _webhook_thread_id(event)
     message_at = webhook_message_time(event) or job.received_at
     image_handoff = has_image_attachment(event)
+    video_handoff = has_video_attachment(event)
+    media_handoff = image_handoff or video_handoff
     explicit_handoff = is_explicit_handoff_request(content)
-    handoff_requested = explicit_handoff or image_handoff
+    handoff_requested = explicit_handoff or media_handoff
     control: ConversationControl | None = None
 
     block_result = None
@@ -1330,7 +1335,7 @@ async def _process_webhook_job_unlocked(
                 content=content,
                 notice_message=(
                     IMAGE_HANDOFF_NOTICE_MESSAGE
-                    if image_handoff
+                    if media_handoff
                     else HANDOFF_NOTICE_MESSAGE
                 ),
             )
@@ -1379,6 +1384,8 @@ async def _process_webhook_job_unlocked(
                 reason=(
                     "explicit_keyword"
                     if explicit_handoff
+                    else "video_attachment"
+                    if video_handoff
                     else "image_attachment"
                 ),
                 message_id=message_id,
@@ -1406,7 +1413,7 @@ async def _process_webhook_job_unlocked(
             content=content,
             notice_message=(
                 IMAGE_HANDOFF_NOTICE_MESSAGE
-                if image_handoff
+                if media_handoff
                 else HANDOFF_NOTICE_MESSAGE
             ),
         )

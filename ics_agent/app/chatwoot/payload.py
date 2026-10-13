@@ -124,8 +124,6 @@ _POLITE_SUFFIXES = (
     "处理一下",
     "帮忙",
 )
-_IMAGE_ATTACHMENT_TYPES = {"image"}
-_IMAGE_MIME_PREFIX = "image/"
 _IMAGE_URL_EXTENSIONS = (
     ".png",
     ".jpg",
@@ -135,6 +133,21 @@ _IMAGE_URL_EXTENSIONS = (
     ".webp",
     ".tif",
     ".tiff",
+)
+_VIDEO_URL_EXTENSIONS = (
+    ".mp4",
+    ".m4v",
+    ".mov",
+    ".avi",
+    ".mkv",
+    ".webm",
+    ".3gp",
+    ".3g2",
+    ".mpeg",
+    ".mpg",
+    ".ogv",
+    ".wmv",
+    ".flv",
 )
 
 
@@ -336,6 +349,24 @@ def is_emoji_only_text(value: str) -> bool:
 
 def has_image_attachment(event: ChatwootWebhookEvent) -> bool:
     """判断 Chatwoot 消息是否包含图片附件。"""
+    return _has_media_attachment(
+        event, media_type="image", url_extensions=_IMAGE_URL_EXTENSIONS,
+    )
+
+
+def has_video_attachment(event: ChatwootWebhookEvent) -> bool:
+    """判断 Chatwoot 消息是否包含视频附件。"""
+    return _has_media_attachment(
+        event, media_type="video", url_extensions=_VIDEO_URL_EXTENSIONS,
+    )
+
+
+def _has_media_attachment(
+    event: ChatwootWebhookEvent,
+    *,
+    media_type: str,
+    url_extensions: tuple[str, ...],
+) -> bool:
     payload = event.raw if isinstance(event.raw, Mapping) else {}
     message = payload.get("message")
     message = message if isinstance(message, Mapping) else {}
@@ -347,17 +378,24 @@ def has_image_attachment(event: ChatwootWebhookEvent) -> bool:
         if not isinstance(attachments, list):
             continue
         for attachment in attachments:
-            if _is_image_attachment(attachment):
+            if _is_media_attachment(
+                attachment, media_type=media_type, url_extensions=url_extensions,
+            ):
                 return True
     return False
 
 
-def _is_image_attachment(attachment: Any) -> bool:
+def _is_media_attachment(
+    attachment: Any,
+    *,
+    media_type: str,
+    url_extensions: tuple[str, ...],
+) -> bool:
     if not isinstance(attachment, Mapping):
         return False
 
     file_type = str(attachment.get("file_type") or "").strip().lower()
-    if file_type in _IMAGE_ATTACHMENT_TYPES:
+    if file_type == media_type:
         return True
 
     content_type = str(
@@ -366,15 +404,20 @@ def _is_image_attachment(attachment: Any) -> bool:
         or attachment.get("mimetype")
         or ""
     ).strip().lower()
-    if content_type.startswith(_IMAGE_MIME_PREFIX):
+    mime_prefix = f"{media_type}/"
+    if content_type.startswith(mime_prefix):
         return True
 
-    for key in ("data_url", "thumb_url", "download_url", "url"):
+    # 视频的缩略图通常是图片，只通过原附件地址判断视频类型。
+    url_keys = ("data_url", "download_url", "url")
+    if media_type == "image":
+        url_keys += ("thumb_url",)
+    for key in url_keys:
         value = str(attachment.get(key) or "").strip().lower()
-        if value.startswith(_IMAGE_MIME_PREFIX):
+        if value.startswith(mime_prefix):
             return True
-        path = value.split("?", 1)[0]
-        if path.endswith(_IMAGE_URL_EXTENSIONS):
+        path = value.split("?", 1)[0].split("#", 1)[0]
+        if path.endswith(url_extensions):
             return True
 
     return False

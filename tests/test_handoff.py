@@ -1,8 +1,10 @@
+import json
 import unittest
 from dataclasses import replace
 from unittest.mock import AsyncMock, Mock, call, patch
 
 from ics_agent.app.chatwoot import routes as main
+from ics_agent.app.chatwoot.payload import has_video_attachment, parse_event
 from ics_agent.app.chatwoot.state import ConversationControl
 from ics_agent.app.core.models import ChatwootWebhookEvent
 
@@ -52,25 +54,79 @@ class HandoffIntentTest(unittest.TestCase):
 
 
 class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
-    def test_image_message_without_text_is_processed(self) -> None:
-        event = ChatwootWebhookEvent(
-            event="message_created",
-            id=1200,
-            account={"id": 1},
-            conversation={"id": 56, "account_id": 1},
-            message_type="incoming",
-            content="",
-            raw={
-                "attachments": [
-                    {
-                        "file_type": "image",
-                        "data_url": "https://example.test/photo.jpg",
+    def test_media_message_without_text_is_processed(self) -> None:
+        for media_type in ("image", "video"):
+            with self.subTest(media_type=media_type):
+                event = ChatwootWebhookEvent(
+                    event="message_created",
+                    id=1200,
+                    account={"id": 1},
+                    conversation={"id": 56, "account_id": 1},
+                    message_type="incoming",
+                    content="",
+                    raw={"attachments": [{"file_type": media_type}]},
+                )
+
+                self.assertTrue(main._should_process_webhook_event(event))
+
+    def test_video_attachment_formats_are_processed(self) -> None:
+        attachments = (
+            {"file_type": "video"},
+            {"file_type": " VIDEO "},
+            {"content_type": "video/mp4"},
+            {"mime_type": "video/quicktime"},
+            {"mimetype": " VIDEO/WEBM "},
+            {"file_type": "file", "data_url": "https://example.test/CLIP.MP4?token=123"},
+            {"download_url": "https://example.test/clip.mov#preview"},
+            {"url": "https://example.test/clip.webm"},
+        )
+        for attachment in attachments:
+            for nested in (False, True):
+                with self.subTest(attachment=attachment, nested=nested):
+                    media_payload = {"attachments": [attachment]}
+                    payload = {
+                        "event": "message_created",
+                        "id": 1200,
+                        "account": {"id": 1},
+                        "conversation": {"id": 56, "account_id": 1},
+                        "message_type": "incoming",
+                        "content": "",
+                        **({"message": media_payload} if nested else media_payload),
                     }
-                ]
-            },
+                    event = parse_event(json.dumps(payload).encode())
+
+                    self.assertTrue(has_video_attachment(event))
+                    self.assertTrue(main._should_process_webhook_event(event))
+
+    def test_non_video_attachments_do_not_trigger_video_handoff(self) -> None:
+        payloads = (
+            {},
+            {"attachments": None},
+            {"attachments": "clip.mp4"},
+            {"attachments": [None, "clip.mp4", 123, {}]},
+            {"attachments": [{"file_type": "audio", "content_type": "audio/mpeg", "data_url": "https://example.test/clip.mp3"}]},
+            {"attachments": [{"file_type": "file", "data_url": "https://example.test/clip.mp4.pdf"}]},
+            {"attachments": [{"file_type": "image", "data_url": "https://example.test/photo.jpg"}]},
+            {"attachments": [{"thumb_url": "https://example.test/clip.mp4"}]},
+            {"message": []},
+        )
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                event = ChatwootWebhookEvent(message_type="incoming", raw=payload)
+                self.assertFalse(has_video_attachment(event))
+
+        event = ChatwootWebhookEvent(
+            content="https://example.test/clip.mp4", message_type="incoming",
+        )
+        self.assertFalse(has_video_attachment(event))
+
+    def test_outgoing_video_message_is_ignored(self) -> None:
+        event = ChatwootWebhookEvent(
+            event="message_created", message_type="outgoing", content="",
+            raw={"attachments": [{"file_type": "video"}]},
         )
 
-        self.assertTrue(main._should_process_webhook_event(event))
+        self.assertFalse(main._should_process_webhook_event(event))
 
     async def test_active_handoff_suppresses_ai_reply(self) -> None:
         control = _control(handoff_required=True)
@@ -261,73 +317,54 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
         complete_handoff.assert_awaited_once()
         self.assertEqual(result["route"], "handoff")
 
-    async def test_image_message_requests_handoff_with_image_notice(self) -> None:
-        initial_control = _control(handoff_required=False)
-        handoff_control = _control(handoff_required=True)
-        repository = Mock()
-        repository.record_user_message = Mock(return_value=initial_control)
-        repository.request_handoff = Mock(return_value=(handoff_control, True))
-        event = ChatwootWebhookEvent(
-            event="message_created",
-            id=1205,
-            account={"id": 1},
-            conversation={"id": 56, "account_id": 1, "status": "pending"},
-            message_type="incoming",
-            content="",
-            raw={
-                "attachments": [
-                    {
-                        "file_type": "image",
-                        "data_url": "https://example.test/photo.jpg",
-                    }
-                ]
-            },
+    async def test_media_message_requests_handoff_with_media_notice(self) -> None:
+        cases = (
+            ("image", "", {"file_type": "image"}, "image_attachment"),
+            ("video", "", {"file_type": "video"}, "video_attachment"),
+            ("video_with_text", "请看这段视频", {"file_type": "video"}, "video_attachment"),
+            ("video_with_thumbnail", "", {
+                "data_url": "https://example.test/clip.mp4",
+                "thumb_url": "https://example.test/preview.jpg",
+            }, "video_attachment"),
+            ("explicit_with_video", "转人工", {"file_type": "video"}, "explicit_keyword"),
         )
-        job = main.WebhookJob(event_key="test-image-handoff", event=event)
+        for name, content, attachment, reason in cases:
+            with self.subTest(case=name):
+                initial_control = _control(handoff_required=False)
+                handoff_control = _control(handoff_required=True)
+                repository = Mock()
+                repository.record_user_message.return_value = initial_control
+                repository.request_handoff.return_value = (handoff_control, True)
+                event = ChatwootWebhookEvent(
+                    event="message_created", id=1205, account={"id": 1},
+                    conversation={"id": 56, "account_id": 1, "status": "pending"},
+                    message_type="incoming", content=content,
+                    raw={"attachments": [attachment]},
+                )
+                job = main.WebhookJob(event_key=f"test-{name}-handoff", event=event)
 
-        with (
-            patch.object(
-                main,
-                "conversation_control_repository",
-                repository,
-            ),
-            patch.object(
-                main,
-                "_refresh_handoff_from_chatwoot_status",
-                new=AsyncMock(return_value=initial_control),
-            ),
-            patch.object(
-                main,
-                "_chatwoot_contact_blocked",
-                new=AsyncMock(return_value=False),
-            ),
-            patch.object(
-                main,
-                "_has_available_handoff_agent",
-                new=AsyncMock(return_value=True),
-            ) as has_available_agent,
-            patch.object(
-                main,
-                "_select_handoff_agent",
-                new=AsyncMock(return_value="11"),
-            ),
-            patch.object(
-                main,
-                "_complete_handoff",
-                new=AsyncMock(return_value={"route": "handoff"}),
-            ) as complete_handoff,
-        ):
-            result = await main._process_webhook_job_unlocked(job)
+                with (
+                    patch.object(main, "conversation_control_repository", repository),
+                    patch.object(main, "_refresh_handoff_from_chatwoot_status", AsyncMock(return_value=initial_control)),
+                    patch.object(main, "_chatwoot_contact_blocked", AsyncMock(return_value=False)),
+                    patch.object(main, "_has_available_handoff_agent", AsyncMock(return_value=True)) as has_available_agent,
+                    patch.object(main, "_select_handoff_agent", AsyncMock(return_value="11")),
+                    patch.object(main, "_complete_handoff", AsyncMock(return_value={"route": "handoff"})) as complete_handoff,
+                    patch.object(main, "_build_webhook_answer", AsyncMock()) as answer,
+                    patch.object(main, "settings", main.settings.model_copy(update={"chatwoot_handoff_enabled": True})),
+                ):
+                    result = await main._process_webhook_job_unlocked(job)
 
-        has_available_agent.assert_awaited_once()
-        request_call = repository.request_handoff.call_args.kwargs
-        self.assertEqual(request_call["reason"], "image_attachment")
-        complete_call = complete_handoff.call_args.kwargs
-        self.assertEqual(
-            complete_call["notice_message"],
-            main.IMAGE_HANDOFF_NOTICE_MESSAGE,
-        )
-        self.assertEqual(result["route"], "handoff")
+                has_available_agent.assert_awaited_once()
+                repository.request_handoff.assert_called_once()
+                self.assertEqual(repository.request_handoff.call_args.kwargs["reason"], reason)
+                complete_handoff.assert_awaited_once()
+                self.assertEqual(
+                    complete_handoff.call_args.kwargs["notice_message"],
+                    main.IMAGE_HANDOFF_NOTICE_MESSAGE,
+                )
+                answer.assert_not_awaited()
+                self.assertEqual(result["route"], "handoff")
 
     async def test_complete_handoff_assigns_before_open_and_releases_reservation(
         self,
@@ -515,16 +552,16 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["handoff_reason"], "no_available_agent")
         self.assertEqual(result["chatwoot_reply"]["message_id"], "88")
 
-    async def test_text_and_image_rejections_send_trigger_then_busy_notice(self) -> None:
+    async def test_text_and_media_rejections_send_trigger_then_busy_notice(self) -> None:
         cases = (
             ("no_online_agent", False, False, None, "handoff_no_available_agent"),
             ("availability_unknown", None, False, None, "handoff_no_available_agent"),
             ("capacity_full", True, False, None, "handoff_no_available_agent"),
             ("muted", True, True, "11", "muted_contact"),
         )
-        for image in (False, True):
+        for media_type in (None, "image", "video"):
             for name, available, blocked, selected, expected_route in cases:
-                with self.subTest(image=image, case=name):
+                with self.subTest(media_type=media_type, case=name):
                     control = _control(handoff_required=False)
                     repository = Mock()
                     repository.record_user_message.return_value = control
@@ -533,8 +570,8 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
                     event = ChatwootWebhookEvent(
                         event="message_created", id=1206, account={"id": 1},
                         conversation={"id": 56, "account_id": 1, "status": "pending"},
-                        message_type="incoming", content="" if image else "转人工",
-                        raw={"attachments": [{"file_type": "image"}]} if image else {},
+                        message_type="incoming", content="" if media_type else "转人工",
+                        raw={"attachments": [{"file_type": media_type}]} if media_type else {},
                     )
                     with (
                         patch.object(main, "conversation_control_repository", repository),
@@ -552,7 +589,7 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
                         })),
                     ):
                         result = await main._process_webhook_job_unlocked(
-                            main.WebhookJob(event_key=f"reject-{image}-{name}", event=event),
+                            main.WebhookJob(event_key=f"reject-{media_type}-{name}", event=event),
                         )
 
                     busy_message = main.MUTED_HANDOFF_MESSAGE if blocked else main.HANDOFF_NO_AGENT_MESSAGE
