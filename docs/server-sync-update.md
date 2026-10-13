@@ -582,29 +582,37 @@ df -h /opt/cs
   docker inspect "$multi_previous_container_id" --format '{{.Image}}' > "$multi_backup_dir/previous-image-id.txt"
   docker image tag "$(cat "$multi_backup_dir/previous-image-id.txt")" "ics-agent:rollback-multichannel-$multi_release_tag"
   cp -p .env "$multi_backup_dir/env.backup"
+  sudo -v
 
   docker compose -f docker-compose.yml stop ics-agent
   docker compose -f docker-compose.yml exec -T postgres \
     sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom' \
     > "$multi_backup_dir/postgres.dump"
   test -s "$multi_backup_dir/postgres.dump"
-  tar -czf "$multi_backup_dir/data-files.tar.gz" \
+  docker compose -f docker-compose.yml exec -T postgres \
+    pg_restore --list < "$multi_backup_dir/postgres.dump" > /dev/null
+  sudo tar -czf "$multi_backup_dir/data-files.tar.gz" \
     database knowledge_base_in/output knowledge_base_in/vector_store
 
   multi_code_paths=()
   for path in ics_agent reminder knowledge_base_in deploy docs Dockerfile docker-compose.yml .dockerignore requirements.txt .env.example; do
     if [ -e "$path" ]; then multi_code_paths+=("$path"); fi
   done
-  tar --exclude='__pycache__' --exclude='*.pyc' \
+  sudo tar --exclude='__pycache__' --exclude='*.pyc' \
     --exclude='knowledge_base_in/output' --exclude='knowledge_base_in/vector_store' \
     --exclude='reminder/build' --exclude='reminder/dist' \
     -czf "$multi_backup_dir/previous-code.tar.gz" "${multi_code_paths[@]}"
+  sudo tar -tzf "$multi_backup_dir/data-files.tar.gz" > /dev/null
+  sudo tar -tzf "$multi_backup_dir/previous-code.tar.gz" > /dev/null
+  sudo chown "$(id -u):$(id -g)" "$multi_backup_dir/data-files.tar.gz" "$multi_backup_dir/previous-code.tar.gz"
   chmod 600 "$multi_backup_dir"/*
   echo "备份完成：$multi_backup_dir"
 )
 ~~~
 
 只有出现“备份完成”才继续。如果备份或后续构建失败、尚未替换应用容器，可执行 `docker compose -f docker-compose.yml start ics-agent` 恢复旧容器；先处理失败原因，再继续升级。完整备份放在当前服务器用户的 `~/cs-backups/`，位于 Docker 构建目录外；备份中的 `.env` 和数据库包含敏感数据，保留在这个受限目录中。
+
+部分 FAQ、文档或向量文件由容器以 root 身份写入，`ubuntu` 用户可能无法读取，因此以上打包命令使用 `sudo tar`，归档后将备份文件所有者交回当前用户。若此前普通 `tar` 报 `Cannot open: Permission denied` 或 `Exiting with failure status`，整次备份未完成，生成的 `data-files.tar.gz` 不能当作完整备份。可直接重新执行本节完整备份代码块，它会创建新的时间戳目录；全部归档和校验成功后才打印“备份完成”。
 
 ### 10.3 准备服务器端新版源码（二选一）
 
@@ -680,7 +688,7 @@ git -C /opt/cs-src rev-parse HEAD > /opt/cs/deployment-records/multichannel-new-
 
 ### 10.5 补充渠道框架并复制服务器兴聊资料
 
-此步骤使用服务器现有镜像中的 Python 执行文件复制，不启动 Web 服务。新版提示词和渠道配置来自本次源码；兴聊业务资料来自服务器自己的旧目录。已存在的新目录文件会保留，旧路径也保留，便于回滚。
+此步骤使用服务器现有镜像中的 Python 执行文件复制，不启动 Web 服务。复制进程使用容器 root 身份读取旧资料，避免遇到与备份相同的权限错误；新增文件和目录归当前 Ubuntu 用户所有，便于后续编辑。新版提示词和渠道配置来自本次源码；兴聊业务资料来自服务器自己的旧目录。已存在的新目录文件会保留，旧路径也保留，便于回滚。
 
 ~~~bash
 (
@@ -688,17 +696,29 @@ git -C /opt/cs-src rev-parse HEAD > /opt/cs/deployment-records/multichannel-new-
   cd /opt/cs
   multi_source_dir=$(cat deployment-records/multichannel-source-dir.txt)
   docker compose -f docker-compose.yml run --rm -T --no-deps \
-    --user "$(id -u):$(id -g)" \
+    --user 0:0 \
     --volume "$multi_source_dir/database:/release-database:ro" \
-    --entrypoint python ics-agent - /app/database /release-database <<'PY'
+    --entrypoint python ics-agent - /app/database /release-database "$(id -u)" "$(id -g)" <<'PY'
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
 
 data_dir = Path(sys.argv[1])
 release_dir = Path(sys.argv[2])
+owner_uid, owner_gid = int(sys.argv[3]), int(sys.argv[4])
 channel_keys = ("xingliao", "yanliao", "xingyingtong", "wechat")
+
+def ensure_directory(target):
+    missing = []
+    current = target
+    while not current.exists():
+        missing.append(current)
+        current = current.parent
+    target.mkdir(parents=True, exist_ok=True)
+    for directory in missing:
+        os.chown(directory, owner_uid, owner_gid)
 
 def copy_missing(source, target):
     if target.exists():
@@ -706,15 +726,16 @@ def copy_missing(source, target):
         return
     if not source.is_file():
         raise FileNotFoundError(source)
-    target.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(target.parent)
     shutil.copy2(source, target)
+    os.chown(target, owner_uid, owner_gid)
     print("新增文件：", target)
 
 copy_missing(release_dir / "channels.json", data_dir / "channels.json")
 json.loads((data_dir / "channels.json").read_text(encoding="utf-8"))
 for key in channel_keys:
     channel_dir = data_dir / f"channel_{key}"
-    (channel_dir / "knowledge_base").mkdir(parents=True, exist_ok=True)
+    ensure_directory(channel_dir / "knowledge_base")
     copy_missing(release_dir / f"channel_{key}" / f"prompt_{key}.md",
                  channel_dir / f"prompt_{key}.md")
 
