@@ -383,8 +383,8 @@ Authorization: Bearer <access_token>
 
 打开 `http://127.0.0.1:3001/admin`，使用 `.env` 中的管理员账号登录。后台支持：
 
-- 浏览、上传、预览、下载和删除 `database/knowledge_base` 下的文件。
-- 上传和预览 `database/最新问答对.xlsx`。
+- 浏览、上传、预览、下载和删除 `database/channel_xingliao/knowledge_base` 下的文件。
+- 上传和预览 `database/channel_xingliao/最新问答对.xlsx`。
 - 提交 FAQ 全量更新任务。
 - 提交知识库解析和向量库重建任务。
 - 查看服务进程内的日志缓冲。
@@ -412,10 +412,10 @@ Authorization: Bearer <access_token>
 FAQ 源文件默认是：
 
 ```text
-database/最新问答对.xlsx
+database/channel_xingliao/最新问答对.xlsx
 ```
 
-FAQ 数据会同步到 PostgreSQL 的 `faq_qna_optimized` 表，并在服务进程内生成 BM25 索引和答案字典。达到匹配阈值时直接返回内存中的 FAQ 答案，否则进入 RAG。
+FAQ 数据会同步到 PostgreSQL 的 `faq_channel_xingliao` 表，并在服务进程内生成 BM25 索引和答案字典。达到匹配阈值时直接返回内存中的 FAQ 答案，否则进入 RAG。
 
 FAQ 中的图片建议使用 Markdown：`![图片说明](https://example.com/image.jpg)`。
 为兼容现有资料，机器人发送到 Chatwoot 前会把 HTTP/HTTPS 的 `<img src="...">`
@@ -450,7 +450,7 @@ enabled
 知识库源文件位于：
 
 ```text
-database/knowledge_base/
+database/channel_xingliao/knowledge_base/
 ```
 
 解析流程：
@@ -498,7 +498,7 @@ Authorization: Bearer <access_token>
 训练数据默认由 `RAG_INTENT_DATASET_PATH` 指定，默认值是：
 
 ```text
-database/intent_dataset_4000.csv
+database/channel_xingliao/intent_dataset_4000.csv
 ```
 
 CSV 至少包含 `text`、`label` 和 `label_id` 三列。`label` 和 `label_id`
@@ -521,7 +521,7 @@ python -m ics_agent.rag.intent_classifier.train
 
 ```powershell
 python -m ics_agent.rag.intent_classifier.train `
-  --dataset database\intent_dataset_4000.csv `
+  --dataset database\channel_xingliao\intent_dataset_4000.csv `
   --eval-ratio 0.2 `
   --seed 42
 ```
@@ -597,3 +597,7 @@ database/                   FAQ、知识库和训练数据
 ## 许可证
 
 当前仓库未声明开源许可证。
+
+## 多渠道资源配置
+
+兴聊、言聊、星盈通和微信共用查询流程，分别使用各自的 FAQ 表、知识库和提示词。“零新智能客服”管理后台左侧可进入各渠道的知识库和 FAQ 页面，系统日志使用独立页面。目录、收件箱绑定及导入步骤见 [多渠道使用说明](docs/multi-channel-setup.md)，集中配置见 `database/channels.json`。

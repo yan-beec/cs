@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ics_agent.app.core.logging_config import log_event
+from ics_agent.channels import DEFAULT_CHANNEL, get_channel
 from ics_agent.faq.models import FAQResult
 from ics_agent.faq.service import get_faq_service
 from ics_agent.rag.graph import run_rag_graph
@@ -118,10 +119,11 @@ def _attach_faq_fields(
     return payload
 
 
-async def _query_faq(query: str) -> FAQResult:
+async def _query_faq(query: str, channel_key: str | None = None) -> FAQResult:
     """运行同步 FAQ 服务，同时不阻塞事件循环。"""
     try:
-        return await asyncio.to_thread(get_faq_service().query, query)
+        service = get_faq_service() if channel_key is None else get_faq_service(channel_key)
+        return await asyncio.to_thread(service.query, query)
     except ValueError:
         raise
     except Exception as exc:
@@ -141,6 +143,7 @@ async def run_query(
     query: str,
     *,
     thread_id: str | None = None,
+    channel_key: str | None = None,
 ) -> dict[str, object]:
     """先通过 FAQ、必要时再通过 RAG 执行一次应用查询。
 
@@ -156,7 +159,9 @@ async def run_query(
     if not normalized_query:
         raise ValueError("Query cannot be empty.")
 
-    faq_result = await _query_faq(normalized_query)
+    channel = get_channel(channel_key)
+    channel_options = {} if channel.key == DEFAULT_CHANNEL else {"channel_key": channel.key}
+    faq_result = await _query_faq(normalized_query, **channel_options)
     if (
         faq_result.route == "faq"
         and faq_result.answer is not None
@@ -166,6 +171,7 @@ async def run_query(
                 normalized_query,
                 thread_id=thread_id,
                 answer_override=faq_result.answer,
+                **channel_options,
             )
         payload = _faq_payload(normalized_query, faq_result)
         return _attach_faq_fields(
@@ -185,7 +191,7 @@ async def run_query(
         route="rag",
         faq_route=faq_result.route,
     )
-    rag_state = await run_rag_graph(rag_query, thread_id=thread_id)
+    rag_state = await run_rag_graph(rag_query, thread_id=thread_id, **channel_options)
     payload = _rag_payload(normalized_query, rag_state)
     return _attach_faq_fields(
         payload,

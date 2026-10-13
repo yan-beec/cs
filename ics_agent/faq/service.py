@@ -15,6 +15,7 @@ except ImportError:
         """PostgreSQL 依赖安装前使用的占位类型。"""
 
 from ics_agent.app.core.logging_config import log_event
+from ics_agent.channels import DEFAULT_CHANNEL, get_channel
 
 try:
     from .index import BM25Matcher, JiebaTokenizer
@@ -38,12 +39,12 @@ except ImportError:
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 try:
-    from ics_agent.faq.config import get_faq_settings
+    from ics_agent.faq.config import FAQSettings, get_faq_settings
 except ModuleNotFoundError:
     import sys
 
     sys.path.insert(0, str(PROJECT_ROOT))
-    from ics_agent.faq.config import get_faq_settings
+    from ics_agent.faq.config import FAQSettings, get_faq_settings
 
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,8 @@ class FAQSnapshotSynchronizer:
         self.tokenizer = tokenizer or JiebaTokenizer()
 
     def build_snapshot(self, rows: list[tuple[int, str]]) -> FAQSnapshot:
+        if not rows:
+            return FAQSnapshot(documents=())
         question_ids = [row[0] for row in rows]
         questions = [row[1] for row in rows]
         tokens = self.tokenizer.tokenize_many(questions)
@@ -110,7 +113,10 @@ class FAQService:
         faq_repository: FAQRepository | None = None,
         tokenizer: JiebaTokenizer | None = None,
         synchronizer: FAQSnapshotSynchronizer | None = None,
+        *,
+        settings: FAQSettings | None = None,
     ) -> None:
+        self.settings = settings or get_faq_settings()
         self._lock = threading.Lock()
         self._version_lock = threading.Lock()
         self._update_state_lock = threading.Lock()
@@ -119,7 +125,7 @@ class FAQService:
         self._last_completed_hash: str | None = None
         self._update_statuses: dict[str, str] = {}
         self._initialized = False
-        self._faq_repository = faq_repository or FAQRepository()
+        self._faq_repository = faq_repository or FAQRepository(settings=self.settings)
         self._tokenizer = tokenizer or JiebaTokenizer()
         self._synchronizer = synchronizer or FAQSnapshotSynchronizer(
             faq_repository=self._faq_repository,
@@ -204,8 +210,13 @@ class FAQService:
                 "faq.service.initialize.start",
             )
             try:
-                ensure_faq_table()
+                ensure_faq_table(settings=self.settings)
                 snapshot = self._synchronizer.sync()
+                if not snapshot.documents:
+                    # 尚未导入资料的渠道正常降级到本渠道 RAG，不借用兴聊 FAQ。
+                    self._runtime_version = None
+                    self._initialized = True
+                    return self
                 runtime_answers = self._faq_repository.fetch_answers(
                     snapshot.question_ids
                 )
@@ -313,7 +324,7 @@ class FAQService:
             return FAQResult(route="rag", query=query, rag_query=query)
 
         match = runtime_version.matcher.match(tokens)
-        settings = get_faq_settings()
+        settings = self.settings
         match_threshold = (
             settings.faq_match_threshold if threshold is None else threshold
         )
@@ -399,7 +410,8 @@ class FAQService:
             for record in typed_records
         ):
             raise ValueError("FAQ workbook contains no usable FAQ records.")
-        database_result = FAQQnaSynchronizer().sync(  # type: ignore[arg-type]
+        ensure_faq_table(settings=self.settings)
+        database_result = FAQQnaSynchronizer(settings=self.settings).sync(  # type: ignore[arg-type]
             typed_records
         )
         active_records = [
@@ -463,7 +475,7 @@ class FAQService:
             _records_hash,
         )
 
-        settings = get_faq_settings()
+        settings = self.settings
         source_path = Path(
             workbook_path or settings.faq_source_xlsx_path
         )
@@ -590,11 +602,18 @@ class FAQService:
 
 
 _service: FAQService | None = None
+_channel_services: dict[str, FAQService] = {}
 _service_lock = threading.Lock()
 
 
-def get_faq_service() -> FAQService:
+def get_faq_service(channel_key: str | None = None) -> FAQService:
     global _service
+    key = get_channel(channel_key).key
+    if key != DEFAULT_CHANNEL:
+        with _service_lock:
+            if key not in _channel_services:
+                _channel_services[key] = FAQService(settings=get_faq_settings(key))
+            return _channel_services[key]
     if _service is None:
         with _service_lock:
             if _service is None:

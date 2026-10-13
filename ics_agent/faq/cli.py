@@ -48,7 +48,7 @@ FAQSearchResult = FAQResult
 
 
 def _query_command(args: argparse.Namespace) -> None:
-    service = get_faq_service()
+    service = get_faq_service(args.channel)
     service.initialize(force=args.force_init)
     query = args.query or input("请输入问题：")
     result = service.query(query, threshold=args.threshold)
@@ -68,6 +68,7 @@ def _sync_excel_command(args: argparse.Namespace) -> None:
             args.excel_path,
             sheet_name=args.sheet_name,
             refresh_bm25=args.refresh_runtime,
+            channel_key=args.channel,
         )
     )
     print(
@@ -87,12 +88,14 @@ def build_parser() -> argparse.ArgumentParser:
     query.add_argument("query", nargs="?", help="User question.")
     query.add_argument("--threshold", type=float, default=None)
     query.add_argument("--force-init", action="store_true")
+    query.add_argument("--channel", default="xingliao")
     query.set_defaults(handler=_query_command)
 
     sync_excel = commands.add_parser("sync-excel")
     sync_excel.add_argument("--excel-path", default=None)
     sync_excel.add_argument("--sheet-name", default=None)
     sync_excel.add_argument("--refresh-runtime", action="store_true")
+    sync_excel.add_argument("--channel", default="xingliao")
     sync_excel.set_defaults(handler=_sync_excel_command)
     return parser
 

@@ -19,8 +19,8 @@ if __package__ in {None, ""}:
     if str(_project_root) not in sys.path:
         sys.path.insert(0, str(_project_root))
 
-from ics_agent.app.core.config import PROJECT_ROOT
 from ics_agent.app.core.logging_config import configure_logging, log_event
+from ics_agent.channels import DEFAULT_CHANNEL, get_channel
 from ics_agent.rag.config import RAGSettings, get_rag_settings
 from knowledge_base_in.build_chromadb import (
     BGEM3Embedder,
@@ -33,6 +33,7 @@ from knowledge_base_in.vector_store_lock import vector_store_lock
 
 logger = logging.getLogger(__name__)
 _retriever: DenseRetriever | None = None
+_channel_retrievers: dict[str, DenseRetriever] = {}
 _retriever_lock = Lock()
 
 
@@ -264,6 +265,15 @@ class DenseRetriever:
         """在应用启动期间加载向量模型。"""
         self.embedder.warm_up()
 
+    def _collection_count(self) -> int:
+        """跟随当前渠道的版本指针，并允许未导入资料的集合直接返回空结果。"""
+        with vector_store_lock:
+            active_name = _read_active_collection_name(self.persist_dir, self.collection_name)
+            if active_name != self.active_collection_name:
+                self.collection = self._client.get_collection(name=active_name)
+                self.active_collection_name = active_name
+            return self.collection.count()
+
     def _search_sync(
         self,
         query: str,
@@ -278,6 +288,8 @@ class DenseRetriever:
         if result_limit < 1:
             raise ValueError("top_k must be at least 1.")
 
+        if self._collection_count() < 1:
+            return []
         if query_embedding is None:
             query_embedding = self.embedder.embed([normalized_query])[0]
         with vector_store_lock:
@@ -295,9 +307,7 @@ class DenseRetriever:
                 self.active_collection_name = active_collection_name
             collection_count = self.collection.count()
             if collection_count < 1:
-                raise RuntimeError(
-                    f"ChromaDB collection is empty: {self.collection_name}"
-                )
+                return []
 
             result = self.collection.query(
                 query_embeddings=[query_embedding],
@@ -335,6 +345,10 @@ class DenseRetriever:
         normalized_query = query.strip()
         if not normalized_query:
             raise ValueError("Query cannot be empty.")
+        if top_k is not None and top_k < 1:
+            raise ValueError("top_k must be at least 1.")
+        if await asyncio.to_thread(self._collection_count) < 1:
+            return []
         query_embedding_future = asyncio.get_running_loop().create_future()
         self._embedding_batches.for_current_loop().submit(
             _EmbeddingRequest(
@@ -356,13 +370,28 @@ class DenseRetriever:
         )
 
 
-def get_dense_retriever(*, warm_up: bool = False) -> DenseRetriever:
+def get_dense_retriever(*, warm_up: bool = False, channel_key: str | None = None) -> DenseRetriever:
     """返回进程级稠密检索器单例。"""
     global _retriever
+    key = get_channel(channel_key).key
+    if key != DEFAULT_CHANNEL:
+        with _retriever_lock:
+            if key not in _channel_retrievers:
+                from ics_agent.channels.bootstrap import ensure_vector_collection
+                settings = get_rag_settings(key)
+                ensure_vector_collection(settings)
+                _channel_retrievers[key] = DenseRetriever(settings=settings)
+            retriever = _channel_retrievers[key]
+        if warm_up:
+            retriever.warm_up()
+        return retriever
     if _retriever is None:
         with _retriever_lock:
             if _retriever is None:
-                _retriever = DenseRetriever(settings=get_rag_settings())
+                from ics_agent.channels.bootstrap import ensure_vector_collection
+                settings = get_rag_settings()
+                ensure_vector_collection(settings)
+                _retriever = DenseRetriever(settings=settings)
     if warm_up:
         _retriever.warm_up()
     return _retriever
@@ -373,6 +402,7 @@ def reset_dense_retriever() -> None:
     global _retriever
     with _retriever_lock:
         _retriever = None
+        _channel_retrievers.clear()
 
 
 def main() -> None:

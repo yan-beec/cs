@@ -1,0 +1,56 @@
+{
+  "channels": [
+    {
+      "key": "xingliao",
+      "name": "兴聊",
+      "faq_table": "faq_channel_xingliao",
+      "kb_collection": "kb_channel_xingliao",
+      "prompt_name": "prompt_xingliao",
+      "faq_workbook": "database/channel_xingliao/最新问答对.xlsx",
+      "knowledge_dir": "database/channel_xingliao/knowledge_base",
+      "chunks_path": "knowledge_base_in/output/chunks.jsonl",
+      "prompt_path": "database/channel_xingliao/prompt_xingliao.md",
+      "inboxes": [{"account_id": 1, "inbox_id": 3}],
+      "website_token": ""
+    },
+    {
+      "key": "yanliao",
+      "name": "言聊",
+      "faq_table": "faq_channel_yanliao",
+      "kb_collection": "kb_channel_yanliao",
+      "prompt_name": "prompt_yanliao",
+      "faq_workbook": "database/channel_yanliao/最新问答对.xlsx",
+      "knowledge_dir": "database/channel_yanliao/knowledge_base",
+      "chunks_path": "knowledge_base_in/output/channel_yanliao/chunks.jsonl",
+      "prompt_path": "database/channel_yanliao/prompt_yanliao.md",
+      "inboxes": [{"account_id": 1, "inbox_id": 6}],
+      "website_token": ""
+    },
+    {
+      "key": "xingyingtong",
+      "name": "星盈通",
+      "faq_table": "faq_channel_xingyingtong",
+      "kb_collection": "kb_channel_xingyingtong",
+      "prompt_name": "prompt_xingyingtong",
+      "faq_workbook": "database/channel_xingyingtong/最新问答对.xlsx",
+      "knowledge_dir": "database/channel_xingyingtong/knowledge_base",
+      "chunks_path": "knowledge_base_in/output/channel_xingyingtong/chunks.jsonl",
+      "prompt_path": "database/channel_xingyingtong/prompt_xingyingtong.md",
+      "inboxes": [{"account_id": 1, "inbox_id": 7}],
+      "website_token": ""
+    },
+    {
+      "key": "wechat",
+      "name": "微信",
+      "faq_table": "faq_channel_wechat",
+      "kb_collection": "kb_channel_wechat",
+      "prompt_name": "prompt_wechat",
+      "faq_workbook": "database/channel_wechat/最新问答对.xlsx",
+      "knowledge_dir": "database/channel_wechat/knowledge_base",
+      "chunks_path": "knowledge_base_in/output/channel_wechat/chunks.jsonl",
+      "prompt_path": "database/channel_wechat/prompt_wechat.md",
+      "inboxes": [{"account_id": 1, "inbox_id": 4}],
+      "website_token": ""
+    }
+  ]
+}

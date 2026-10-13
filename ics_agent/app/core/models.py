@@ -3,6 +3,8 @@
 from typing import Any
 
 from pydantic import BaseModel, Field
+from pydantic import field_validator
+from ics_agent.channels import get_channel
 
 
 class ChatwootWebhookEvent(BaseModel):
@@ -22,6 +24,12 @@ class RAGQueryRequest(BaseModel):
 
     query: str = Field(min_length=1, max_length=4096)
     thread_id: str | None = Field(default=None, min_length=1, max_length=256)
+    channel_key: str = "xingliao"
+
+    @field_validator("channel_key")
+    @classmethod
+    def validate_channel(cls, value: str) -> str:
+        return get_channel(value).key
 
 
 class AdminLoginRequest(BaseModel):

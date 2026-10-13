@@ -15,6 +15,7 @@ from typing import Any
 from ics_agent.app.core.config import PROJECT_ROOT
 from ics_agent.app.core.logging_config import log_event
 from ics_agent.rag.config import RAGSettings, get_rag_settings
+from ics_agent.channels import DEFAULT_CHANNEL, get_channel
 
 
 logger = logging.getLogger(__name__)
@@ -60,7 +61,8 @@ def _fingerprint_directory(source_dir: Path) -> str:
 
     digest = hashlib.sha256()
     files = sorted(
-        (path for path in source_dir.rglob("*") if path.is_file()),
+        (path for path in source_dir.rglob("*")
+         if path.is_file() and not path.name.startswith(".")),
         key=lambda path: path.relative_to(source_dir).as_posix().lower(),
     )
     if not files:
@@ -258,12 +260,19 @@ class KnowledgeBaseUpdateManager:
 
 
 _manager: KnowledgeBaseUpdateManager | None = None
+_channel_managers: dict[str, KnowledgeBaseUpdateManager] = {}
 _manager_lock = threading.Lock()
 
 
-def get_knowledge_base_update_manager() -> KnowledgeBaseUpdateManager:
+def get_knowledge_base_update_manager(channel_key: str | None = None) -> KnowledgeBaseUpdateManager:
     """返回进程级知识库更新管理器。"""
     global _manager
+    key = get_channel(channel_key).key
+    if key != DEFAULT_CHANNEL:
+        with _manager_lock:
+            if key not in _channel_managers:
+                _channel_managers[key] = KnowledgeBaseUpdateManager(get_rag_settings(key))
+            return _channel_managers[key]
     if _manager is None:
         with _manager_lock:
             if _manager is None:

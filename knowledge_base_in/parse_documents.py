@@ -898,7 +898,7 @@ def parse_knowledge_base(
         (
             path
             for path in source_dir.rglob("*")
-            if path.is_file()
+            if path.is_file() and not path.name.startswith(".")
         ),
         key=lambda path: str(path).lower(),
     )
@@ -1085,9 +1085,13 @@ async def parse_and_update_vector_store(
 
 
 def main() -> None:
-    settings = get_rag_settings()
+    channel_parser = argparse.ArgumentParser(add_help=False)
+    channel_parser.add_argument("--channel", default="xingliao")
+    channel_args, _ = channel_parser.parse_known_args()
+    settings = get_rag_settings(channel_args.channel)
     parser = argparse.ArgumentParser(
         description="Recursively parse and chunk the knowledge base.",
+        parents=[channel_parser],
     )
     parser.add_argument(
         "--input-dir",

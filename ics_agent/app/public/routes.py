@@ -11,6 +11,8 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
+from ics_agent.channels import DEFAULT_CHANNEL, get_channel
+from ics_agent.channels.http import channel_query
 
 from ics_agent.app.core.context import settings
 from ics_agent.app.core.auth import AdminPrincipal, require_admin
@@ -43,6 +45,7 @@ def chatwoot_profile(
     email: str | None = Query(default=None, max_length=320),
     phone_number: str | None = Query(default=None, max_length=64),
     avatar_url: str | None = Query(default=None, max_length=2048),
+    channel_key: str = Depends(channel_query),
 ) -> JSONResponse:
     """为 Website Widget 生成稳定的 Chatwoot 用户身份。
 
@@ -56,7 +59,10 @@ def chatwoot_profile(
         )
 
     clean_identifier = identifier.strip()
-    hmac_token = settings.chatwoot_hmac_token.strip()
+    hmac_token = (
+        settings.chatwoot_hmac_token if channel_key == DEFAULT_CHANNEL
+        else settings.chatwoot_channel_hmac_tokens.get(channel_key, "")
+    ).strip()
     if not hmac_token:
         raise HTTPException(
             status_code=503,
@@ -112,7 +118,7 @@ def support_chat_page() -> FileResponse:
 
 
 @router.get("/support-chat/config", include_in_schema=False)
-def support_chat_config(request: Request) -> JSONResponse:
+def support_chat_config(request: Request, channel_key: str = Depends(channel_query)) -> JSONResponse:
     """返回浏览器侧客服页所需的公网 Chatwoot 配置。"""
     public_base_url = settings.chatwoot_public_base_url.strip()
     if not public_base_url:
@@ -122,6 +128,8 @@ def support_chat_config(request: Request) -> JSONResponse:
         content={
             "chatwoot_base_url": public_base_url,
             "profile_endpoint": "/chatwoot/profile",
+            "channel_key": channel_key,
+            "website_token": get_channel(channel_key).website_token,
         },
     )
 
@@ -133,6 +141,7 @@ async def rag_query(payload: RAGQueryRequest) -> JSONResponse:
         result = await _run_rag_query(
             payload.query,
             thread_id=payload.thread_id,
+            **({} if payload.channel_key == DEFAULT_CHANNEL else {"channel_key": payload.channel_key}),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -155,6 +164,7 @@ async def rag_query(payload: RAGQueryRequest) -> JSONResponse:
 @router.post("/faq/update")
 async def update_faq(
     file: UploadFile = File(...),
+    channel_key: str = Depends(channel_query),
     _: AdminPrincipal = Depends(require_admin),
 ) -> JSONResponse:
     """提交 FAQ 工作簿，执行非阻塞后台替换。"""
@@ -176,7 +186,7 @@ async def update_faq(
             while chunk := await file.read(1024 * 1024):
                 await asyncio.to_thread(temporary_file.write, chunk)
 
-        status = await get_faq_service().submit_excel_refresh(temporary_path)
+        status = await get_faq_service(channel_key).submit_excel_refresh(temporary_path)
     except FAQUpdateInProgress as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (ValueError, FileNotFoundError) as exc:
@@ -215,10 +225,11 @@ async def update_faq(
 @router.get("/faq/update/{job_id}")
 async def faq_update_status(
     job_id: str,
+    channel_key: str = Depends(channel_query),
     _: AdminPrincipal = Depends(require_admin),
 ) -> JSONResponse:
     """返回已提交 FAQ 工作簿更新任务的状态。"""
-    status = get_faq_service().get_update_status(job_id)
+    status = get_faq_service(channel_key).get_update_status(job_id)
     if status is None:
         raise HTTPException(status_code=404, detail="FAQ update job not found.")
     return JSONResponse(
@@ -233,11 +244,12 @@ async def faq_update_status(
 @router.post("/knowledge-base/update")
 async def update_knowledge_base(
     force: bool = False,
+    channel_key: str = Depends(channel_query),
     _: AdminPrincipal = Depends(require_admin),
 ) -> JSONResponse:
     """提交知识库全量解析和 ChromaDB 重建任务。"""
     try:
-        status = await get_knowledge_base_update_manager().submit_full_update(
+        status = await get_knowledge_base_update_manager(channel_key).submit_full_update(
             force=force,
         )
     except KnowledgeBaseUpdateInProgress as exc:
@@ -267,10 +279,11 @@ async def update_knowledge_base(
 @router.get("/knowledge-base/update/{job_id}")
 async def knowledge_base_update_status(
     job_id: str,
+    channel_key: str = Depends(channel_query),
     _: AdminPrincipal = Depends(require_admin),
 ) -> JSONResponse:
     """返回知识库重建任务的状态和结果。"""
-    status = get_knowledge_base_update_manager().get_status(job_id)
+    status = get_knowledge_base_update_manager(channel_key).get_status(job_id)
     if status is None:
         raise HTTPException(
             status_code=404,

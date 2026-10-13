@@ -95,7 +95,7 @@ def file_item(root: Path, path: Path) -> dict[str, object]:
 def list_files(root: Path) -> list[dict[str, object]]:
     root = _ensure_root(root)
     files = sorted(
-        (path for path in root.rglob("*") if path.is_file()),
+        (path for path in root.rglob("*") if path.is_file() and not path.name.startswith(".")),
         key=lambda path: relative_name(root, path).casefold(),
     )
     return [file_item(root, path) for path in files]
@@ -196,9 +196,11 @@ def knowledge_file_preview(
 
 def faq_workbook_preview(
     settings: Settings | None = None,
+    *,
+    channel_key: str | None = None,
 ) -> dict[str, object]:
     """读取配置的 FAQ 工作簿，并转换为浏览器可安全使用的表格数据。"""
-    path = faq_file_path(settings)
+    path = faq_file_path(settings, channel_key=channel_key)
     if not path.is_file():
         raise FileNotFoundError(path)
     if path.stat().st_size > MAX_PREVIEW_BYTES:
@@ -233,21 +235,21 @@ def faq_workbook_preview(
     }
 
 
-def faq_file_path(settings: Settings | None = None) -> Path:
-    path = resolve_project_path(get_faq_settings().faq_source_xlsx_path)
+def faq_file_path(settings: Settings | None = None, *, channel_key: str | None = None) -> Path:
+    path = resolve_project_path(get_faq_settings(channel_key).faq_source_xlsx_path)
     if path.suffix.lower() != ".xlsx":
         raise AdminFileOperationError("FAQ 文件配置必须是 .xlsx 文件。")
     return path
 
 
-def knowledge_base_root(settings: Settings | None = None) -> Path:
+def knowledge_base_root(settings: Settings | None = None, *, channel_key: str | None = None) -> Path:
     return resolve_project_path(
-        get_rag_settings().knowledge_base_input_dir
+        get_rag_settings(channel_key).knowledge_base_input_dir
     )
 
 
-def faq_file_info(settings: Settings | None = None) -> dict[str, object]:
-    path = faq_file_path(settings)
+def faq_file_info(settings: Settings | None = None, *, channel_key: str | None = None) -> dict[str, object]:
+    path = faq_file_path(settings, channel_key=channel_key)
     if not path.exists():
         return {
             "name": path.name,

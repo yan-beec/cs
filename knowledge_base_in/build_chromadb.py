@@ -770,9 +770,13 @@ def build_chromadb(
 
 
 def main() -> None:
-    settings = get_rag_settings()
+    channel_parser = argparse.ArgumentParser(add_help=False)
+    channel_parser.add_argument("--channel", default="xingliao")
+    channel_args, _ = channel_parser.parse_known_args()
+    settings = get_rag_settings(channel_args.channel)
     parser = argparse.ArgumentParser(
         description="Embed knowledge-base chunks with local BGE-M3 and write them to ChromaDB.",
+        parents=[channel_parser],
     )
     parser.add_argument(
         "--chunks",

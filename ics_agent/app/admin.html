@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>兴聊智能客服管理后台</title>
+  <title>零新智能客服</title>
   <style>
     :root {
       --ink: #172033;
@@ -92,6 +92,10 @@
       padding: 22px 14px;
       background: var(--sidebar);
       color: #fff;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
     }
     .brand-block { padding: 0 10px; }
     .sidebar-title { font-size: 16px; font-weight: 800; }
@@ -115,7 +119,8 @@
       background: #32d583;
       box-shadow: 0 0 0 3px rgba(50, 213, 131, .15);
     }
-    .nav { display: grid; gap: 4px; }
+    .nav { display: grid; gap: 20px; }
+    .nav-group, .channel-nav { display: grid; gap: 6px; }
     .nav-label {
       padding: 0 10px 6px;
       color: #667085;
@@ -133,8 +138,25 @@
       background: transparent;
       font-size: 13px;
       font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 10px;
     }
     .nav-item:hover, .nav-item.active { color: #fff; background: var(--sidebar-soft); }
+    .nav-item.active { box-shadow: inset 3px 0 var(--blue); }
+    .nav-item:disabled { cursor: wait; opacity: .55; }
+    .nav-icon {
+      display: grid;
+      place-items: center;
+      flex: 0 0 30px;
+      height: 30px;
+      border: 1px solid rgba(255, 255, 255, .12);
+      border-radius: 7px;
+      color: #98a2b3;
+      font-size: 12px;
+    }
+    .nav-item.active .nav-icon { color: #93c5fd; background: rgba(37, 99, 235, .14); }
+    .nav-item small { display: block; margin-top: 4px; color: #98a2b3; font-size: 11px; font-weight: 400; }
     .sidebar-footer { display: grid; gap: 10px; margin-top: auto; }
     .user-chip { padding: 0 10px; color: #d0d5dd; font-size: 12px; }
 
@@ -213,7 +235,7 @@
 
     .stats {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 10px;
       margin-bottom: 14px;
     }
@@ -267,6 +289,7 @@
       background: #fcfcfd;
     }
     .panel-footer .hint { margin: 0; }
+    .panel-footer .button { flex-shrink: 0; white-space: nowrap; }
     .hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
     .tag {
       display: inline-flex;
@@ -328,7 +351,7 @@
       white-space: nowrap;
     }
     .file-summary-meta { color: var(--muted); font-size: 11px; }
-    .file-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+    .file-actions { display: flex; flex-wrap: wrap; gap: 6px; flex-shrink: 0; }
 
     .table-wrap { overflow: auto; max-height: 440px; }
     table { width: 100%; min-width: 660px; border-collapse: collapse; }
@@ -353,11 +376,10 @@
     .row-actions { display: flex; flex-wrap: wrap; gap: 5px; }
     .empty { padding: 24px 16px; color: var(--muted); text-align: center; font-size: 13px; }
 
-    .logs-panel { margin-top: 14px; }
     .log-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
     .log-list {
-      min-height: 230px;
-      max-height: 290px;
+      min-height: 360px;
+      height: calc(100vh - 270px);
       overflow: auto;
       padding: 12px 14px;
       background: #101828;
@@ -441,10 +463,14 @@
     }
     @media (max-width: 800px) {
       .app-shell { grid-template-columns: 1fr; }
-      .sidebar { gap: 14px; padding: 14px 16px; }
+      .sidebar { position: static; height: auto; gap: 14px; padding: 14px 16px; }
       .sidebar-status { margin: 0 10px; }
-      .nav { display: none; }
-      .sidebar-footer { margin-top: 0; }
+      .nav { gap: 12px; }
+      .channel-nav { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .channel-nav .nav-item { padding: 9px; }
+      .channel-nav .nav-icon { display: none; }
+      .channel-nav small { display: none; }
+      .sidebar-footer { margin-top: 0; display: flex; align-items: center; justify-content: space-between; }
       .topbar { padding: 13px 16px; }
       .content { padding: 18px 16px 28px; }
       .workspace-heading { align-items: flex-start; flex-direction: column; }
@@ -452,6 +478,7 @@
     }
     @media (max-width: 560px) {
       .login-panel { padding: 24px; }
+      .channel-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .stats { grid-template-columns: 1fr; }
       .topbar { align-items: flex-start; flex-direction: column; }
       .topbar-actions { width: 100%; justify-content: space-between; }
@@ -465,8 +492,8 @@
 <body>
   <section id="loginScreen" class="screen login-screen">
     <form id="loginForm" class="login-panel">
-      <div class="brand-mark">兴</div>
-      <h1>系统管理后台</h1>
+      <div class="brand-mark">零</div>
+      <h1>零新智能客服</h1>
       <p class="subtitle">登录后管理知识库、FAQ 数据和系统运行日志</p>
       <div class="field">
         <label for="username">管理员账号</label>
@@ -485,13 +512,22 @@
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand-block">
-          <div class="sidebar-title">兴聊智能客服</div>
-          <div class="sidebar-subtitle">内容与运行管理</div>
+          <div class="sidebar-title">零新智能客服</div>
+          <div class="sidebar-subtitle">多渠道客服管理平台</div>
         </div>
-        <div class="sidebar-status"><span class="status-dot"></span><span>服务已连接</span></div>
+        <div class="sidebar-status"><span class="status-dot"></span><span id="sidebarStatus">正在连接服务...</span></div>
         <nav class="nav" aria-label="后台导航">
-          <div class="nav-label">工作区</div>
-          <button class="nav-item active" type="button">内容管理与日志</button>
+          <div class="nav-group">
+            <div class="nav-label">渠道管理</div>
+            <div id="channelNav" class="channel-nav"></div>
+          </div>
+          <div class="nav-group">
+            <div class="nav-label">系统管理</div>
+            <button id="logsNav" class="nav-item" type="button">
+              <span class="nav-icon" aria-hidden="true">志</span>
+              <span>系统日志<small>查看全部渠道的运行日志</small></span>
+            </button>
+          </div>
         </nav>
         <div class="sidebar-footer">
           <div id="userChip" class="user-chip">管理员</div>
@@ -502,20 +538,21 @@
       <main class="main">
         <header class="topbar">
           <div class="topbar-heading">
-            <h2>内容管理与日志</h2>
-            <span class="topbar-context">更新内容、检查文件、观察服务状态</span>
+            <h2 id="pageTitle">渠道内容管理</h2>
+            <span id="pageContext" class="topbar-context">知识库与 FAQ 问答对</span>
           </div>
           <div class="topbar-actions">
             <span id="connectionStatus" class="connection-status">正在连接服务...</span>
-            <button id="refreshAll" class="button secondary" type="button">刷新全部</button>
+            <button id="refreshAll" class="button secondary" type="button">刷新当前页</button>
           </div>
         </header>
 
         <div class="content">
+          <section id="channelPage" aria-label="渠道内容管理">
           <div class="workspace-heading">
             <div>
-              <h3>系统工作台</h3>
-              <p>高风险更新操作会在执行前要求确认，上传文件不会自动触发全量更新。</p>
+              <h3 id="channelHeading">兴聊渠道</h3>
+              <p>分别管理当前渠道的知识文档和问答表，上传后点击更新即可生效。</p>
             </div>
             <div class="toolbar-actions">
               <span class="tag green">管理员已登录</span>
@@ -532,10 +569,6 @@
               <div><div class="stat-label">FAQ 问答文件</div><div id="faqState" class="stat-value">-</div></div>
               <div id="faqStatMeta" class="stat-meta">等待读取</div>
             </div>
-            <div class="stat">
-              <div><div class="stat-label">日志缓冲</div><div id="logCount" class="stat-value">-</div></div>
-              <div class="stat-meta">实时同步</div>
-            </div>
           </div>
 
           <div class="content-grid">
@@ -543,7 +576,7 @@
               <div class="panel-header">
                 <div class="panel-heading">
                   <h3>知识库</h3>
-                  <p>database/knowledge_base</p>
+                  <p>当前所选渠道的知识文档</p>
                 </div>
                 <div class="toolbar-actions">
                   <span id="knowledgeFileCount" class="tag green">0 个文件</span>
@@ -568,7 +601,7 @@
               <div class="panel-header">
                 <div class="panel-heading">
                   <h3>FAQ 问答对</h3>
-                  <p>database/最新问答对.xlsx</p>
+                  <p>当前所选渠道的 Excel 问答表</p>
                 </div>
                 <span id="faqTag" class="tag amber">检查中</span>
               </div>
@@ -595,19 +628,29 @@
               </div>
             </section>
           </div>
+          </section>
 
-          <section class="panel logs-panel">
+          <section id="logsPage" class="hidden" aria-label="系统日志">
+            <div class="workspace-heading">
+              <div>
+                <h3>系统运行日志</h3>
+                <p>集中查看全部渠道的服务日志，每 2 秒自动同步。</p>
+              </div>
+              <span id="logMessage" class="hint" role="status">正在读取日志...</span>
+            </div>
+          <section class="panel">
             <div class="panel-header">
               <div class="panel-heading">
-                <h3>系统日志</h3>
-                <p>当前服务进程的实时日志状态</p>
+                <h3>实时日志</h3>
+                <p>当前服务进程 · 已显示 <span id="logCount">0</span> 条</p>
               </div>
               <div class="log-toolbar">
-                <span class="tag green">实时同步中</span>
+                <span id="logSyncStatus" class="tag green">实时同步中</span>
                 <button id="logClear" class="button tertiary" type="button">清空显示</button>
               </div>
             </div>
             <div id="logList" class="log-list"></div>
+          </section>
           </section>
         </div>
       </main>
@@ -627,24 +670,67 @@
 
   <script>
     const state = {
+      channelKey: "xingliao",
+      view: "channel",
+      route: "#channel/xingliao",
+      channels: [
+        { key: "xingliao", name: "兴聊" },
+        { key: "yanliao", name: "言聊" },
+        { key: "xingyingtong", name: "星盈通" },
+        { key: "wechat", name: "微信" }
+      ],
+      contentVersion: 0,
+      pendingMutations: 0,
       token: localStorage.getItem("ics_admin_token") || "",
       username: localStorage.getItem("ics_admin_username") || "",
       logId: 0,
-      logTimer: null
+      logTimer: null,
+      logLoading: false,
+      logGeneration: 0
     };
     const $ = (id) => document.getElementById(id);
+    const currentChannelName = () => state.channels.find((channel) => channel.key === state.channelKey)?.name || state.channelKey;
+    const setNavigationBusy = () => {
+      document.querySelectorAll("#channelNav button, #logsNav").forEach((button) => {
+        button.disabled = state.pendingMutations > 0;
+      });
+    };
+    const setConnectionStatus = (text) => {
+      $("connectionStatus").textContent = text;
+      $("sidebarStatus").textContent = text;
+    };
+    const channelUrl = (url) => {
+      const scoped = new URL(url, window.location.origin);
+      if (scoped.pathname.startsWith("/admin/api/files/") || scoped.pathname.startsWith("/admin/api/update/")) {
+        scoped.searchParams.set("channel_key", state.channelKey);
+      }
+      return scoped.toString();
+    };
     const api = async (url, options = {}) => {
       const headers = new Headers(options.headers || {});
       if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
-      const response = await fetch(url, { ...options, headers });
-      if (response.status === 401) {
-        logout(false);
-        throw new Error("登录已失效，请重新登录。");
+      const mutation = options.method && options.method !== "GET";
+      if (mutation) {
+        state.pendingMutations++;
+        setNavigationBusy();
       }
-      let payload = null;
-      try { payload = await response.json(); } catch (_) {}
-      if (!response.ok) throw new Error(payload?.detail || "请求失败，请稍后重试。");
-      return payload;
+      try {
+        const response = await fetch(channelUrl(url), { ...options, headers });
+        if (response.status === 401) {
+          logout(false);
+          throw new Error("登录已失效，请重新登录。");
+        }
+        let payload = null;
+        try { payload = await response.json(); } catch (_) {}
+        if (!response.ok) throw new Error(payload?.detail || "请求失败，请稍后重试。");
+        return payload;
+      }
+      finally {
+        if (mutation) {
+          state.pendingMutations--;
+          setNavigationBusy();
+        }
+      }
     };
     const showToast = (message, error = false) => {
       const toast = $("toast");
@@ -666,18 +752,92 @@
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
     }[char]));
+    const navigateTo = (route) => {
+      if (state.pendingMutations) return;
+      window.location.hash = route;
+    };
+    const renderChannelNavigation = () => {
+      $("channelNav").innerHTML = state.channels.map((channel) =>
+        `<button class="nav-item" type="button" data-channel-key="${escapeHtml(channel.key)}">
+          <span class="nav-icon" aria-hidden="true">${escapeHtml(channel.name.slice(0, 1))}</span>
+          <span>${escapeHtml(channel.name)}<small>知识库 / FAQ 问答对</small></span>
+        </button>`
+      ).join("");
+      document.querySelectorAll("#channelNav button").forEach((button) => {
+        button.addEventListener("click", () => navigateTo(`#channel/${button.dataset.channelKey}`));
+      });
+      setNavigationBusy();
+    };
+    const stopLogs = () => {
+      if (state.logTimer) clearInterval(state.logTimer);
+      state.logTimer = null;
+    };
+    const showCurrentPage = () => {
+      if (!state.token) return;
+      if (state.pendingMutations && window.location.hash !== state.route) {
+        history.replaceState(null, "", state.route);
+        showToast("操作正在进行，请完成后再切换页面。", true);
+        return;
+      }
+      const hash = window.location.hash;
+      const match = /^#channel\/([a-z][a-z0-9_]*)$/.exec(hash);
+      const channel = state.channels.find((item) => item.key === match?.[1]);
+      const view = hash === "#logs" ? "logs" : "channel";
+      const key = channel?.key || "xingliao";
+      state.view = view;
+      if (view === "channel") state.channelKey = key;
+      state.route = view === "logs" ? "#logs" : `#channel/${key}`;
+      if (hash !== state.route) history.replaceState(null, "", state.route);
+      state.contentVersion++;
+      stopLogs();
+      closePreview();
+      $("channelPage").classList.toggle("hidden", view !== "channel");
+      $("logsPage").classList.toggle("hidden", view !== "logs");
+      document.querySelectorAll("#channelNav button, #logsNav").forEach((button) => {
+        const active = view === "logs" ? button.id === "logsNav" : button.dataset.channelKey === key;
+        button.classList.toggle("active", active);
+        if (active) button.setAttribute("aria-current", "page");
+        else button.removeAttribute("aria-current");
+      });
+      if (view === "logs") {
+        $("pageTitle").textContent = "系统日志";
+        $("pageContext").textContent = "全部渠道 · 服务运行状态";
+        document.title = "系统日志 - 零新智能客服";
+        startLogs();
+      } else {
+        $("pageTitle").textContent = `${currentChannelName()} · 内容管理`;
+        $("pageContext").textContent = "知识库与 FAQ 问答对";
+        $("channelHeading").textContent = `${currentChannelName()}渠道`;
+        document.title = `${currentChannelName()}渠道 - 零新智能客服`;
+        $("knowledgeFile").value = "";
+        $("faqFile").value = "";
+        $("knowledgeDirectory").value = "";
+        loadDashboard();
+      }
+    };
     const setLoggedIn = () => {
       $("loginScreen").classList.add("hidden");
       $("appScreen").classList.remove("hidden");
       $("userChip").textContent = `管理员：${state.username}`;
-      loadDashboard();
-      startLogs();
+      renderChannelNavigation();
+      api("/admin/api/channels").then((result) => {
+        state.channels = result.items;
+        renderChannelNavigation();
+        showCurrentPage();
+      }).catch((error) => showToast(error.message, true));
     };
     const logout = (notify = true) => {
       state.token = "";
       localStorage.removeItem("ics_admin_token");
       localStorage.removeItem("ics_admin_username");
-      if (state.logTimer) clearInterval(state.logTimer);
+      stopLogs();
+      state.contentVersion++;
+      state.logGeneration++;
+      state.logId = 0;
+      $("logList").innerHTML = "";
+      $("logCount").textContent = "0";
+      closePreview();
+      document.title = "零新智能客服";
       $("appScreen").classList.add("hidden");
       $("loginScreen").classList.remove("hidden");
       if (notify) $("loginMessage").textContent = "已退出登录。";
@@ -705,12 +865,19 @@
       document.querySelectorAll(".download-file").forEach((button) => button.addEventListener("click", () => downloadKnowledgeFile(decodeURIComponent(button.dataset.file))));
       document.querySelectorAll(".delete-file").forEach((button) => button.addEventListener("click", () => deleteKnowledgeFile(decodeURIComponent(button.dataset.file))));
     };
-    const loadKnowledgeFiles = async () => {
+    const isCurrentContent = (channelKey, version) => state.token && state.view === "channel" && channelKey === state.channelKey && version === state.contentVersion;
+    const loadKnowledgeFiles = async (version = state.contentVersion) => {
+      const requestedChannel = state.channelKey;
       const result = await api("/admin/api/files/knowledge-base");
+      if (!isCurrentContent(requestedChannel, version)) return;
       renderKnowledgeFiles(result.items);
     };
-    const loadFaqInfo = async () => {
+    const loadFaqInfo = async (version = state.contentVersion) => {
+      const requestedChannel = state.channelKey;
       const result = await api("/admin/api/files/faq");
+      if (!isCurrentContent(requestedChannel, version)) return;
+      $("faqPreview").disabled = !result.exists;
+      $("faqDownload").disabled = !result.exists;
       $("faqState").textContent = result.exists ? "已就绪" : "缺失";
       $("faqStatMeta").textContent = result.exists ? "可浏览与下载" : "请先上传";
       $("faqTag").textContent = result.exists ? "文件已就绪" : "文件缺失";
@@ -720,16 +887,33 @@
         $("faqMeta").textContent = `${formatSize(result.size)} · 最后修改：${result.modified_at}`;
       } else {
         $("faqInfo").textContent = `${result.name} 不存在`;
-        $("faqMeta").textContent = "请上传同名 Excel 文件";
+        $("faqMeta").textContent = "请上传该渠道的 Excel 问答文件";
       }
     };
     const loadDashboard = async () => {
+      const requestedChannel = state.channelKey;
+      const version = ++state.contentVersion;
+      $("knowledgeCount").textContent = "-";
+      $("knowledgeFileCount").textContent = "读取中";
+      $("knowledgeStatMeta").textContent = "等待读取";
+      $("knowledgeTable").innerHTML = '<div class="empty">正在读取本渠道的知识文档...</div>';
+      $("faqState").textContent = "-";
+      $("faqStatMeta").textContent = "等待读取";
+      $("faqTag").textContent = "检查中";
+      $("faqTag").className = "tag amber";
+      $("faqInfo").textContent = "正在读取本渠道的问答文件...";
+      $("faqMeta").textContent = "-";
+      $("faqPreview").disabled = true;
+      $("faqDownload").disabled = true;
+      $("overviewMessage").textContent = "状态加载中...";
       try {
-        await Promise.all([loadKnowledgeFiles(), loadFaqInfo(), loadLogs()]);
-        $("connectionStatus").textContent = "服务连接正常";
+        await Promise.all([loadKnowledgeFiles(version), loadFaqInfo(version)]);
+        if (!isCurrentContent(requestedChannel, version)) return;
+        setConnectionStatus("服务连接正常");
         $("overviewMessage").textContent = "状态正常，内容更新可在下方执行。";
       } catch (error) {
-        $("connectionStatus").textContent = "服务连接异常";
+        if (!isCurrentContent(requestedChannel, version)) return;
+        setConnectionStatus("服务连接异常");
         $("overviewMessage").textContent = error.message;
       }
     };
@@ -753,7 +937,7 @@
       $("previewBody").innerHTML = "";
     };
     const authenticatedBlob = async (url) => {
-      const response = await fetch(url, { headers: { Authorization: `Bearer ${state.token}` } });
+      const response = await fetch(channelUrl(url), { headers: { Authorization: `Bearer ${state.token}` } });
       if (response.status === 401) {
         logout(false);
         throw new Error("登录已失效，请重新登录。");
@@ -778,13 +962,17 @@
       } catch (error) { showToast(error.message, true); }
     };
     const previewKnowledgeFile = async (relativePath) => {
+      const requestedChannel = state.channelKey;
+      const version = state.contentVersion;
       try {
         const result = await api(`/admin/api/files/knowledge-base/content?path=${encodeURIComponent(relativePath)}`);
+        if (!isCurrentContent(requestedChannel, version)) return;
         if (result.kind === "text") {
           showPreview(result.name, `<pre class="preview-text">${escapeHtml(result.content)}</pre>`);
           return;
         }
         const blob = await authenticatedBlob(`/admin/api/files/knowledge-base/preview?path=${encodeURIComponent(relativePath)}`);
+        if (!isCurrentContent(requestedChannel, version)) return;
         if (result.media_type && result.media_type.startsWith("image/")) {
           showPreview(result.name, `<img id="previewMedia" class="preview-frame" alt="${escapeHtml(result.name)}">`);
           previewObjectUrl = URL.createObjectURL(blob);
@@ -817,7 +1005,12 @@
       showPreview(result.name, html);
     };
     const previewFaqFile = async () => {
-      try { renderFaqPreview(await api("/admin/api/files/faq/content")); }
+      const requestedChannel = state.channelKey;
+      const version = state.contentVersion;
+      try {
+        const result = await api("/admin/api/files/faq/content");
+        if (isCurrentContent(requestedChannel, version)) renderFaqPreview(result);
+      }
       catch (error) { showToast(error.message, true); }
     };
     const downloadFaqFile = async () => {
@@ -826,7 +1019,7 @@
       } catch (error) { showToast(error.message, true); }
     };
     const confirmFullReplace = (target) => window.confirm(
-      `${target}更新会全量覆盖当前内容。\n\n请确认最新文件已经备份，且内容已经核对无误。\n\n确认继续执行吗？`
+      `${currentChannelName()}渠道的${target}更新会全量覆盖当前内容。\n\n请确认最新文件已经备份，且内容已经核对无误。\n\n确认继续执行吗？`
     );
     const submitKnowledgeUpdate = async () => {
       if (!confirmFullReplace("知识库")) return;
@@ -882,19 +1075,39 @@
       } catch (error) { showToast(error.message, true); }
     };
     const loadLogs = async () => {
-      const result = await api(`/admin/api/logs?after_id=${state.logId}&limit=200`);
-      if (result.items.length) {
-        $("logList").insertAdjacentHTML("beforeend", result.items.map((item) =>
-          `<div class="log-line ${String(item.level).toLowerCase()}">${escapeHtml(item.timestamp)} ${escapeHtml(item.level)} ${escapeHtml(item.logger)} ${escapeHtml(item.message)}</div>`
-        ).join(""));
-        state.logId = result.next_id;
-        $("logList").scrollTop = $("logList").scrollHeight;
+      if (!state.token || state.view !== "logs" || state.logLoading) return;
+      const generation = state.logGeneration;
+      state.logLoading = true;
+      try {
+        const result = await api(`/admin/api/logs?after_id=${state.logId}&limit=200`);
+        if (!state.token || state.view !== "logs" || generation !== state.logGeneration) return;
+        if (result.items.length) {
+          $("logList").insertAdjacentHTML("beforeend", result.items.map((item) =>
+            `<div class="log-line ${escapeHtml(String(item.level).toLowerCase())}">${escapeHtml(item.timestamp)} ${escapeHtml(item.level)} ${escapeHtml(item.logger)} ${escapeHtml(item.message)}</div>`
+          ).join(""));
+          state.logId = result.next_id;
+          while ($("logList").children.length > 1000) $("logList").firstElementChild.remove();
+          $("logList").scrollTop = $("logList").scrollHeight;
+        }
+        $("logCount").textContent = $("logList").children.length;
+        $("logSyncStatus").textContent = "实时同步中";
+        $("logSyncStatus").className = "tag green";
+        $("logMessage").textContent = `最近同步：${new Date().toLocaleTimeString("zh-CN", { hour12: false })} · 最多展示最近 1000 条`;
+        setConnectionStatus("服务连接正常");
+      } catch (error) {
+        if (!state.token || state.view !== "logs" || generation !== state.logGeneration) return;
+        $("logSyncStatus").textContent = "等待重试";
+        $("logSyncStatus").className = "tag amber";
+        $("logMessage").textContent = error.message;
+        setConnectionStatus("服务连接异常");
+      } finally {
+        state.logLoading = false;
       }
-      $("logCount").textContent = state.logId;
     };
     const startLogs = () => {
-      if (state.logTimer) clearInterval(state.logTimer);
-      state.logTimer = setInterval(() => loadLogs().catch(() => {}), 2000);
+      stopLogs();
+      loadLogs();
+      state.logTimer = setInterval(loadLogs, 2000);
     };
 
     $("loginForm").addEventListener("submit", async (event) => {
@@ -918,15 +1131,20 @@
       } catch (error) { $("loginMessage").textContent = error.message; }
     });
     $("logoutButton").addEventListener("click", () => logout());
-    $("refreshAll").addEventListener("click", () => loadDashboard().catch(() => {}));
+    $("refreshAll").addEventListener("click", () => state.view === "logs" ? loadLogs() : loadDashboard());
     $("knowledgeRefresh").addEventListener("click", () => loadKnowledgeFiles().catch((error) => showToast(error.message, true)));
     $("knowledgeUpload").addEventListener("click", uploadKnowledge);
     $("knowledgeUpdate").addEventListener("click", submitKnowledgeUpdate);
+    $("logsNav").addEventListener("click", () => navigateTo("#logs"));
+    window.addEventListener("hashchange", showCurrentPage);
     $("faqPreview").addEventListener("click", previewFaqFile);
     $("faqDownload").addEventListener("click", downloadFaqFile);
     $("faqUpload").addEventListener("click", uploadFaq);
     $("faqUpdate").addEventListener("click", submitFaqUpdate);
-    $("logClear").addEventListener("click", () => { $("logList").innerHTML = ""; });
+    $("logClear").addEventListener("click", () => {
+      $("logList").innerHTML = "";
+      $("logCount").textContent = "0";
+    });
     $("previewClose").addEventListener("click", closePreview);
     $("previewModal").addEventListener("click", (event) => {
       if (event.target === $("previewModal")) closePreview();

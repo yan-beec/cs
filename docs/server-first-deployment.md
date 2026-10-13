@@ -284,7 +284,7 @@ tar.exe -h -czf D:\cs-app.tar.gz `
   --exclude=knowledge_base_in/vector_store `
   docker-compose.yml .dockerignore requirements.txt .env.example `
   ics_agent knowledge_base_in deploy docs `
-  database/最新问答对.xlsx database/intent_dataset_4000.csv database/knowledge_base
+  database/channel_xingliao/最新问答对.xlsx database/channel_xingliao/intent_dataset_4000.csv database/channel_xingliao/knowledge_base
 if ($LASTEXITCODE -ne 0) { throw '后端包打包失败，请检查上方错误。' }
 Get-FileHash D:\cs-app.tar.gz -Algorithm SHA256
 ```
@@ -346,8 +346,8 @@ test -f ics_agent/retry/reconnect.py && echo 'retry code OK'
 test -f ics_agent/app/chatwoot/message_format.py && echo 'image formatting code OK'
 test -f models/intent_classifier_bert/model.safetensors && echo 'intent model OK'
 test -f models/intent_classifier_bert/labels.json && echo 'intent metadata OK'
-test -f database/intent_dataset_4000.csv && echo 'intent dataset OK'
-test -f 'database/最新问答对.xlsx' && echo 'FAQ Excel OK'
+test -f database/channel_xingliao/intent_dataset_4000.csv && echo 'intent dataset OK'
+test -f 'database/channel_xingliao/最新问答对.xlsx' && echo 'FAQ Excel OK'
 find models -type l -print
 ```
 
@@ -371,7 +371,7 @@ rm -i ~/cs-app.tar.gz
 | 后端源码、依赖、Compose、配置模板 | 通过 Git 管理 | 首次 clone，后续 pull 后同步到运行目录 |
 | `models/` | 已被 Git 忽略，约 8.38 GiB | 首次或模型更新时单独上传模型包 |
 | `.env` | 已被 Git 忽略 | 第 5 节在服务器创建，后续保留服务器值 |
-| FAQ Excel、意图 CSV、`database/knowledge_base/` | 已纳入 Git | 首次复制初始化；日常代码更新不覆盖 |
+| FAQ Excel、意图 CSV、`database/channel_xingliao/knowledge_base/` | 已纳入 Git | 首次复制初始化；日常代码更新不覆盖 |
 | `knowledge_base_in/output/` | 当前已有分块文件纳入 Git | 不复制这些历史产物，第 8 节在服务器重建 |
 | 向量库、运行日志、数据库卷 | 运行数据 | 不通过 Git 更新 |
 
@@ -481,7 +481,7 @@ git clone --branch YOUR_DEPLOY_BRANCH --single-branch YOUR_REPOSITORY_URL /opt/c
 ```bash
 git -C /opt/cs-src status --short
 git -C /opt/cs-src rev-parse HEAD
-git -C /opt/cs-src ls-files --eol -- database/intent_dataset_4000.csv
+git -C /opt/cs-src ls-files --eol -- database/channel_xingliao/intent_dataset_4000.csv
 test -f /opt/cs-src/deploy/server/Dockerfile.backend-only && echo 'backend build template OK'
 test -f /opt/cs-src/deploy/server/bot.env.example && echo 'server env template OK'
 ```
@@ -524,15 +524,20 @@ test -f /opt/cs-src/deploy/server/bot.env.example && echo 'server env template O
 ```bash
 (
   set -e
-  mkdir -p /opt/cs/database/knowledge_base /opt/cs/log \
+  mkdir -p /opt/cs/database/channel_xingliao/knowledge_base /opt/cs/log \
     /opt/cs/knowledge_base_in/output /opt/cs/knowledge_base_in/vector_store
-  cp -n '/opt/cs-src/database/最新问答对.xlsx' /opt/cs/database/
-  cp -n /opt/cs-src/database/intent_dataset_4000.csv /opt/cs/database/
-  rsync -a --ignore-existing /opt/cs-src/database/knowledge_base/ /opt/cs/database/knowledge_base/
+  cp -n '/opt/cs-src/database/channel_xingliao/最新问答对.xlsx' /opt/cs/database/channel_xingliao/
+  cp -n /opt/cs-src/database/channel_xingliao/intent_dataset_4000.csv /opt/cs/database/channel_xingliao/
+  rsync -a --ignore-existing /opt/cs-src/database/channel_xingliao/knowledge_base/ /opt/cs/database/channel_xingliao/knowledge_base/
+  cp -n /opt/cs-src/database/channels.json /opt/cs/database/
+  for channel in xingliao yanliao xingyingtong wechat; do
+    mkdir -p "/opt/cs/database/channel_${channel}/knowledge_base"
+    cp -n "/opt/cs-src/database/channel_${channel}/prompt_${channel}.md" "/opt/cs/database/channel_${channel}/"
+  done
 )
 ```
 
-后续更新代码不再执行这一步。FAQ 和知识库通过第 13.3、13.4 节维护；意图 CSV 要与模型包中的训练指纹一致。如果复用旧的源码 checkout，仅拉取新增 `.gitattributes` 可能不会重写既有 CSV；应先确认仓库无本地改动，再用 `git -C /opt/cs-src checkout-index --force -- database/intent_dataset_4000.csv` 按新属性重新检出，确认显示 `w/crlf` 后再做首次复制。此命令只用于可从 Git 恢复的源码副本，不用于服务器后台维护的数据。
+后续更新代码不再执行这一步。FAQ 和知识库通过第 13.3、13.4 节维护；意图 CSV 要与模型包中的训练指纹一致。如果复用旧的源码 checkout，仅拉取新增 `.gitattributes` 可能不会重写既有 CSV；应先确认仓库无本地改动，再用 `git -C /opt/cs-src checkout-index --force -- database/channel_xingliao/intent_dataset_4000.csv` 按新属性重新检出，确认显示 `w/crlf` 后再做首次复制。此命令只用于可从 Git 恢复的源码副本，不用于服务器后台维护的数据。
 
 #### 第六步：上传模型并进入常规部署
 
@@ -557,8 +562,8 @@ tar -xzf ~/cs-models.tar.gz
 cmp -s deploy/server/Dockerfile.backend-only Dockerfile && echo 'backend-only Dockerfile OK'
 test -f models/intent_classifier_bert/model.safetensors && echo 'intent model OK'
 test -f models/intent_classifier_bert/labels.json && echo 'intent metadata OK'
-test -f database/intent_dataset_4000.csv && echo 'intent dataset OK'
-test -f 'database/最新问答对.xlsx' && echo 'FAQ Excel OK'
+test -f database/channel_xingliao/intent_dataset_4000.csv && echo 'intent dataset OK'
+test -f 'database/channel_xingliao/最新问答对.xlsx' && echo 'FAQ Excel OK'
 find models -type l -print
 du -sh models database
 df -h /
@@ -930,7 +935,7 @@ docker compose -f docker-compose.yml run --rm --no-deps ics-agent \
 
 ```bash
 docker compose -f docker-compose.yml run --rm --no-deps ics-agent \
-  python -m ics_agent.faq sync-excel --excel-path 'database/最新问答对.xlsx'
+  python -m ics_agent.faq sync-excel --excel-path 'database/channel_xingliao/最新问答对.xlsx'
 ```
 
 预期看到 `FAQ sync completed` 和非零的 `source_rows`。本条命令没有要求刷新独立 CLI 进程的索引，因此 `bm25_documents=None`、`bm25_reloaded=False` 是正常的；以下面的数据库行数和 FAQ 实际查询为准。当前同步是全量替换；这里只对新建的机器人数据库操作。
@@ -939,7 +944,7 @@ docker compose -f docker-compose.yml run --rm --no-deps ics-agent \
 
 ```bash
 docker compose -f docker-compose.yml exec -T postgres \
-  psql -U cs -d cs -c 'SELECT COUNT(*) AS faq_rows FROM faq_qna_optimized;'
+  psql -U cs -d cs -c 'SELECT COUNT(*) AS faq_rows FROM faq_channel_xingliao;'
 ```
 
 选 Excel 中一条确实存在的问题测试，例如将下面的问题替换成你确认的原句：
@@ -956,7 +961,7 @@ docker compose -f docker-compose.yml run --rm --no-deps ics-agent \
 检查输入文件确实存在：
 
 ```bash
-find database/knowledge_base -maxdepth 2 -type f | head -20
+find database/channel_xingliao/knowledge_base -maxdepth 2 -type f | head -20
 ```
 
 执行完整解析和向量化：
@@ -1035,7 +1040,7 @@ from pathlib import Path
 metadata = json.loads(Path('models/intent_classifier_bert/labels.json').read_text(encoding='utf-8'))
 dataset = metadata.get('dataset', {})
 print('model dataset:', dataset.get('path'))
-path = Path('database/intent_dataset_4000.csv')
+path = Path('database/channel_xingliao/intent_dataset_4000.csv')
 actual = hashlib.sha256(path.read_bytes()).hexdigest()
 expected = dataset.get('sha256')
 print('dataset fingerprint matches:', actual == expected)
@@ -1043,7 +1048,7 @@ assert expected and actual == expected, 'Dataset differs from training metadata'
 PY
 ```
 
-当前工作区的模型元数据使用相对路径 `database/intent_dataset_4000.csv`，可跨系统迁移。若你之后更换了模型或训练数据，需保持两者配套；不要把关闭校验作为默认修复办法。
+当前工作区的模型元数据使用相对路径 `database/channel_xingliao/intent_dataset_4000.csv`，可跨系统迁移。若你之后更换了模型或训练数据，需保持两者配套；不要把关闭校验作为默认修复办法。
 
 ### 9.5 FAQ 与 RAG 各做一次测试
 
@@ -1744,7 +1749,7 @@ docker compose -f docker-compose.yml up -d --build ics-agent
 
 ```bash
 docker compose -f docker-compose.yml run --rm --no-deps ics-agent \
-  python -m ics_agent.faq sync-excel --excel-path 'database/最新问答对.xlsx'
+  python -m ics_agent.faq sync-excel --excel-path 'database/channel_xingliao/最新问答对.xlsx'
 docker compose -f docker-compose.yml restart ics-agent
 ```
 
@@ -1949,3 +1954,7 @@ sudo journalctl -k --since '30 minutes ago' | grep -i -E 'oom|out of memory|kill
 - [ ] 备份已生成并移出服务器，成功镜像和依赖版本已记录。
 
 只有完成上述验收，再考虑把已有业务 Inbox 接到新机器人；先记录业务 Inbox 原来的机器人绑定，保留切回方法。
+
+## 多渠道版本升级
+
+本版本将兴聊资料目录调整为 `database/channel_xingliao/`，并新增 `database/channels.json` 与三个渠道目录。现有日常代码更新会保留服务器 `database/`，因此首次升级到此版本时，需要将服务器兴聊 Excel、意图 CSV 和知识库文档调整到新目录，并从源码补充渠道配置和提示词文件；不要用源码中的业务资料覆盖服务器已维护的内容。详见 [多渠道使用说明](multi-channel-setup.md)。

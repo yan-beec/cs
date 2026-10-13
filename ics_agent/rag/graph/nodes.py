@@ -13,6 +13,8 @@ from typing import Any
 from ics_agent.app.core.config import PROJECT_ROOT, get_settings
 from ics_agent.app.core.logging_config import log_event
 from ics_agent.rag.config import RAGSettings, get_rag_settings
+from ics_agent.channels import DEFAULT_CHANNEL
+from ics_agent.channels.prompts import get_system_prompt
 from ics_agent.rag.intent_classifier.data import (
     build_intent_label_mapping,
     calculate_intent_dataset_sha256,
@@ -163,6 +165,10 @@ class IntentClassifierModel:
             if not dataset_path.is_absolute():
                 dataset_path = PROJECT_ROOT / dataset_path
         else:
+            dataset_path = fallback_dataset_path
+
+        # 模型元数据保留训练时路径；文件搬迁后使用当前配置路径，后续仍严格核对 SHA256。
+        if not dataset_path.is_file() and fallback_dataset_path.is_file():
             dataset_path = fallback_dataset_path
 
         expected_ids = list(range(len(id_to_label)))
@@ -347,9 +353,12 @@ async def retrieval_node(state: RAGState) -> dict[str, Any]:
         if settings.rag_reranker_enabled
         else DIRECT_RETRIEVAL_TOP_K
     )
+    channel_key = state.get("channel_key", DEFAULT_CHANNEL)
+    options = {} if channel_key == DEFAULT_CHANNEL else {"channel_key": channel_key}
     documents = await aretrieve_documents(
         query,
         top_k=top_k,
+        **options,
     )
     log_event(
         logger,
@@ -416,11 +425,12 @@ async def _call_llm_once(
     *,
     use_fallback_model: bool,
     timeout: float,
+    system_prompt: str = SYSTEM_PROMPT,
 ) -> Any:
     """单次调用指定模型；模型自身不再额外重试。"""
     response = await call_cloud_llm(
         prompt,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         use_fallback_model=use_fallback_model,
         timeout=timeout,
         max_retries=0,
@@ -434,6 +444,7 @@ async def _call_llm_reply(
     prompt: str,
     *,
     total_timeout: float | None = None,
+    system_prompt: str = SYSTEM_PROMPT,
 ) -> Any:
     """先调用主模型，失败或超时后在同一总时限内调用备用模型。"""
     if total_timeout is None:
@@ -452,6 +463,7 @@ async def _call_llm_reply(
                 prompt,
                 use_fallback_model=False,
                 timeout=primary_timeout,
+                system_prompt=system_prompt,
             ),
             timeout=max(0.001, primary_timeout),
         )
@@ -477,6 +489,7 @@ async def _call_llm_reply(
                 prompt,
                 use_fallback_model=True,
                 timeout=remaining_timeout,
+                system_prompt=system_prompt,
             ),
             timeout=remaining_timeout,
         )
@@ -492,6 +505,7 @@ async def llm_reply_node(state: RAGState) -> dict[str, Any]:
         response = await _call_llm_reply(
             build_dynamic_prompt(state),
             total_timeout=get_rag_settings().webhook_rag_timeout_seconds,
+            system_prompt=get_system_prompt(state.get("channel_key")),
         )
     except Exception as exc:
         log_event(

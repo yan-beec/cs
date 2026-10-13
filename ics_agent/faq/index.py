@@ -110,13 +110,19 @@ class BM25Matcher:
             return None
 
         scores = self._index.get_scores(query_tokens)
-        matched_index = max(range(len(scores)), key=lambda index: scores[index])
+        exact_index = next((index for index, document in enumerate(self._snapshot.documents)
+                            if document.tokens == tuple(query_tokens)), None)
+        # 新渠道只有一两条 FAQ 时，BM25 的 IDF 可能为零或负数。
+        # 完全一致的问题仍应命中；非精确匹配继续使用原有评分和阈值。
+        exact_with_nonpositive_score = exact_index is not None and scores[exact_index] <= 0
+        matched_index = (exact_index if exact_with_nonpositive_score
+                         else max(range(len(scores)), key=lambda index: scores[index]))
         document = self._snapshot.documents[matched_index]
         raw_score = float(scores[matched_index])
         return FAQMatch(
             document=document,
             bm25_score=raw_score,
-            match_degree=match_degree(
+            match_degree=1.0 if exact_with_nonpositive_score else match_degree(
                 raw_score,
                 query_tokens,
                 list(document.tokens),

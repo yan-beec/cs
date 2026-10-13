@@ -1,2 +1,2 @@
 # The trained intent model verifies the dataset's exact bytes, including line endings.
-database/intent_dataset_4000.csv text eol=crlf
+database/channel_xingliao/intent_dataset_4000.csv text eol=crlf

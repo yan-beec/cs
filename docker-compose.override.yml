@@ -4,6 +4,9 @@ services:
     volumes:
       - ./ics_agent:/app/ics_agent:ro
       - ./reminder:/app/reminder:ro
+      - ./support-chat.html:/app/support-chat.html:ro
+      - ./knowledge_base_in/parse_documents.py:/app/knowledge_base_in/parse_documents.py:ro
+      - ./knowledge_base_in/build_chromadb.py:/app/knowledge_base_in/build_chromadb.py:ro
     command:
       [
         "python",

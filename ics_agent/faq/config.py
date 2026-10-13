@@ -9,6 +9,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ics_agent.app.core.config import PROJECT_ROOT
+from ics_agent.channels import DEFAULT_CHANNEL, get_channel
 
 
 class FAQSettings(BaseSettings):
@@ -17,8 +18,8 @@ class FAQSettings(BaseSettings):
     faq_match_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
     faq_bm25_k1: float = Field(default=1.5, gt=0.0)
     faq_bm25_b: float = Field(default=0.75, ge=0.0, le=1.0)
-    faq_source_table: str = "faq_qna_optimized"
-    faq_source_xlsx_path: str = "database/最新问答对.xlsx"
+    faq_source_table: str = "faq_channel_xingliao"
+    faq_source_xlsx_path: str = "database/channel_xingliao/最新问答对.xlsx"
     faq_terms: str = "兴聊,言聊,星盈通"
 
     model_config = SettingsConfigDict(
@@ -47,6 +48,18 @@ class FAQSettings(BaseSettings):
 
 
 @lru_cache
-def get_faq_settings() -> FAQSettings:
-    """返回进程级 FAQ 设置单例。"""
-    return FAQSettings()
+def get_faq_settings(channel_key: str | None = None) -> FAQSettings:
+    """每个渠道绑定独立资源；兴聊保留显式环境变量覆盖能力。"""
+    channel = get_channel(channel_key)
+    settings = FAQSettings()
+    values = {
+        "faq_source_table": channel.faq_table,
+        "faq_source_xlsx_path": channel.faq_workbook,
+    }
+    if channel.key == DEFAULT_CHANNEL:
+        legacy_values = {"faq_source_table": "faq_qna_optimized",
+                         "faq_source_xlsx_path": "database/最新问答对.xlsx"}
+        values = {key: value for key, value in values.items()
+                  if key not in settings.model_fields_set
+                  or getattr(settings, key) == legacy_values[key]}
+    return settings.model_copy(update=values)

@@ -46,6 +46,8 @@ class AppSettings(BaseSettings):
     chatwoot_contact_api_token: str = ""
     chatwoot_account_id: str = ""
     chatwoot_hmac_token: str = ""
+    # 非兴聊 Website Inbox 的身份校验密钥，环境变量使用 JSON 对象。
+    chatwoot_channel_hmac_tokens: dict[str, str] = Field(default_factory=dict)
     chatwoot_profile_allowed_origins: str = (
         "null,http://localhost:8090,http://127.0.0.1:8090"
     )

@@ -8,6 +8,7 @@ from threading import Lock
 from typing import Any
 
 from ics_agent.app.core.logging_config import log_event
+from ics_agent.channels import DEFAULT_CHANNEL, get_channel
 from ics_agent.rag.config import get_rag_settings
 from .dense_search import (
     DenseSearchResult,
@@ -18,6 +19,7 @@ from .dense_search import (
 
 logger = logging.getLogger(__name__)
 _service: RetrievalService | None = None
+_channel_services: dict[str, RetrievalService] = {}
 _service_lock = Lock()
 
 
@@ -110,9 +112,20 @@ class RetrievalService:
         return results
 
 
-def get_retrieval_service(*, warm_up: bool = False) -> RetrievalService:
+def get_retrieval_service(*, warm_up: bool = False, channel_key: str | None = None) -> RetrievalService:
     """返回进程级 RAG 检索服务单例。"""
     global _service
+    key = get_channel(channel_key).key
+    if key != DEFAULT_CHANNEL:
+        with _service_lock:
+            if key not in _channel_services:
+                _channel_services[key] = RetrievalService(
+                    retriever=get_dense_retriever(channel_key=key),
+                )
+            service = _channel_services[key]
+        if warm_up:
+            service.warm_up()
+        return service
     if _service is None:
         with _service_lock:
             if _service is None:
@@ -126,6 +139,8 @@ async def aretrieve_documents(
     query: str,
     *,
     top_k: int | None = None,
+    channel_key: str | None = None,
 ) -> list[RetrievedDocument]:
     """通过全局检索服务异步召回文档。"""
-    return await get_retrieval_service().aretrieve(query, top_k=top_k)
+    service = get_retrieval_service(channel_key=channel_key)
+    return await service.aretrieve(query, top_k=top_k)

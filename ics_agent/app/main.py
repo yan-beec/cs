@@ -27,7 +27,8 @@ from .chatwoot.routes import (
 )
 from .core.logging_config import log_event
 from .public.routes import router as public_router
-from ics_agent.faq.repositories import ensure_faq_table
+from ics_agent.channels import list_channels
+from ics_agent.channels.bootstrap import initialize_channel
 from ics_agent.rag.graph import get_rag_graph
 from ics_agent.rag.memory import get_conversation_memory_manager
 from reminder.backend.routes import router as reminder_router
@@ -92,19 +93,15 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
             type(exc).__name__,
         )
 
-    try:
-        faq_table_created = await asyncio.to_thread(ensure_faq_table)
-        log_event(
-            logger,
-            logging.INFO,
-            "app.faq_table.ready",
-            created=faq_table_created,
-        )
-    except Exception as exc:
-        logger.exception(
-            "事件=应用.FAQ数据表.初始化失败 错误类型=%s",
-            type(exc).__name__,
-        )
+    for channel in list_channels():
+        try:
+            result = await asyncio.to_thread(initialize_channel, channel.key)
+            log_event(logger, logging.INFO, "app.channel.ready", inboxes=channel.inboxes, **result)
+        except Exception as exc:
+            logger.exception(
+                "事件=应用.渠道.初始化失败 渠道=%s 错误类型=%s",
+                channel.key, type(exc).__name__,
+            )
 
     if rag_settings.rag_warm_up_on_startup:
         started_at = time.perf_counter()

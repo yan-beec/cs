@@ -11,13 +11,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 try:
     from ics_agent.app.core.config import get_settings as get_app_settings
-    from ics_agent.faq.config import get_faq_settings
+    from ics_agent.faq.config import FAQSettings, get_faq_settings
 except ModuleNotFoundError:
     import sys
 
     sys.path.insert(0, str(PROJECT_ROOT))
     from ics_agent.app.core.config import get_settings as get_app_settings
-    from ics_agent.faq.config import get_faq_settings
+    from ics_agent.faq.config import FAQSettings, get_faq_settings
 
 
 logger = logging.getLogger(__name__)
@@ -193,9 +193,9 @@ class PostgreSQLConnectionPool:
             raise
 
 
-def _build_faq_schema_sql() -> tuple[str, str, str, str]:
+def _build_faq_schema_sql(settings: FAQSettings | None = None) -> tuple[str, str, str, str]:
     """根据配置的表名构建 FAQ 表和索引的 DDL。"""
-    table_name = get_faq_settings().faq_table_name
+    table_name = (settings or get_faq_settings()).faq_table_name
     enabled_index_name = f"{table_name}_enabled_idx"
     priority_index_name = f"{table_name}_priority_idx"
     table_sql = f"""
@@ -278,13 +278,16 @@ def _ensure_faq_id_generation(cursor: Any, table_name: str) -> None:
 
 def ensure_faq_table(
     connections: PostgreSQLConnectionPool | None = None,
+    *,
+    settings: FAQSettings | None = None,
 ) -> bool:
     """创建 FAQ 表并移除旧版字段。
 
     Returns ``True`` when this call created the table and ``False`` when the
     table was already present.
     """
-    table_name = get_faq_settings().faq_table_name
+    runtime_settings = settings or get_faq_settings()
+    table_name = runtime_settings.faq_table_name
     pool = connections or PostgreSQLConnectionPool()
     connection = pool.acquire()
     created = False
@@ -292,6 +295,10 @@ def ensure_faq_table(
         cursor = connection.cursor()
         try:
             with connection.transaction():
+                cursor.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                    (f"ics_agent.faq.schema:{table_name}",),
+                )
                 cursor.execute(
                     "SELECT to_regclass(%s)",
                     (table_name,),
@@ -304,7 +311,7 @@ def ensure_faq_table(
                         priority_index_sql,
                         migration_sql,
                     ) = (
-                        _build_faq_schema_sql()
+                        _build_faq_schema_sql(runtime_settings)
                     )
                     cursor.execute(table_sql)
                     created = True
@@ -315,13 +322,15 @@ def ensure_faq_table(
                         priority_index_sql,
                         migration_sql,
                     ) = (
-                        _build_faq_schema_sql()
+                        _build_faq_schema_sql(runtime_settings)
                     )
                 cursor.execute(migration_sql)
                 cursor.execute(enabled_index_sql)
                 cursor.execute(priority_index_sql)
                 if exists:
                     _ensure_faq_id_generation(cursor, table_name)
+                if table_name == "faq_channel_xingliao":
+                    _migrate_legacy_xingliao_faq(cursor, table_name)
         finally:
             cursor.close()
     finally:
@@ -340,18 +349,54 @@ def ensure_faq_table(
     return created
 
 
+def _migrate_legacy_xingliao_faq(cursor: Any, table_name: str) -> None:
+    """兼容升级期间先创建的空表；迁移标记保证日后清空新表不会重新导入旧数据。"""
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ics_channel_migrations (
+            migration_key TEXT PRIMARY KEY,
+            applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    marker = "faq_channel_xingliao:legacy_v1"
+    cursor.execute("SELECT 1 FROM ics_channel_migrations WHERE migration_key = %s", (marker,))
+    if cursor.fetchone() is not None:
+        return
+    cursor.execute(f"SELECT EXISTS (SELECT 1 FROM {table_name})")
+    populated = cursor.fetchone()[0]
+    cursor.execute("SELECT to_regclass(%s)", ("faq_qna_optimized",))
+    legacy_exists = cursor.fetchone()[0] is not None
+    if not populated and legacy_exists:
+        cursor.execute(f"""
+            INSERT INTO {table_name}
+                (id, question, answer, need_human, enabled, priority, updated_at)
+            SELECT id, question, answer, need_human, enabled,
+                COALESCE((to_jsonb(old)->>'priority')::integer, 0),
+                COALESCE((to_jsonb(old)->>'updated_at')::timestamp, CURRENT_TIMESTAMP)
+            FROM faq_qna_optimized AS old
+        """)
+        cursor.execute(f"""
+            SELECT setval(pg_get_serial_sequence('{table_name}', 'id'),
+                COALESCE(MAX(id), 0) + 1, false)
+            FROM {table_name}
+        """)
+    cursor.execute("INSERT INTO ics_channel_migrations (migration_key) VALUES (%s)", (marker,))
+
+
 class FAQRepository:
     def __init__(
         self,
         connections: PostgreSQLConnectionPool | None = None,
+        *,
+        settings: FAQSettings | None = None,
     ) -> None:
         self._connections = connections or PostgreSQLConnectionPool()
+        self.settings = settings or get_faq_settings()
 
     def fetch_questions(
         self,
         include_disabled: bool = False,
     ) -> list[tuple[int, str]]:
-        settings = get_faq_settings()
+        settings = self.settings
         where = (
             "WHERE need_human = 0"
             if include_disabled
@@ -387,7 +432,7 @@ class FAQRepository:
             connection.close()
 
     def fetch_answer(self, question_id: int) -> tuple[str, str]:
-        settings = get_faq_settings()
+        settings = self.settings
         sql = f"""
             SELECT question, answer
             FROM {settings.faq_table_name}
@@ -423,7 +468,7 @@ class FAQRepository:
         if not question_ids:
             return {}
 
-        settings = get_faq_settings()
+        settings = self.settings
         placeholders = ", ".join(["%s"] * len(question_ids))
         sql = f"""
             SELECT id, answer
@@ -457,7 +502,7 @@ class FAQRepository:
         return answers
 
     def answer_sql(self) -> str:
-        settings = get_faq_settings()
+        settings = self.settings
         return f"""
             SELECT question, answer
             FROM {settings.faq_table_name}

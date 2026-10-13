@@ -6,6 +6,7 @@ import logging
 import time
 
 from ics_agent.app.core.logging_config import log_event
+from ics_agent.channels import DEFAULT_CHANNEL, get_channel
 from ics_agent.rag.main import run_query
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,7 @@ async def _run_rag_query(
     query: str,
     *,
     thread_id: str | None = None,
+    channel_key: str | None = None,
 ) -> dict[str, object]:
     """执行 FAQ-first 查询编排，并统一记录请求耗时和异常。"""
     normalized_query = query.strip()
@@ -23,7 +25,10 @@ async def _run_rag_query(
 
     started_at = time.perf_counter()
     try:
-        result = await run_query(normalized_query, thread_id=thread_id)
+        channel = get_channel(channel_key)
+        options = {} if channel.key == DEFAULT_CHANNEL else {"channel_key": channel.key}
+        result = await run_query(normalized_query, thread_id=thread_id, **options)
+        result["channel_key"] = channel.key
     except Exception as exc:
         logger.exception(
             "事件=应用.查询.失败 错误类型=%s",
@@ -35,6 +40,7 @@ async def _run_rag_query(
         logger,
         logging.INFO,
         "app.query.completed",
+        channel_key=channel.key,
         query_length=len(normalized_query),
         route=result["route"],
         faq_route=result["faq_route"],

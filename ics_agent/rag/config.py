@@ -8,6 +8,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ics_agent.app.core.config import PROJECT_ROOT
+from ics_agent.channels import DEFAULT_CHANNEL, get_channel
 
 
 class RAGSettings(BaseSettings):
@@ -18,7 +19,7 @@ class RAGSettings(BaseSettings):
         "models/google-bert--bert-base-chinese/snapshots/master"
     )
     rag_output_dir: str = "models/intent_classifier_bert"
-    rag_intent_dataset_path: str = "database/intent_dataset_4000.csv"
+    rag_intent_dataset_path: str = "database/channel_xingliao/intent_dataset_4000.csv"
     rag_intent_dataset_verify_fingerprint: bool = True
     rag_warm_up_on_startup: bool = True
     rag_memory_enabled: bool = True
@@ -80,7 +81,7 @@ class RAGSettings(BaseSettings):
     rag_eval_dataset_path: str = "database/eval.csv"
 
     # 知识库解析和稠密向量库。
-    knowledge_base_input_dir: str = "database/knowledge_base"
+    knowledge_base_input_dir: str = "database/channel_xingliao/knowledge_base"
     knowledge_base_output_path: str = "knowledge_base_in/output/chunks.jsonl"
     knowledge_base_chunk_size_tokens: int = Field(default=512, ge=1)
     knowledge_base_chunk_overlap_tokens: int = Field(default=64, ge=0)
@@ -96,7 +97,7 @@ class RAGSettings(BaseSettings):
     knowledge_base_ocr_cpu_interop_threads: int = Field(default=1, ge=1, le=32)
     knowledge_base_embedding_model_dir: str = "models/bge-m3"
     knowledge_base_vector_db_dir: str = "knowledge_base_in/vector_store/chroma"
-    knowledge_base_vector_collection: str = "knowledge_base"
+    knowledge_base_vector_collection: str = "kb_channel_xingliao"
     knowledge_base_embedding_batch_size: int = Field(default=8, ge=1)
     knowledge_base_embedding_max_length: int = Field(default=8192, ge=8)
     knowledge_base_chroma_upsert_batch_size: int = Field(default=128, ge=1)
@@ -145,6 +146,26 @@ class RAGSettings(BaseSettings):
 
 
 @lru_cache
-def get_rag_settings() -> RAGSettings:
-    """返回进程级 RAG 设置单例。"""
-    return RAGSettings()
+def get_rag_settings(channel_key: str | None = None) -> RAGSettings:
+    """共享模型参数，各渠道使用独立输入目录、分块输出和集合。"""
+    channel = get_channel(channel_key)
+    settings = RAGSettings()
+    if settings.rag_intent_dataset_path == "database/intent_dataset_4000.csv":
+        settings = settings.model_copy(update={
+            "rag_intent_dataset_path": "database/channel_xingliao/intent_dataset_4000.csv",
+        })
+    values = {
+        "knowledge_base_input_dir": channel.knowledge_dir,
+        "knowledge_base_output_path": channel.chunks_path,
+        "knowledge_base_vector_collection": channel.kb_collection,
+    }
+    if channel.key == DEFAULT_CHANNEL:
+        legacy_values = {
+            "knowledge_base_input_dir": "database/knowledge_base",
+            "knowledge_base_output_path": "knowledge_base_in/output/chunks.jsonl",
+            "knowledge_base_vector_collection": "knowledge_base",
+        }
+        values = {key: value for key, value in values.items()
+                  if key not in settings.model_fields_set
+                  or getattr(settings, key) == legacy_values[key]}
+    return settings.model_copy(update=values)

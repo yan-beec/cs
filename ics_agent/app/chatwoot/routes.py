@@ -44,6 +44,7 @@ from .payload import (
     webhook_status_time,
 )
 from ics_agent.app.services.rag import _run_rag_query
+from ics_agent.channels import DEFAULT_CHANNEL, resolve_chatwoot_channel
 from ics_agent.rag.graph.nodes import LLM_REPLY_FALLBACK_ANSWER
 from .jobs import (
     WebhookJob,
@@ -991,6 +992,7 @@ async def _build_webhook_answer(
     content: str,
     thread_id: str | None,
     event_key: str,
+    channel_key: str = DEFAULT_CHANNEL,
 ) -> dict[str, object]:
     if is_emoji_only_text(content):
         log_event(
@@ -1008,10 +1010,12 @@ async def _build_webhook_answer(
             "intent_confidence": None,
         }
     try:
+        options = {} if channel_key == DEFAULT_CHANNEL else {"channel_key": channel_key}
         return await asyncio.wait_for(
             _run_rag_query(
                 content,
                 thread_id=thread_id,
+                **options,
             ),
             timeout=rag_settings.webhook_rag_timeout_seconds,
         )
@@ -1432,10 +1436,23 @@ async def _process_webhook_job_unlocked(
         else None
     )
     try:
+        inbox_id = _webhook_inbox_id(event)
+        channel_key = resolve_chatwoot_channel(account_id, inbox_id)
+        log_event(
+            logger,
+            logging.INFO,
+            "webhook.channel.resolved",
+            event_key=job.event_key,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            inbox_id=inbox_id,
+            channel_key=channel_key,
+        )
         result = await _build_webhook_answer(
             content=content,
             thread_id=thread_id,
             event_key=job.event_key,
+            channel_key=channel_key,
         )
     finally:
         await _stop_typing_task(
@@ -1482,6 +1499,7 @@ async def _process_webhook_job_unlocked(
         logging.INFO,
         "webhook.job.answer_ready",
         event_key=job.event_key,
+        channel_key=channel_key,
         route=result["route"],
     )
     return {

@@ -2,6 +2,8 @@
 
 本文用于项目已经部署完成后的日常发布：在 Windows 开发端修改代码，推送到 Git 远端，同步到 Ubuntu 的 /opt/cs，重新构建并验证机器人。
 
+**本次从单渠道升级为多渠道，请直接按[第十节：本次多渠道版本覆盖升级](#十本次多渠道版本覆盖升级首次执行)执行。** 该节提供直接上传本地版本和 Git 同步两种方式，包含首次资料目录迁移、渠道配置、启动校验及后台导入操作；仅执行日常代码同步不会补齐服务器的渠道数据目录。
+
 转人工强弹窗提醒、工作台按钮及浏览器页面复用的专项更新，按[提醒功能服务器更新部署手册](reminder-server-update.md)执行；除服务器代码和配置外，还需更新客服电脑上的 Windows 客户端与浏览器插件。
 
 当前部署约定：
@@ -33,6 +35,9 @@
 | deploy/server/bot.env.example | 拉取后人工合并到 .env | 否 |
 | docs/、README | 拉取即可 | 否 |
 | FAQ、知识库原始文件 | 管理后台或专门数据流程 | 通常否 |
+| 首次升级多渠道、增加渠道配置和提示词 | 按第十节同步代码、补充配置、迁移兴聊资料、构建并重建应用 | 是 |
+| database/channels.json 收件箱映射 | 校验配置后 restart 应用 | 否 |
+| database/channel_*/prompt_*.md 提示词 | 保存到服务器对应渠道目录，下一次生成回复时读取 | 否 |
 | models/ 模型权重 | 单独打包、上传、校验、解压、重启预热 | 通常否 |
 | 意图模型和 intent_dataset_4000.csv | 配套发布并检查指纹 | 代码需 build |
 
@@ -198,6 +203,8 @@ git -C /opt/cs-src rev-parse HEAD > /opt/cs/deployment-records/source-commit-pen
 cmp -s /opt/cs/Dockerfile /opt/cs-src/deploy/server/Dockerfile.backend-only && echo 'Dockerfile 模板同步通过'
 ~~~
 
+首次升级多渠道时，启动应用前还必须完成第十节的资料目录迁移和渠道配置。上面的代码同步故意保留 `database/`，不会自动复制 `channels.json` 或渠道提示词。
+
 不要执行：
 
 ~~~bash
@@ -215,7 +222,7 @@ rm -rf /opt/cs/knowledge_base_in/vector_store
 cd /opt/cs
 docker compose -f docker-compose.yml config --quiet
 docker compose --progress plain -f docker-compose.yml build ics-agent
-docker compose -f docker-compose.yml up -d --force-recreate ics-agent
+docker compose -f docker-compose.yml up -d --no-deps --force-recreate ics-agent
 ~~~
 
 SSH 容易断开时使用 tmux：
@@ -229,8 +236,10 @@ docker compose --progress plain -f docker-compose.yml build ics-agent
 按 Ctrl+B，再按 D 离开 tmux；重新登录后用 tmux attach -t cs-update 查看。也可直接执行：
 
 ~~~bash
-docker compose --progress plain -f docker-compose.yml up -d --build ics-agent
+docker compose --progress plain -f docker-compose.yml up -d --build --no-deps --force-recreate ics-agent
 ~~~
+
+`--build` 负责构建镜像；只有挂载的 `database/channels.json` 改变时，镜像可能仍使用缓存，已有容器也可能被复用。发布命令明确加 `--force-recreate`，确保重新启动应用并加载配置。单独修改渠道 JSON 时，使用 `docker compose -f docker-compose.yml restart ics-agent` 即可；修改 `.env` 则必须 recreate。
 
 不要用 docker compose down 作为普通更新步骤，否则可能中断 PostgreSQL。
 
@@ -275,7 +284,7 @@ tar -xzf ~/cs-models.tar.gz
 docker compose -f docker-compose.yml up -d --force-recreate ics-agent
 ~~~
 
-两端 SHA256 必须一致。意图模型与 database/intent_dataset_4000.csv 必须作为配套版本发布并检查指纹。
+两端 SHA256 必须一致。意图模型与 database/channel_xingliao/intent_dataset_4000.csv 必须作为配套版本发布并检查指纹。
 
 ## 六、发布后验证
 
@@ -489,3 +498,464 @@ tail -n 120 log/uvicorn-admin.stderr.log
 ~~~
 
 第一次请按完整章节执行，熟悉后再使用最短清单。涉及模型、FAQ、知识库、服务器 .env 或数据库时，回到对应章节执行专门流程。
+
+## 十、本次多渠道版本覆盖升级（首次执行）
+
+适用于服务器已经运行单渠道版本，现在覆盖为兴聊、言聊、星盈通、微信四渠道版本。按 **10.1 → 10.2 → … → 10.8** 顺序执行；源码来源在 10.1 和 10.3 中选择对应的一种方式。命令中的运行目录仍是 `/opt/cs`，SSH 别名仍是 `ics`，应用服务仍是 `ics-agent`。
+
+本次更新后的管理平台名称为“零新智能客服”，左侧管理四个渠道，系统日志单独成页。四个渠道共用回复流程，分别选择自己的 FAQ 表、知识库集合和提示词：
+
+| 渠道 | 渠道标识 | FAQ 表 | 知识库逻辑集合 | 提示词文件（相对 /opt/cs） |
+| --- | --- | --- | --- | --- |
+| 兴聊 | xingliao | faq_channel_xingliao | kb_channel_xingliao | database/channel_xingliao/prompt_xingliao.md |
+| 言聊 | yanliao | faq_channel_yanliao | kb_channel_yanliao | database/channel_yanliao/prompt_yanliao.md |
+| 星盈通 | xingyingtong | faq_channel_xingyingtong | kb_channel_xingyingtong | database/channel_xingyingtong/prompt_xingyingtong.md |
+| 微信 | wechat | faq_channel_wechat | kb_channel_wechat | database/channel_wechat/prompt_wechat.md |
+
+### 10.1 在 Windows 准备本次版本（二选一）
+
+#### 方式 A：直接上传当前本地版本
+
+此方式打包当前工作区，不要求先提交 Git。更新包包含后端代码、服务器部署模板、文档、渠道 JSON 和四份提示词；业务 Excel、知识文档、意图 CSV 使用服务器现有版本，在 10.5 中迁移。
+
+在 **Windows PowerShell** 执行：
+
+~~~powershell
+Set-Location D:\project\CS
+& 'C:\Users\lenovo\Anaconda3\envs\cs\python.exe' -B -c "from ics_agent.channels import list_channels; print([(c.key, c.inboxes) for c in list_channels()])"
+if ($LASTEXITCODE -ne 0) { throw '渠道配置无效，先修复 channels.json。' }
+
+New-Item -ItemType Directory -Force .\tmp | Out-Null
+$multiChannelPackage = Join-Path $PWD 'tmp\cs-multichannel-update.tar.gz'
+tar.exe -czf $multiChannelPackage `
+  --exclude=__pycache__ --exclude=*.pyc `
+  --exclude=knowledge_base_in/output --exclude=knowledge_base_in/vector_store `
+  --exclude=reminder/build --exclude=reminder/dist --exclude=.pytest_cache `
+  ics_agent knowledge_base_in reminder deploy docs `
+  docker-compose.yml .dockerignore requirements.txt .env.example `
+  database/channels.json `
+  database/channel_xingliao/prompt_xingliao.md `
+  database/channel_yanliao/prompt_yanliao.md `
+  database/channel_xingyingtong/prompt_xingyingtong.md `
+  database/channel_wechat/prompt_wechat.md
+if ($LASTEXITCODE -ne 0) { throw '多渠道更新包打包失败。' }
+
+Get-FileHash $multiChannelPackage -Algorithm SHA256
+scp -o ServerAliveInterval=30 $multiChannelPackage ics:~/cs-multichannel-update.tar.gz
+if ($LASTEXITCODE -ne 0) { throw '更新包上传失败。' }
+~~~
+
+记录输出的 SHA256，稍后与服务器核对。包内没有本机 `.env`、模型权重、日志、向量库、`docker-compose.override.yml` 或独立 H5 页面。应用内管理后台随 `ics_agent/` 一起更新。后端镜像使用 `deploy/server/Dockerfile.backend-only`，服务器无需安装 Anaconda。
+
+#### 方式 B：沿用 Git 发布
+
+按第二节完成测试、提交并推送 `test` 分支。必须包括 `ics_agent/channels/`、相关后端修改、`database/channels.json`、四个 `prompt_*.md`、解析脚本、部署模板和文档。Git 方式的服务器拉取命令见 10.3，不需要再制作方式 A 的压缩包。
+
+### 10.2 在 Ubuntu 备份并暂停应用
+
+先在 Windows 执行 `ssh ics`，以下命令均在 **Ubuntu 服务器** 执行。安排本次维护时间，等待正在处理的机器人请求结束，暂停后台 FAQ/知识库更新。数据库容器保持运行。
+
+~~~bash
+cd /opt/cs
+docker compose -f docker-compose.yml ps -a
+df -h /opt/cs
+~~~
+
+确认 PostgreSQL 为 healthy，并有足够空间保存数据库、原始资料和向量库备份后，执行：
+
+~~~bash
+(
+  set -e
+  cd /opt/cs
+  mkdir -p deployment-records
+  chmod 700 deployment-records
+  multi_release_tag=$(date +%Y%m%d-%H%M%S)
+  multi_backup_root="$HOME/cs-backups"
+  mkdir -p "$multi_backup_root"
+  chmod 700 "$multi_backup_root"
+  multi_backup_dir="$multi_backup_root/multichannel-$multi_release_tag"
+  mkdir -m 700 "$multi_backup_dir"
+  printf '%s\n' "$multi_backup_dir" > deployment-records/last-multichannel-backup.txt
+
+  multi_previous_container_id=$(docker compose -f docker-compose.yml ps -a -q ics-agent)
+  test -n "$multi_previous_container_id"
+  docker inspect "$multi_previous_container_id" --format '{{.Image}}' > "$multi_backup_dir/previous-image-id.txt"
+  docker image tag "$(cat "$multi_backup_dir/previous-image-id.txt")" "ics-agent:rollback-multichannel-$multi_release_tag"
+  cp -p .env "$multi_backup_dir/env.backup"
+
+  docker compose -f docker-compose.yml stop ics-agent
+  docker compose -f docker-compose.yml exec -T postgres \
+    sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom' \
+    > "$multi_backup_dir/postgres.dump"
+  test -s "$multi_backup_dir/postgres.dump"
+  tar -czf "$multi_backup_dir/data-files.tar.gz" \
+    database knowledge_base_in/output knowledge_base_in/vector_store
+
+  multi_code_paths=()
+  for path in ics_agent reminder knowledge_base_in deploy docs Dockerfile docker-compose.yml .dockerignore requirements.txt .env.example; do
+    if [ -e "$path" ]; then multi_code_paths+=("$path"); fi
+  done
+  tar --exclude='__pycache__' --exclude='*.pyc' \
+    --exclude='knowledge_base_in/output' --exclude='knowledge_base_in/vector_store' \
+    --exclude='reminder/build' --exclude='reminder/dist' \
+    -czf "$multi_backup_dir/previous-code.tar.gz" "${multi_code_paths[@]}"
+  chmod 600 "$multi_backup_dir"/*
+  echo "备份完成：$multi_backup_dir"
+)
+~~~
+
+只有出现“备份完成”才继续。如果备份或后续构建失败、尚未替换应用容器，可执行 `docker compose -f docker-compose.yml start ics-agent` 恢复旧容器；先处理失败原因，再继续升级。完整备份放在当前服务器用户的 `~/cs-backups/`，位于 Docker 构建目录外；备份中的 `.env` 和数据库包含敏感数据，保留在这个受限目录中。
+
+### 10.3 准备服务器端新版源码（二选一）
+
+#### 对应方式 A：解压上传包到临时目录
+
+~~~bash
+sha256sum ~/cs-multichannel-update.tar.gz
+~~~
+
+与 10.1 的 Windows SHA256 核对一致后执行：
+
+~~~bash
+(
+  set -e
+  mkdir -p /opt/cs/tmp
+  multi_source_dir=$(mktemp -d /opt/cs/tmp/multichannel-source.XXXXXX)
+  tar -xzf ~/cs-multichannel-update.tar.gz -C "$multi_source_dir"
+  test -f "$multi_source_dir/deploy/server/Dockerfile.backend-only"
+  test -f "$multi_source_dir/database/channels.json"
+  printf '%s\n' "$multi_source_dir" > /opt/cs/deployment-records/multichannel-source-dir.txt
+  sha256sum ~/cs-multichannel-update.tar.gz > /opt/cs/deployment-records/multichannel-package.sha256
+  echo "新版源码目录：$multi_source_dir"
+)
+~~~
+
+先解压到临时目录，后续只同步指定的代码和配置文件。
+
+#### 对应方式 B：拉取 Git 发布版本
+
+~~~bash
+git -C /opt/cs-src status --short
+git -C /opt/cs-src branch --show-current
+~~~
+
+确认工作区干净、分支为 `test`，再执行：
+
+~~~bash
+git -C /opt/cs-src rev-parse HEAD > /opt/cs/deployment-records/multichannel-previous-source-commit.txt
+git -C /opt/cs-src pull --ff-only https://code-sayu.xingyongshe.com/backend/chatwoot.git test
+~~~
+
+仅在 pull 成功、提交 SHA 与开发端记录一致后继续：
+
+~~~bash
+test -f /opt/cs-src/database/channels.json
+printf '%s\n' /opt/cs-src > /opt/cs/deployment-records/multichannel-source-dir.txt
+git -C /opt/cs-src rev-parse HEAD > /opt/cs/deployment-records/multichannel-new-source-commit.txt
+~~~
+
+### 10.4 覆盖后端代码及服务器构建模板
+
+两种源码来源从这里开始使用相同命令：
+
+~~~bash
+(
+  set -e
+  multi_source_dir=$(cat /opt/cs/deployment-records/multichannel-source-dir.txt)
+  test -f "$multi_source_dir/deploy/server/Dockerfile.backend-only"
+  mkdir -p /opt/cs/ics_agent /opt/cs/knowledge_base_in /opt/cs/reminder /opt/cs/deploy /opt/cs/docs
+  rsync -a --delete --exclude='__pycache__/' --exclude='*.pyc' "$multi_source_dir/ics_agent/" /opt/cs/ics_agent/
+  rsync -a --delete --exclude='/output/' --exclude='/vector_store/' --exclude='__pycache__/' --exclude='*.pyc' "$multi_source_dir/knowledge_base_in/" /opt/cs/knowledge_base_in/
+  rsync -a --delete --exclude='/build/' --exclude='/dist/' --exclude='__pycache__/' --exclude='*.pyc' --exclude='.pytest_cache/' "$multi_source_dir/reminder/" /opt/cs/reminder/
+  rsync -a "$multi_source_dir/deploy/" /opt/cs/deploy/
+  rsync -a "$multi_source_dir/docs/" /opt/cs/docs/
+  cp "$multi_source_dir/docker-compose.yml" "$multi_source_dir/.dockerignore" "$multi_source_dir/requirements.txt" "$multi_source_dir/.env.example" /opt/cs/
+  cp "$multi_source_dir/deploy/server/Dockerfile.backend-only" /opt/cs/Dockerfile
+  cmp -s /opt/cs/Dockerfile "$multi_source_dir/deploy/server/Dockerfile.backend-only"
+  echo '后端代码及构建模板已同步'
+)
+~~~
+
+后续全部显式使用 `-f docker-compose.yml`，避免把本地开发热重载 override 带到服务器。原服务器若有 Compose 自定义项，核对后保留仍需使用的设置；端口和服务地址优先沿用服务器 `.env`。
+
+### 10.5 补充渠道框架并复制服务器兴聊资料
+
+此步骤使用服务器现有镜像中的 Python 执行文件复制，不启动 Web 服务。新版提示词和渠道配置来自本次源码；兴聊业务资料来自服务器自己的旧目录。已存在的新目录文件会保留，旧路径也保留，便于回滚。
+
+~~~bash
+(
+  set -e
+  cd /opt/cs
+  multi_source_dir=$(cat deployment-records/multichannel-source-dir.txt)
+  docker compose -f docker-compose.yml run --rm -T --no-deps \
+    --user "$(id -u):$(id -g)" \
+    --volume "$multi_source_dir/database:/release-database:ro" \
+    --entrypoint python ics-agent - /app/database /release-database <<'PY'
+import json
+import shutil
+import sys
+from pathlib import Path
+
+data_dir = Path(sys.argv[1])
+release_dir = Path(sys.argv[2])
+channel_keys = ("xingliao", "yanliao", "xingyingtong", "wechat")
+
+def copy_missing(source, target):
+    if target.exists():
+        print("保留已有文件：", target)
+        return
+    if not source.is_file():
+        raise FileNotFoundError(source)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    print("新增文件：", target)
+
+copy_missing(release_dir / "channels.json", data_dir / "channels.json")
+json.loads((data_dir / "channels.json").read_text(encoding="utf-8"))
+for key in channel_keys:
+    channel_dir = data_dir / f"channel_{key}"
+    (channel_dir / "knowledge_base").mkdir(parents=True, exist_ok=True)
+    copy_missing(release_dir / f"channel_{key}" / f"prompt_{key}.md",
+                 channel_dir / f"prompt_{key}.md")
+
+for filename in ("最新问答对.xlsx", "intent_dataset_4000.csv"):
+    source = data_dir / filename
+    if source.is_file():
+        copy_missing(source, data_dir / "channel_xingliao" / filename)
+
+legacy_documents = data_dir / "knowledge_base"
+if legacy_documents.is_dir():
+    for source in sorted(legacy_documents.rglob("*")):
+        if source.is_file():
+            copy_missing(source, data_dir / "channel_xingliao" / "knowledge_base"
+                         / source.relative_to(legacy_documents))
+print("渠道目录和兴聊资料复制完成；请继续核对收件箱及服务器配置。")
+PY
+)
+~~~
+
+新目录应为：
+
+~~~text
+/opt/cs/database/
+├── channels.json
+├── channel_xingliao/
+│   ├── 最新问答对.xlsx                 复制服务器已有文件；未保存源 Excel 时可稍后后台补传
+│   ├── intent_dataset_4000.csv          与服务器现有意图模型配套
+│   ├── knowledge_base/                 复制服务器已有文档及子目录
+│   └── prompt_xingliao.md
+├── channel_yanliao/
+│   ├── knowledge_base/                 初始可为空
+│   └── prompt_yanliao.md
+├── channel_xingyingtong/
+│   ├── knowledge_base/                 初始可为空
+│   └── prompt_xingyingtong.md
+└── channel_wechat/
+    ├── knowledge_base/                 初始可为空
+    └── prompt_wechat.md
+~~~
+
+三个新渠道的 `最新问答对.xlsx` 由后续后台上传生成，当前无需制作空 Excel。已有服务器使用自定义资料路径时，保持自定义内容并在下一步核对实际生效路径；上面的脚本只复制默认旧目录中的文件。服务器若没有意图 CSV，需要取回与服务器模型配套的版本，不能随意换成本地另一版本。
+
+### 10.6 核对服务器收件箱和环境配置
+
+~~~bash
+cd /opt/cs
+nano database/channels.json
+~~~
+
+逐个核对服务器 Chatwoot 的 `account_id` 和 `inbox_id`。**本地与服务器可能使用不同编号，不能把开发环境绑定直接当成服务器绑定。** 本文编写时，本地配置为账号 `1` 下兴聊 `3`、言聊 `6`、星盈通 `7`、微信 `4`，这些值只供核对；服务器应填写各实际收件箱的编号。
+
+每个渠道的格式如下，示例中的数字需换成服务器实际值：
+
+~~~json
+"inboxes": [{"account_id": 1, "inbox_id": 6}]
+~~~
+
+暂未接入的渠道可写 `"inboxes": []`。不要留成 `"inbox_id":`，也不要填 `null` 或重复绑定同一对编号；配置语法错误会导致整个应用启动失败。未绑定的收件箱会回退兴聊。
+
+四个实际收件箱绑定到现有服务器机器人，并使用现有 Webhook 地址 `http://172.20.48.12:3001/webhooks/chatwoot`（已有 HTTPS 入口时使用原 HTTPS 地址）。沿用服务器现有 AgentBot、Webhook 签名密钥和有效 API Token；接入时确认消息确实进入预期收件箱。
+
+然后编辑服务器原 `.env`：
+
+~~~bash
+nano .env
+~~~
+
+若原先使用项目默认路径，将对应原行调整为下面的值；缺失时添加，避免同名配置重复。已经使用自定义表、目录或模型路径的服务器先核对覆盖规则，再决定是否调整，保留其现有数据来源。
+
+~~~dotenv
+FAQ_SOURCE_TABLE=faq_channel_xingliao
+FAQ_SOURCE_XLSX_PATH=database/channel_xingliao/最新问答对.xlsx
+KNOWLEDGE_BASE_INPUT_DIR=database/channel_xingliao/knowledge_base
+KNOWLEDGE_BASE_OUTPUT_PATH=knowledge_base_in/output/chunks.jsonl
+KNOWLEDGE_BASE_VECTOR_COLLECTION=kb_channel_xingliao
+RAG_INTENT_DATASET_PATH=database/channel_xingliao/intent_dataset_4000.csv
+~~~
+
+原来的 `POSTGRES_*`、模型目录、云模型配置、端口、管理员和提醒配置均沿用服务器现有值。`KNOWLEDGE_BASE_VECTOR_DB_DIR` 仍指向服务器原向量目录。
+
+如果新渠道 H5 使用本项目 `/chatwoot/profile` 签发身份签名，额外补充各收件箱的真实 HMAC 密钥：
+
+~~~dotenv
+CHATWOOT_CHANNEL_HMAC_TOKENS={"yanliao":"言聊收件箱HMAC密钥","xingyingtong":"星盈通收件箱HMAC密钥","wechat":"微信收件箱HMAC密钥"}
+~~~
+
+兴聊继续使用原 `CHATWOOT_HMAC_TOKEN`；由独立业务后端签发身份时，按该后端现有方式为对应 Inbox 签名。HMAC 密钥放 `.env`，不要写入 `channels.json`。H5 的公开 Website Token 与 HMAC 密钥用途不同；独立部署的各 H5 需要使用各自收件箱的 Website Token。后端收件箱路由以 Webhook 来源为准，页面上的渠道名称不能替代收件箱配置。本次后端包不负责更新独立 H5 页面。
+
+~~~bash
+chmod 600 .env
+docker compose -f docker-compose.yml config --quiet
+~~~
+
+### 10.7 构建、校验，再强制重建应用
+
+先构建新版镜像：
+
+~~~bash
+cd /opt/cs
+docker compose --progress plain -f docker-compose.yml build ics-agent
+~~~
+
+构建成功后，执行以下预检查。它读取新镜像代码和服务器挂载资料，校验渠道绑定、提示词、知识库目录及意图 CSV 指纹，并打印实际使用的资源名称；不执行 FAQ 导入或向量重建。
+
+~~~bash
+docker compose -f docker-compose.yml run --rm -T --no-deps \
+  --entrypoint python ics-agent - <<'PY'
+import hashlib
+import json
+from pathlib import Path
+from ics_agent.channels import list_channels, resolve_chatwoot_channel
+from ics_agent.faq.config import get_faq_settings
+from ics_agent.rag.config import get_rag_settings
+
+root = Path("/app")
+for channel in list_channels():
+    faq = get_faq_settings(channel.key)
+    rag = get_rag_settings(channel.key)
+    prompt = root / channel.prompt_path
+    assert prompt.is_file() and prompt.read_text(encoding="utf-8").strip(), prompt
+    assert (root / rag.knowledge_base_input_dir).is_dir(), rag.knowledge_base_input_dir
+    for account_id, inbox_id in channel.inboxes:
+        assert resolve_chatwoot_channel(account_id, int(inbox_id)) == channel.key
+    print(channel.key, "inboxes=", channel.inboxes,
+          "faq=", faq.faq_table_name, "kb=", rag.knowledge_base_vector_collection,
+          "faq_file=", faq.faq_source_xlsx_path, "documents=", rag.knowledge_base_input_dir)
+
+shared = get_rag_settings()
+dataset = root / shared.rag_intent_dataset_path
+metadata = json.loads((root / shared.rag_output_dir / "labels.json").read_text(encoding="utf-8"))
+actual_sha = hashlib.sha256(dataset.read_bytes()).hexdigest()
+expected_sha = metadata.get("dataset", {}).get("sha256")
+if expected_sha:
+    assert actual_sha == expected_sha, "意图 CSV 与服务器模型指纹不一致，请恢复配套 CSV。"
+else:
+    print("旧模型未记录 CSV 指纹；启动后仍需核对标签和意图模型日志。")
+print("意图 CSV SHA256:", actual_sha)
+print("渠道配置和资料预检查通过")
+PY
+~~~
+
+只有最后显示“渠道配置和资料预检查通过”才执行启动命令。若出现 `JSONDecodeError`，回到 10.6 修复服务器 JSON；若提示词、文档目录或 CSV 缺失，回到 10.5 补齐。
+
+~~~bash
+cd /opt/cs
+docker compose -f docker-compose.yml up -d --no-deps --force-recreate ics-agent
+docker compose -f docker-compose.yml ps -a
+tail -n 160 log/uvicorn-admin.stderr.log
+curl -i --max-time 20 http://172.20.48.12:3001/health
+~~~
+
+模型预热期间可能暂时无法访问，等本次启动日志出现 `Application startup complete` 后再次请求 `/health`，预期 HTTP 200、`"status":"ok"`。只看到容器 `Up` 不代表应用已经成功启动。
+
+应用启动时自动创建四个 FAQ 表和知识库集合。默认旧表 `faq_qna_optimized` 在首次迁移时复制到空的 `faq_channel_xingliao`，旧表保留，并记录一次迁移标记。兴聊的 `kb_channel_xingliao` 通过 active 指针复用服务器原 `knowledge_base` 物理集合，保留原向量；三个新渠道初始为空。首次升级不需要重新导入兴聊 Excel 或重算向量，先验收现有链路，避免把旧源 Excel 再次全量覆盖到更新过的数据库。
+
+### 10.8 验证四个渠道和新后台
+
+先核对本次启动日志中的四条渠道记录，确认 `channel_key`、`inboxes`、`faq_table` 和知识库集合符合服务器配置，且没有渠道初始化失败：
+
+~~~bash
+tail -n 200 /opt/cs/log/uvicorn-admin.stderr.log
+~~~
+
+核对四个 FAQ 表的数据量：
+
+~~~bash
+cd /opt/cs
+docker compose -f docker-compose.yml exec -T postgres \
+  sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' <<'SQL'
+SELECT 'xingliao' AS channel, COUNT(*) AS faq_count FROM faq_channel_xingliao
+UNION ALL SELECT 'yanliao', COUNT(*) FROM faq_channel_yanliao
+UNION ALL SELECT 'xingyingtong', COUNT(*) FROM faq_channel_xingyingtong
+UNION ALL SELECT 'wechat', COUNT(*) FROM faq_channel_wechat;
+SELECT migration_key, applied_at FROM ics_channel_migrations;
+SQL
+~~~
+
+兴聊应保留原 FAQ；三个新渠道未导入资料时为 `0`。自定义 FAQ 表按 10.7 打印的实际表名核对。
+
+在 Windows 另开 PowerShell，保持隧道窗口运行：
+
+~~~powershell
+ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -L 13001:172.20.48.12:3001 ics
+~~~
+
+浏览器打开 `http://127.0.0.1:13001/admin`，使用服务器原管理员账号登录。确认名称为“零新智能客服”，左侧能切换兴聊、言聊、星盈通、微信；兴聊页面可看到复制后的原 FAQ Excel（已保存源文件时）和知识文档；“系统日志”进入独立页面。浏览器缓存旧页面时强制刷新。
+
+接着从四个实际 H5/测试收件箱各发送一条“你是谁？”以及一条本渠道业务问题，在后台“系统日志”或服务器日志核对：
+
+~~~text
+event=Webhook.channel.resolved ... account_id=... inbox_id=... channel_key=yanliao
+event=Webhook.job.answer_ready ... channel_key=yanliao route=...
+~~~
+
+四个请求应分别出现对应 `channel_key`；兴聊原 FAQ、知识库检索、人工转接和会话结束后再咨询均正常。新渠道未导入业务资料时会使用自己的提示词回复，不会借用兴聊 FAQ 或文档。若新渠道仍回答“小兴”，先看日志的 `inbox_id` 是否与服务器绑定一致，再核对 H5 Website Token 是否属于该收件箱。
+
+### 10.9 后续通过后台导入各渠道资料
+
+完成代码和框架升级后，新渠道的业务资料可以全部在后台维护：
+
+1. 左侧选择“言聊”“星盈通”或“微信”，确认页面显示正确渠道。
+2. 上传该渠道的 `.xlsx` FAQ 工作簿，预览无误后点击“更新 FAQ 数据库”。上传可以使用任意文件名，后台保存为该渠道的 `最新问答对.xlsx`；更新会全量替换本渠道 FAQ。
+3. 上传该渠道的知识文档，确认文件列表无误后点击“更新知识库”，等待更新成功。后台使用与兴聊相同的解析、分块、向量化和发布流程，写入本渠道自己的集合。
+4. 从该渠道的 H5 发问验证；切换到其他渠道确认资料仍各自独立。
+
+上传源文件与更新数据库是两个操作，上传后必须执行对应更新。后台 FAQ/知识库更新成功后即可使用，无需重新构建镜像。调整提示词时编辑服务器 `database/channel_<渠道>/prompt_<渠道>.md`，下一次生成回复读取新内容；FAQ 命中直接返回 Excel 中的答案，不会被提示词重写。提示词放在渠道根目录，业务文档放在其 `knowledge_base/` 下。
+
+以后只调整收件箱绑定时，修改并校验服务器 `database/channels.json` 后执行：
+
+~~~bash
+cd /opt/cs
+docker compose -f docker-compose.yml run --rm -T --no-deps --entrypoint python ics-agent \
+  -c 'from ics_agent.channels import list_channels; print([(c.key, c.inboxes) for c in list_channels()])'
+~~~
+
+仅在校验成功后重启：
+
+~~~bash
+docker compose -f docker-compose.yml restart ics-agent
+~~~
+
+`.env` 改动使用 `up -d --no-deps --force-recreate ics-agent`；后端代码改动先 build，再 force-recreate。单独 `up -d --build` 不保证因挂载 JSON 的变化而重启已有容器。
+
+### 10.10 首次升级失败时回滚应用
+
+在尚未通过新后台更新业务资料的验收阶段，可以恢复备份的环境配置并切回旧镜像。10.5 保留了原兴聊文件路径，原 FAQ 表和向量集合也由迁移逻辑保留。
+
+~~~bash
+(
+  set -e
+  cd /opt/cs
+  multi_backup_dir=$(cat deployment-records/last-multichannel-backup.txt)
+  test -s "$multi_backup_dir/previous-image-id.txt"
+  test -f "$multi_backup_dir/env.backup"
+  cp -p "$multi_backup_dir/env.backup" .env
+  chmod 600 .env
+  docker image tag "$(cat "$multi_backup_dir/previous-image-id.txt")" ics-agent:py310
+  docker compose -f docker-compose.yml up -d --no-deps --force-recreate ics-agent
+)
+~~~
+
+随后按第六节检查健康接口和原兴聊 Inbox。本步骤不执行 build，以免重新生成新版镜像；直接上传方式的旧代码保存在本次 `previous-code.tar.gz`，Git 方式另有旧提交记录。若升级后已经修改了新 FAQ 或知识库，旧镜像可能读到旧表或旧集合，需要先保存升级后的资料并确认数据恢复方案，不能直接用发布前数据库备份覆盖正在使用的数据库。
+
+更详细的渠道目录、API 参数和资料维护规则见[多渠道使用说明](multi-channel-setup.md)。

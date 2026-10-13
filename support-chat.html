@@ -216,10 +216,12 @@
       var shell = document.getElementById("app-shell");
       var search = new URLSearchParams(window.location.search);
       var isLocalFile = window.location.protocol === "file:";
+      var channelKey = search.get("channel_key") || "xingliao";
       var runtime = {
+        channelKey: channelKey,
         chatwootBaseUrl: search.get("chatwootBaseUrl") ||
           (isLocalFile ? CONFIG.CHATWOOT_BASE_URL : window.location.origin),
-        websiteToken: search.get("websiteToken") || CONFIG.WEBSITE_TOKEN,
+        websiteToken: search.get("websiteToken") || (channelKey === "xingliao" ? CONFIG.WEBSITE_TOKEN : ""),
         locale: search.get("locale") || CONFIG.DEFAULT_LOCALE,
         authToken: search.get("appToken") || search.get("token") || search.get("authToken") || "",
         profileEndpoint: search.get("profileEndpoint") ||
@@ -463,6 +465,9 @@
         var profileUrl = new URL(runtime.profileEndpoint, window.location.href);
         if (queryProfile && queryProfile.identifier) {
           profileUrl.searchParams.set("identifier", queryProfile.identifier);
+          if (runtime.channelKey !== "xingliao") {
+            profileUrl.searchParams.set("channel_key", runtime.channelKey);
+          }
           if (queryProfile.name) {
             profileUrl.searchParams.set("name", queryProfile.name);
           }
@@ -687,6 +692,7 @@
         }
 
         var configUrl = new URL(CONFIG.RUNTIME_CONFIG_ENDPOINT, window.location.href);
+        configUrl.searchParams.set("channel_key", runtime.channelKey);
         return fetchWithTimeout(configUrl.toString(), {
           method: "GET",
           credentials: "include",
@@ -704,6 +710,9 @@
           }
           if (remoteConfig.profile_endpoint) {
             runtime.profileEndpoint = remoteConfig.profile_endpoint;
+          }
+          if (remoteConfig.website_token && !search.get("websiteToken")) {
+            runtime.websiteToken = remoteConfig.website_token;
           }
         });
       }

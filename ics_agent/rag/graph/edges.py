@@ -9,6 +9,7 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 
 from ics_agent.app.core.logging_config import log_event
+from ics_agent.channels import channel_thread_id, get_channel
 from ics_agent.rag.config import get_rag_settings
 from ics_agent.rag.memory import (
     memory_finalize_node,
@@ -123,11 +124,14 @@ async def run_rag_graph(
     *,
     thread_id: str | None = None,
     answer_override: str | None = None,
+    channel_key: str | None = None,
 ) -> RAGState:
     """执行一轮 RAG 链路，并按 thread_id 持久化对话记忆。"""
     normalized_query = query.strip()
     if not normalized_query:
         raise ValueError("Query cannot be empty.")
+    channel = get_channel(channel_key)
+    thread_id = channel_thread_id(thread_id, channel.key)
 
     from ics_agent.rag.memory import get_conversation_memory_manager
 
@@ -164,6 +168,7 @@ async def run_rag_graph(
     memory_enabled = checkpointer is not None and bool(thread_id)
     graph_input: dict[str, Any] = {
         "query": normalized_query,
+        "channel_key": channel.key,
         "memory_enabled": memory_enabled,
         "answer_override": answer_override or "",
     }

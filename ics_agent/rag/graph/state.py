@@ -14,6 +14,7 @@ class RAGState(TypedDict, total=False):
     # 输入和未来路由字段。
     query: str
     route: str
+    channel_key: str
 
     # 意图识别节点输出。
     intent_id: int

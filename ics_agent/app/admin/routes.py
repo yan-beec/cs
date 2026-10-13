@@ -8,6 +8,8 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
+from ics_agent.channels import channel_thread_id, list_channels
+from ics_agent.channels.http import channel_query
 
 from .files import (
     AdminFileOperationError,
@@ -60,12 +62,13 @@ async def webhook_job_status(
 @router.delete("/admin/memory")
 async def delete_memory(
     thread_id: str = Query(..., min_length=1, max_length=256),
+    channel_key: str = Depends(channel_query),
     _: AdminPrincipal = Depends(require_admin),
 ) -> JSONResponse:
     """删除一个会话的全部 PostgreSQL 对话记忆。"""
     try:
         deleted = await get_conversation_memory_manager().delete_thread(
-            thread_id
+            channel_thread_id(thread_id, channel_key)
         )
     except Exception as exc:
         logger.exception(
@@ -132,13 +135,26 @@ async def admin_login(payload: AdminLoginRequest) -> JSONResponse:
     )
 
 
+@router.get("/admin/api/channels")
+async def admin_channels(
+    _: AdminPrincipal = Depends(require_admin),
+) -> JSONResponse:
+    """返回可管理的渠道及对应文件位置。"""
+    return JSONResponse(content={"items": [
+        {"key": channel.key, "name": channel.name,
+         "faq_workbook": channel.faq_workbook, "knowledge_dir": channel.knowledge_dir}
+        for channel in list_channels()
+    ]})
+
+
 @router.get("/admin/api/files/knowledge-base")
 async def admin_list_knowledge_files(
+    channel_key: str = Depends(channel_query),
     _: AdminPrincipal = Depends(require_admin),
 ) -> JSONResponse:
     """列出配置的知识库目录下的所有文件。"""
     try:
-        items = await asyncio.to_thread(list_files, knowledge_base_root())
+        items = await asyncio.to_thread(list_files, knowledge_base_root(channel_key=channel_key))
     except Exception as exc:
         logger.exception(
             "事件=管理后台.知识库.文件.列表读取失败 错误类型=%s",
@@ -157,13 +173,14 @@ async def admin_list_knowledge_files(
 @router.get("/admin/api/files/knowledge-base/content")
 async def admin_preview_knowledge_file(
     path: str = Query(..., min_length=1, max_length=1024),
+    channel_key: str = Depends(channel_query),
     _: AdminPrincipal = Depends(require_admin),
 ) -> JSONResponse:
     """返回一个知识库文件的文本内容或预览元数据。"""
     try:
         result = await asyncio.to_thread(
             knowledge_file_preview,
-            knowledge_base_root(),
+            knowledge_base_root(channel_key=channel_key),
             path,
         )
     except FileNotFoundError as exc:
@@ -176,13 +193,14 @@ async def admin_preview_knowledge_file(
 @router.get("/admin/api/files/knowledge-base/preview")
 async def admin_stream_knowledge_preview(
     path: str = Query(..., min_length=1, max_length=1024),
+    channel_key: str = Depends(channel_query),
     _: AdminPrincipal = Depends(require_admin),
 ) -> FileResponse:
     """以流式方式返回 PDF/图片知识库文件，供已认证用户预览。"""
     try:
         file_path = await asyncio.to_thread(
             safe_child_path,
-            knowledge_base_root(),
+            knowledge_base_root(channel_key=channel_key),
             path,
         )
     except FileNotFoundError as exc:
@@ -202,13 +220,14 @@ async def admin_stream_knowledge_preview(
 @router.get("/admin/api/files/knowledge-base/download")
 async def admin_download_knowledge_file(
     path: str = Query(..., min_length=1, max_length=1024),
+    channel_key: str = Depends(channel_query),
     _: AdminPrincipal = Depends(require_admin),
 ) -> FileResponse:
     """下载一个知识库文件。"""
     try:
         file_path = await asyncio.to_thread(
             safe_child_path,
-            knowledge_base_root(),
+            knowledge_base_root(channel_key=channel_key),
             path,
         )
     except FileNotFoundError as exc:
@@ -228,13 +247,14 @@ async def admin_download_knowledge_file(
 async def admin_upload_knowledge_files(
     files: list[UploadFile] = File(...),
     relative_dir: str = Form(default=""),
+    channel_key: str = Depends(channel_query),
     _: AdminPrincipal = Depends(require_admin),
 ) -> JSONResponse:
     """将一个或多个文件上传到安全的知识库子目录。"""
     if not files:
         raise HTTPException(status_code=400, detail="请选择要上传的文件。")
 
-    root = knowledge_base_root()
+    root = knowledge_base_root(channel_key=channel_key)
     uploaded: list[dict[str, object]] = []
     try:
         for upload in files:
@@ -282,13 +302,14 @@ async def admin_upload_knowledge_files(
 @router.post("/admin/api/files/knowledge-base/delete")
 async def admin_delete_knowledge_file(
     payload: AdminFileDeleteRequest,
+    channel_key: str = Depends(channel_query),
     _: AdminPrincipal = Depends(require_admin),
 ) -> JSONResponse:
     """删除配置的知识库目录下的一个文件。"""
     try:
         result = await asyncio.to_thread(
             delete_file,
-            knowledge_base_root(),
+            knowledge_base_root(channel_key=channel_key),
             payload.relative_path,
         )
     except FileNotFoundError as exc:
@@ -306,11 +327,12 @@ async def admin_delete_knowledge_file(
 
 @router.get("/admin/api/files/faq")
 async def admin_faq_file(
+    channel_key: str = Depends(channel_query),
     _: AdminPrincipal = Depends(require_admin),
 ) -> JSONResponse:
     """返回配置的 FAQ 工作簿状态。"""
     try:
-        result = await asyncio.to_thread(faq_file_info)
+        result = await asyncio.to_thread(faq_file_info, channel_key=channel_key)
     except Exception as exc:
         raise HTTPException(
             status_code=503,
@@ -321,11 +343,12 @@ async def admin_faq_file(
 
 @router.get("/admin/api/files/faq/content")
 async def admin_preview_faq_file(
+    channel_key: str = Depends(channel_query),
     _: AdminPrincipal = Depends(require_admin),
 ) -> JSONResponse:
     """返回 FAQ 工作簿的工作表和行，供在线浏览。"""
     try:
-        result = await asyncio.to_thread(faq_workbook_preview)
+        result = await asyncio.to_thread(faq_workbook_preview, channel_key=channel_key)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="FAQ 文件不存在。") from exc
     except AdminFileOperationError as exc:
@@ -341,11 +364,12 @@ async def admin_preview_faq_file(
 
 @router.get("/admin/api/files/faq/download")
 async def admin_download_faq_file(
+    channel_key: str = Depends(channel_query),
     _: AdminPrincipal = Depends(require_admin),
 ) -> FileResponse:
     """下载配置的 FAQ 工作簿。"""
     try:
-        file_path = faq_file_path()
+        file_path = faq_file_path(channel_key=channel_key)
     except AdminFileOperationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not file_path.is_file():
@@ -360,16 +384,17 @@ async def admin_download_faq_file(
 @router.post("/admin/api/files/faq/upload")
 async def admin_upload_faq_file(
     file: UploadFile = File(...),
+    channel_key: str = Depends(channel_query),
     _: AdminPrincipal = Depends(require_admin),
 ) -> JSONResponse:
     """原子替换配置的 FAQ 工作簿。"""
-    destination = faq_file_path()
+    destination = faq_file_path(channel_key=channel_key)
     filename = Path(file.filename or "").name
-    if filename != destination.name:
+    if Path(filename).suffix.lower() != ".xlsx":
         await file.close()
         raise HTTPException(
             status_code=400,
-            detail=f"上传文件名必须是 {destination.name}。",
+            detail="请上传 .xlsx 格式的 FAQ 工作簿。",
         )
     try:
         result = await asyncio.to_thread(save_upload, file, destination)
@@ -403,6 +428,7 @@ async def admin_logs(
 @router.post("/admin/api/update/knowledge-base")
 async def admin_update_knowledge_base(
     confirm: bool = Query(default=False),
+    channel_key: str = Depends(channel_query),
     _: AdminPrincipal = Depends(require_admin),
 ) -> JSONResponse:
     """提交知识库全量解析和向量库重建任务。"""
@@ -412,7 +438,7 @@ async def admin_update_knowledge_base(
             detail="知识库更新会全量覆盖当前向量库，请确认文件已备份后再执行。",
         )
     try:
-        status = await get_knowledge_base_update_manager().submit_full_update()
+        status = await get_knowledge_base_update_manager(channel_key).submit_full_update()
     except KnowledgeBaseUpdateInProgress as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (FileNotFoundError, ValueError) as exc:
@@ -436,6 +462,7 @@ async def admin_update_knowledge_base(
 @router.post("/admin/api/update/faq")
 async def admin_update_faq(
     confirm: bool = Query(default=False),
+    channel_key: str = Depends(channel_query),
     _: AdminPrincipal = Depends(require_admin),
 ) -> JSONResponse:
     """提交基于配置 FAQ 工作簿的后台刷新任务。"""
@@ -445,8 +472,8 @@ async def admin_update_faq(
             detail="FAQ 更新会全量覆盖当前 FAQ 数据，请确认 Excel 文件已备份后再执行。",
         )
     try:
-        status = await get_faq_service().submit_excel_refresh(
-            get_faq_settings().faq_source_xlsx_path
+        status = await get_faq_service(channel_key).submit_excel_refresh(
+            get_faq_settings(channel_key).faq_source_xlsx_path
         )
     except FAQUpdateInProgress as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

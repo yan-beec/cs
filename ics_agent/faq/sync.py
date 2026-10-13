@@ -14,11 +14,12 @@ from typing import Any, Iterable
 from openpyxl import load_workbook
 
 from ics_agent.app.core.logging_config import log_event
-from ics_agent.faq.config import get_faq_settings
+from ics_agent.faq.config import FAQSettings, get_faq_settings
 
 from .repositories import (
     FAQRepository,
     PostgreSQLConnectionPool,
+    ensure_faq_table,
 )
 from .service import FAQService, FAQSnapshotSynchronizer, get_faq_service
 
@@ -323,8 +324,11 @@ class FAQQnaSynchronizer:
     def __init__(
         self,
         connections: PostgreSQLConnectionPool | None = None,
+        *,
+        settings: FAQSettings | None = None,
     ) -> None:
         self._connections = connections or PostgreSQLConnectionPool()
+        self.settings = settings or get_faq_settings()
 
     def sync(
         self,
@@ -334,7 +338,7 @@ class FAQQnaSynchronizer:
         if not rows:
             raise ValueError("Cannot synchronize an empty FAQ record set.")
 
-        settings = get_faq_settings()
+        settings = self.settings
         table_name = settings.faq_table_name
         columns = ", ".join(EXPECTED_COLUMNS)
         placeholders = ", ".join(["%s"] * len(EXPECTED_COLUMNS))
@@ -412,13 +416,16 @@ def sync_qna_from_excel(
     sheet_name: str | None = None,
     refresh_bm25: bool = False,
     faq_service: FAQService | None = None,
+    channel_key: str | None = None,
 ) -> FAQSyncResult:
     """同步 PostgreSQL FAQ 状态，并按需刷新实时 BM25 匹配器。"""
+    settings = get_faq_settings(channel_key)
     source_path = _resolve_project_path(
-        workbook_path or get_faq_settings().faq_source_xlsx_path
+        workbook_path or settings.faq_source_xlsx_path
     )
     records = FAQExcelReader().read(source_path, sheet_name=sheet_name)
-    database_result = FAQQnaSynchronizer().sync(records)
+    ensure_faq_table(settings=settings)
+    database_result = FAQQnaSynchronizer(settings=settings).sync(records)
     upserted_count = database_result.source_row_count
     deleted_count = database_result.deleted_row_count
 
@@ -427,11 +434,12 @@ def sync_qna_from_excel(
     snapshot = None
 
     if refresh_bm25:
-        snapshot = FAQSnapshotSynchronizer().sync()
-        answers = FAQRepository().fetch_answers(snapshot.question_ids)
+        repository = FAQRepository(settings=settings)
+        snapshot = FAQSnapshotSynchronizer(faq_repository=repository).sync()
+        answers = repository.fetch_answers(snapshot.question_ids)
         if len(answers) != len(snapshot.documents):
             raise RuntimeError("FAQ answers are incomplete after sync.")
-        runtime_service = faq_service or get_faq_service()
+        runtime_service = faq_service or get_faq_service(channel_key)
         runtime_service.reload_snapshot(
             snapshot,
             answers=answers,
@@ -458,6 +466,7 @@ async def async_sync_qna_from_excel(
     sheet_name: str | None = None,
     refresh_bm25: bool = False,
     faq_service: FAQService | None = None,
+    channel_key: str | None = None,
 ) -> FAQSyncResult:
     """在线程中执行阻塞式 Excel/数据库刷新，避免阻塞 asyncio 事件循环。"""
     return await asyncio.to_thread(
@@ -466,6 +475,7 @@ async def async_sync_qna_from_excel(
         sheet_name=sheet_name,
         refresh_bm25=refresh_bm25,
         faq_service=faq_service,
+        channel_key=channel_key,
     )
 
 
@@ -474,6 +484,7 @@ def refresh_faq_runtime_from_excel(
     *,
     sheet_name: str | None = None,
     faq_service: FAQService | None = None,
+    channel_key: str | None = None,
 ) -> FAQSyncResult:
     """为上传的工作簿提供后端可直接调用的一站式 FAQ 刷新。"""
     return sync_qna_from_excel(
@@ -481,4 +492,5 @@ def refresh_faq_runtime_from_excel(
         sheet_name=sheet_name,
         refresh_bm25=True,
         faq_service=faq_service,
+        channel_key=channel_key,
     )
