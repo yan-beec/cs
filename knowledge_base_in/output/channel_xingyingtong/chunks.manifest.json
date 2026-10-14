@@ -1,0 +1,18 @@
+{
+  "input_dir": "/app/database/channel_xingyingtong/knowledge_base",
+  "output_path": "/app/knowledge_base_in/output/channel_xingyingtong/chunks.jsonl",
+  "source_file_count": 5,
+  "parsed_file_count": 5,
+  "skipped_file_count": 0,
+  "failed_file_count": 0,
+  "chunk_count": 115,
+  "chunk_size_tokens": 512,
+  "chunk_overlap_tokens": 64,
+  "include_heading_context": true,
+  "drop_heading_only_chunks": true,
+  "preserve_markdown_tables": true,
+  "ocr_cpu_threads": 2,
+  "ocr_cpu_interop_threads": 1,
+  "tokenizer_dir": "/app/models/google-bert--bert-base-chinese/snapshots/master",
+  "errors": []
+}

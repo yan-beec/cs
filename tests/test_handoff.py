@@ -593,8 +593,13 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
                         )
 
                     busy_message = main.MUTED_HANDOFF_MESSAGE if blocked else main.HANDOFF_NO_AGENT_MESSAGE
+                    trigger_message = (
+                        "观察到用户需要人工协助，正在转接人工客服，请稍后"
+                        if media_type
+                        else main.HANDOFF_NOTICE_MESSAGE
+                    )
                     self.assertEqual(client.send_message.call_args_list, [
-                        call(account_id="1", conversation_id="56", content=main.HANDOFF_NOTICE_MESSAGE),
+                        call(account_id="1", conversation_id="56", content=trigger_message),
                         call(account_id="1", conversation_id="56", content=busy_message),
                     ])
                     self.assertEqual(result["route"], expected_route)
@@ -695,14 +700,20 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
                     client.send_message.assert_not_called()
 
     async def test_successful_handoff_sends_only_its_normal_notice(self) -> None:
-        for notice in (main.HANDOFF_NOTICE_MESSAGE, main.IMAGE_HANDOFF_NOTICE_MESSAGE):
-            with self.subTest(notice=notice):
+        for media_type in (None, "image", "video"):
+            with self.subTest(media_type=media_type):
+                notice = (
+                    "观察到用户需要人工协助，正在转接人工客服，请稍后"
+                    if media_type
+                    else main.HANDOFF_NOTICE_MESSAGE
+                )
                 control = replace(_control(handoff_required=True), handoff_notice_sent=False)
                 client = Mock()
                 client.send_message.return_value = {"id": 201}
                 event = ChatwootWebhookEvent(
                     event="message_created", account={"id": 1}, conversation={"id": 56},
-                    content="转人工", message_type="incoming",
+                    content="" if media_type else "转人工", message_type="incoming",
+                    raw={"attachments": [{"file_type": media_type}]} if media_type else {},
                 )
                 with (
                     patch.object(main, "get_chatwoot_client", return_value=client),
@@ -714,12 +725,13 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
                 ):
                     result = await main._complete_handoff(
                         event=event, job=main.WebhookJob(event_key="success", event=event),
-                        control=control, content="转人工", notice_message=notice,
+                        control=control, content=event.content or "",
                     )
                 client.send_message.assert_called_once_with(
                     account_id="1", conversation_id="56", content=notice,
                 )
                 self.assertEqual(result["route"], "handoff")
+                self.assertEqual(result["answer"], notice)
 
     async def test_agent_availability_is_read_from_chatwoot(self) -> None:
         event = ChatwootWebhookEvent(

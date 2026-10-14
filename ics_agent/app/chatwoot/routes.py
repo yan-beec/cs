@@ -448,8 +448,16 @@ async def _arm_contact_block_from_message(
     )
 
 
+def _handoff_notice_message(event: ChatwootWebhookEvent) -> str:
+    """图片和视频自动转接共用解释话术，文字申请使用直接转接提示。"""
+    if has_image_attachment(event) or has_video_attachment(event):
+        return IMAGE_HANDOFF_NOTICE_MESSAGE
+    return HANDOFF_NOTICE_MESSAGE
+
+
 async def _send_handoff_trigger_notice(
     *,
+    event: ChatwootWebhookEvent,
     account_id: str,
     conversation_id: str,
     event_key: str,
@@ -462,7 +470,7 @@ async def _send_handoff_trigger_notice(
             get_chatwoot_client().send_message,
             account_id=account_id,
             conversation_id=conversation_id,
-            content=HANDOFF_NOTICE_MESSAGE,
+            content=_handoff_notice_message(event),
         )
     except Exception as exc:
         log_event(
@@ -513,6 +521,7 @@ async def _suppress_muted_handoff(
     notice_sent = False
     notice_message_id: str | None = None
     await _send_handoff_trigger_notice(
+        event=event,
         account_id=account_id,
         conversation_id=conversation_id,
         event_key=event_key,
@@ -1333,11 +1342,7 @@ async def _process_webhook_job_unlocked(
                 job=job,
                 control=control,
                 content=content,
-                notice_message=(
-                    IMAGE_HANDOFF_NOTICE_MESSAGE
-                    if media_handoff
-                    else HANDOFF_NOTICE_MESSAGE
-                ),
+                notice_message=_handoff_notice_message(event),
             )
 
         if handoff_requested:
@@ -1411,11 +1416,7 @@ async def _process_webhook_job_unlocked(
             job=job,
             control=control,
             content=content,
-            notice_message=(
-                IMAGE_HANDOFF_NOTICE_MESSAGE
-                if media_handoff
-                else HANDOFF_NOTICE_MESSAGE
-            ),
+            notice_message=_handoff_notice_message(event),
         )
 
     auto_reply_enabled = _can_auto_reply(
@@ -1712,6 +1713,7 @@ async def _suppress_no_agent_handoff(
         and conversation_id
     ):
         await _send_handoff_trigger_notice(
+            event=event,
             account_id=account_id,
             conversation_id=conversation_id,
             event_key=event_key,
@@ -1792,9 +1794,11 @@ async def _complete_handoff(
     job: WebhookJob,
     control: ConversationControl,
     content: str,
-    notice_message: str = HANDOFF_NOTICE_MESSAGE,
+    notice_message: str | None = None,
 ) -> dict[str, object]:
     """执行一次可重试、动作级幂等的 Chatwoot 人工接管。"""
+    if notice_message is None:
+        notice_message = _handoff_notice_message(event)
     account_id, conversation_id = _webhook_conversation_reference(event)
     if not account_id or not conversation_id:
         raise ValueError(
