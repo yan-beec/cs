@@ -1,6 +1,6 @@
 # 同一 Chatwoot 会话按咨询轮次发送评价
 
-同一个 `conversation_id` 可以反复打开、解决。启用后，每轮真正结束时，ICS 在关闭咨询的同一事务中记录一项邀约，再由独立后台任务创建一张 `input_csat` 原生评价卡。用户在 Website Widget 内提交评分；Chatwoot 按卡片消息 ID 保存评分，满意度报告和 CSV 会分别显示多轮评价。
+同一个 `conversation_id` 可以反复打开、解决。启用后，每轮真正结束时，ICS 随原有会话状态保存本轮的待评价快照，再由独立后台转存邀约任务并创建一张 `input_csat` 原生评价卡。关闭会话的流程不访问评价任务表或 Chatwoot 评价接口。用户在 Website Widget 内提交评分；Chatwoot 按卡片消息 ID 保存评分，满意度报告和 CSV 会分别显示多轮评价。
 
 本功能默认关闭。关闭时不创建邀约表、不启动发送任务，原有问答、上下文轮次、转人工、坐席轮询及静音流程保持原行为。只在真实 `resolved` 边界创建邀约，`pending`、`open`、普通会话活动、六小时上下文切换和重复/过期状态事件均不会额外邀约。没有已开始咨询的历史会话也不会补发。
 
@@ -44,6 +44,7 @@
    CHATWOOT_CSAT_ENABLED=true
    CHATWOOT_CSAT_MESSAGE=本次服务已结束，请评价本次服务。
    CHATWOOT_CSAT_DISPLAY_TYPE=emoji
+   CHATWOOT_CSAT_API_TIMEOUT=5
    ```
 
    `CHATWOOT_CSAT_DISPLAY_TYPE` 可为 `emoji` 或 `star`。沿用现有 Chatwoot 地址、用户级 API Token，以及 AgentBot Token/ID，不增加公开接口或前端凭据。用户级 Token 用于核对已创建的卡片。
@@ -54,11 +55,22 @@
    docker compose -f docker-compose.yml up -d --build --no-deps --force-recreate ics-agent
    ```
 
-启动时自动创建 `chatwoot_csat_invitations`，不修改 Chatwoot 数据库结构。后台每 5 秒检查待发送项，失败后按 60 秒起、最长 1 小时的间隔重试；重启会继续处理未完成任务。邀约失败不进入问答队列，也不会阻止下一轮 AI 接待。已有的已结束轮次不会在开启开关后自动回补。
+ICS 初始化会话表时增加 `csat_pending_rounds` 字段，用于保存未转存的逐轮快照，不修改 Chatwoot 数据库结构。独立后台自动创建 `chatwoot_csat_invitations`；创建失败不阻止问答和 Webhook 服务启动，每 5 秒重试。后台每 5 秒检查待发送项，发送失败后按 60 秒起、最长 1 小时的间隔重试；重启会继续处理未完成任务。开启前未捕获的历史已结束轮次不会自动回补。
+
+## 故障隔离与恢复
+
+- 结束会话只在原有会话状态 UPDATE 中追加本轮快照，不写评价任务表。评价表缺失、无权限或被锁住时，结束会话、释放人工接管和下一轮接待仍按原流程执行。
+- 每轮快照包含轮次 ID、结束时间、原坐席、Inbox 和最后一条用户消息 ID。重开不会覆盖历史待处理快照；同一轮的重复/过期状态不会追加第二份。
+- 后台把快照转存为邀约任务，转存与移除该快照在独立事务中一同提交。失败时全部回滚，快照保留；恢复或重启后继续转存。确认快照时只移除对应轮次，不清空新轮次，也不修改业务的 `updated_at`。
+- 评价使用独立数据库连接池和单个专用工作线程，不占用问答的连接池、工作线程或消息队列。评价事务的数据库锁等待上限为 250 毫秒，单条语句上限为 2 秒；访问评价表时不锁定会话行。
+- `CHATWOOT_CSAT_API_TIMEOUT` 默认 5 秒，只作用于评价 HTTP 请求；消息查询的多次翻页共用这个时间预算。普通消息发送、转人工等接口的超时配置不变。发送失败或回执丢失后，继续使用轮次 ID 核对、防重和重试。
+- 关闭评价开关后停止捕获和发送，待处理快照和邀约任务保留，重新开启后继续处理。
+
+隔离范围是评价专用表、后台任务和接口的故障。会话主表及其快照字段需要完成本版本的初始化；共用 PostgreSQL 整体不可用、会话主表无法写入、磁盘或进程故障仍会影响原有业务，不能通过评价隔离消除。
 
 ## 防重与坐席归属
 
-- 本地以 `account_id + conversation_id + active_thread_id` 唯一记录邀约。重复状态通知不会生成第二项任务。
+- 本地以 `account_id + conversation_id + active_thread_id` 唯一记录邀约。快照转存和重复状态通知不会生成第二项任务。
 - 发送前分页核对本轮已有卡片。Chatwoot 补丁在会话行锁内按 `ics_round_id` 查找/创建，因此请求超时、断线或多进程重试也会返回同一张卡。
 - 邀约保存本轮结束时的坐席；Webhook 提供的坐席优先于 ICS 本地分配记录。释放人工接管不会丢失该快照。Chatwoot 补丁创建评分记录时使用快照，因此延迟提交旧轮次的评价也归属于旧轮次坐席。无人工坐席时报告显示无坐席。
 - 发送记录的 `message_id` 是邀约卡 ID。评分和反馈仍存入 Chatwoot 原有评价表，报告按评分记录显示；未评分卡只计入邀约发送量。统计受报告当前日期和筛选条件影响。
@@ -75,6 +87,8 @@
 4. 重投同一次 `resolved` 通知，确认不增加卡片；停止、启动 ICS 后也不补发已成功卡片。
 5. 第一轮先不评分，第二轮换坐席后再评价第一张卡，确认报告仍显示第一轮坐席。
 6. 关闭 `CHATWOOT_CSAT_ENABLED` 并重建 ICS 后，停止新增及发送邀约，已有评分和聊天记录保留。需要恢复 Chatwoot 自带邀约时，再单独开启 Inbox 对应开关。
+7. 在隔离测试库中让评价表不可用，连续结束并重开两轮；确认会话正常结束、人工接管释放、两轮快照均保留。恢复评价表并重启后台后，应生成两条不同轮次的邀约。
+8. 在隔离测试库中锁住评价表或会话确认行，转存应在短超时后失败并保留快照；释放锁后重试只生成一项任务。
 
 ## 查看发送状态
 
@@ -86,4 +100,12 @@ SELECT account_id, conversation_id, round_id, assigned_agent_id,
 FROM chatwoot_csat_invitations
 ORDER BY closed_at DESC
 LIMIT 50;
+```
+
+评价表尚未恢复时，可直接查看保存在会话主表中的快照积压：
+
+```sql
+SELECT account_id, conversation_id, jsonb_array_length(csat_pending_rounds) AS pending_rounds
+FROM chatwoot_conversation_control
+WHERE csat_pending_rounds <> '[]'::jsonb;
 ```

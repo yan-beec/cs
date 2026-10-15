@@ -4,28 +4,41 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from typing import Any
 
 from ics_agent.app.core.config import AppSettings
 from ics_agent.app.core.logging_config import log_event
 from ics_agent.faq.repositories import PostgreSQLConnectionPool
-from .client import ChatwootAPIError, ChatwootClient
-from .state import ConversationControl
+from .client import ChatwootAPIError, ChatwootClient, get_chatwoot_client
+from .state import CONVERSATION_CONTROL_TABLE
 
 logger = logging.getLogger(__name__)
 CSAT_TABLE = "chatwoot_csat_invitations"
 
 
+class _CsatConnectionPool(PostgreSQLConnectionPool):
+    # 独立于问答/接管使用的池；后台单线程每次仅占用一个连接。
+    _shared_pool: Any | None = None
+    _pool_lock = threading.Lock()
+
+
+def _set_timeouts(connection: Any) -> None:
+    connection.execute("SET LOCAL lock_timeout = '250ms'")
+    connection.execute("SET LOCAL statement_timeout = '2s'")
+
+
 class CsatInvitationRepository:
     def __init__(self, connections: Any = None) -> None:
-        self.connections = connections or PostgreSQLConnectionPool()
+        self.connections = connections or _CsatConnectionPool()
 
     def ensure_table(self) -> None:
         connection = self.connections.acquire()
         try:
             with connection.transaction():
+                _set_timeouts(connection)
                 connection.execute(f"""
                     CREATE TABLE IF NOT EXISTS {CSAT_TABLE} (
                         account_id TEXT NOT NULL,
@@ -50,31 +63,56 @@ class CsatInvitationRepository:
         finally:
             connection.close()
 
-    def capture(
-        self, cursor: Any, control: ConversationControl, closed_at: datetime,
-        *, inbox_id: str | None, assignee: dict[str, Any],
-    ) -> None:
-        """在关闭咨询的事务内保存快照；没有真实咨询的状态变更不发邀约。"""
-        if not control.active_thread_id or control.session_started_at is None:
-            return
-        agent_id = assignee.get("id", control.assigned_agent_id)
-        cursor.execute(f"""
-            INSERT INTO {CSAT_TABLE}
-                (account_id, conversation_id, round_id, inbox_id,
-                 assigned_agent_id, after_message_id, closed_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (account_id, conversation_id, round_id) DO NOTHING
-        """, (
-            control.account_id, control.conversation_id, control.active_thread_id,
-            inbox_id, str(agent_id) if agent_id is not None else None,
-            control.last_user_message_id, closed_at,
-        ))
+    def stage_one(self) -> bool:
+        """把一个已提交的结束快照转为邀约；事务失败时快照保留供重启补偿。"""
+        connection = self.connections.acquire()
+        try:
+            with connection.transaction():
+                _set_timeouts(connection)
+                with connection.cursor() as cursor:
+                    # 不在访问评价任务表时锁住会话，避免表锁/慢请求阻塞接待。
+                    cursor.execute(f"""
+                        SELECT account_id, conversation_id, csat_pending_rounds -> 0
+                        FROM {CONVERSATION_CONTROL_TABLE}
+                        WHERE csat_pending_rounds <> '[]'::jsonb
+                        ORDER BY updated_at, account_id, conversation_id
+                        LIMIT 1
+                    """)
+                    row = cursor.fetchone()
+                    if row is None:
+                        return False
+                    account_id, conversation_id, snapshot = row
+                    cursor.execute(f"""
+                        INSERT INTO {CSAT_TABLE}
+                            (account_id, conversation_id, round_id, inbox_id,
+                             assigned_agent_id, after_message_id, closed_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (account_id, conversation_id, round_id) DO NOTHING
+                    """, (
+                        account_id, conversation_id, snapshot["round_id"], snapshot["inbox_id"],
+                        snapshot["assigned_agent_id"], snapshot["after_message_id"], snapshot["closed_at"],
+                    ))
+                    # 插入和确认同一事务提交。并发新增的其他轮次不会被清掉，
+                    # 也不更新业务 updated_at；这里只在本地短暂锁定会话行。
+                    cursor.execute(f"""
+                        UPDATE {CONVERSATION_CONTROL_TABLE}
+                        SET csat_pending_rounds = (
+                            SELECT COALESCE(jsonb_agg(item), '[]'::jsonb)
+                            FROM jsonb_array_elements(csat_pending_rounds) AS item
+                            WHERE item ->> 'round_id' <> %s
+                        )
+                        WHERE account_id = %s AND conversation_id = %s
+                    """, (snapshot["round_id"], account_id, conversation_id))
+            return True
+        finally:
+            connection.close()
 
     def deliver_one(self, client: ChatwootClient, settings: AppSettings) -> bool:
         """只锁定一项邀约，不持有会话锁；其他进程跳过正在发送的任务。"""
         connection = self.connections.acquire()
         try:
             with connection.transaction():
+                _set_timeouts(connection)
                 with connection.cursor() as cursor:
                     cursor.execute(f"""
                         SELECT account_id, conversation_id, round_id, assigned_agent_id,
@@ -137,20 +175,45 @@ class CsatInvitationRepository:
 
 
 async def run_csat_worker(
-    repository: CsatInvitationRepository, client: ChatwootClient, settings: AppSettings,
+    settings: AppSettings,
+    repository: CsatInvitationRepository | None = None,
+    client: ChatwootClient | None = None,
 ) -> None:
-    while True:
-        delivery = asyncio.create_task(asyncio.to_thread(repository.deliver_one, client, settings))
+    ready = False
+
+    def work_once() -> bool:
+        nonlocal ready, repository, client
+        repository = repository or get_csat_repository()
+        client = client or get_chatwoot_client()
+        if not ready:
+            # 建表、客户端初始化都在后台重试，不占用应用启动路径。
+            repository.ensure_table()
+            ready = True
+        staged = False
         try:
-            delivered = await asyncio.shield(delivery)
-        except asyncio.CancelledError:
-            # 等待正在执行的 HTTP/事务结束，避免取消后遗留未确认发送。
-            await delivery
-            raise
+            staged = repository.stage_one()
         except Exception:
-            logger.exception("事件=评价邀约.后台处理失败")
-            delivered = False
-        await asyncio.sleep(0 if delivered else 5)
+            ready = False
+            logger.exception("事件=评价邀约.快照转存失败")
+        return repository.deliver_one(client, settings) or staged
+
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="chatwoot-csat")
+    try:
+        while True:
+            delivery = asyncio.get_running_loop().run_in_executor(executor, work_once)
+            try:
+                delivered = await asyncio.shield(delivery)
+            except asyncio.CancelledError:
+                # 等待有超时限制的当前操作结束，防止关闭后仍有发送线程。
+                await asyncio.gather(delivery, return_exceptions=True)
+                raise
+            except Exception:
+                ready = False
+                logger.exception("事件=评价邀约.后台处理失败")
+                delivered = False
+            await asyncio.sleep(0 if delivered else 5)
+    finally:
+        executor.shutdown(wait=False)
 
 
 @lru_cache

@@ -6,7 +6,6 @@ import asyncio
 import logging
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
-from functools import partial
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -29,7 +28,7 @@ from ics_agent.app.core.context import (
     webhook_repository,
 )
 from .client import ChatwootAPIError, get_chatwoot_client
-from .csat import get_csat_repository, run_csat_worker
+from .csat import run_csat_worker
 from .state import ConversationControl
 from reminder.backend.service import capture_hook, ensure_notification, inbox_details
 from ics_agent.app.core.logging_config import log_event
@@ -69,12 +68,6 @@ async def start_chatwoot_webhook_workers() -> None:
     global webhook_queue
     global contact_block_reaper_task
     global csat_worker_task
-    if settings.chatwoot_csat_enabled:
-        await asyncio.to_thread(get_csat_repository().ensure_table)
-        csat_worker_task = asyncio.create_task(
-            run_csat_worker(get_csat_repository(), get_chatwoot_client(), settings),
-            name="chatwoot-csat-invitations",
-        )
     webhook_queue = WebhookJobQueue(
         processor=_process_webhook_job,
         repository=webhook_repository,
@@ -84,6 +77,10 @@ async def start_chatwoot_webhook_workers() -> None:
         _contact_block_reaper_loop(),
         name="chatwoot-contact-block-reaper",
     )
+    if settings.chatwoot_csat_enabled:
+        csat_worker_task = asyncio.create_task(
+            run_csat_worker(settings), name="chatwoot-csat-invitations",
+        )
 
 
 async def stop_chatwoot_webhook_workers() -> None:
@@ -635,11 +632,12 @@ def _conversation_status_transition(event: ChatwootWebhookEvent) -> str | None:
 
 
 def _csat_close_kwargs(event: ChatwootWebhookEvent) -> dict[str, object]:
-    """仅为真正的 resolved 事件附加事务内捕获，不处理普通状态快照。"""
+    """仅为真正的 resolved 事件传递快照上下文，不访问评价存储。"""
     if not settings.chatwoot_csat_enabled or _conversation_status_transition(event) != "resolved":
         return {}
     conversation = event.conversation or event.raw
-    meta = conversation.get("meta") or {}
+    meta = conversation.get("meta")
+    meta = meta if isinstance(meta, dict) else {}
     source = meta if "assignee" in meta else conversation
     assignee: dict[str, object] = {}
     if "assignee" in source:
@@ -647,11 +645,10 @@ def _csat_close_kwargs(event: ChatwootWebhookEvent) -> dict[str, object]:
         assignee = {"id": value.get("id") if isinstance(value, dict) else None}
     elif "assignee_id" in source:
         assignee = {"id": source["assignee_id"]}
-    return {"on_session_closed": partial(
-        get_csat_repository().capture,
-        inbox_id=str(_webhook_inbox_id(event) or "") or None,
-        assignee=assignee,
-    )}
+    return {"csat_context": {
+        "inbox_id": str(_webhook_inbox_id(event) or "") or None,
+        "assignee": assignee,
+    }}
 
 
 def _is_contact_block_event(event: ChatwootWebhookEvent) -> bool:

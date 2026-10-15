@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 from uuid import uuid4
 
+from psycopg.types.json import Jsonb
+
 from ics_agent.faq.repositories import PostgreSQLConnectionPool
 
 
@@ -112,6 +114,7 @@ class ConversationControlRepository:
                             session_closed_at TIMESTAMPTZ,
                             last_user_message_at TIMESTAMPTZ,
                             last_status_event_at TIMESTAMPTZ,
+                            csat_pending_rounds JSONB NOT NULL DEFAULT '[]'::jsonb,
                             created_at TIMESTAMPTZ NOT NULL
                                 DEFAULT CURRENT_TIMESTAMP,
                             updated_at TIMESTAMPTZ NOT NULL
@@ -146,6 +149,16 @@ class ConversationControlRepository:
                             f"ALTER TABLE {CONVERSATION_CONTROL_TABLE} "
                             f"ADD COLUMN IF NOT EXISTS {column} TIMESTAMPTZ"
                         )
+                    cursor.execute(
+                        f"ALTER TABLE {CONVERSATION_CONTROL_TABLE} "
+                        "ADD COLUMN IF NOT EXISTS csat_pending_rounds "
+                        "JSONB NOT NULL DEFAULT '[]'::jsonb"
+                    )
+                    cursor.execute(
+                        f"CREATE INDEX IF NOT EXISTS {CONVERSATION_CONTROL_TABLE}_csat_pending_idx "
+                        f"ON {CONVERSATION_CONTROL_TABLE} (updated_at) "
+                        "WHERE csat_pending_rounds <> '[]'::jsonb"
+                    )
                     # 升级时只补已明确结束的边界，不能把操作更新时间误当
                     # 成用户活跃时间。旧会话下一条新消息再建立独立轮次。
                     cursor.execute(
@@ -593,7 +606,7 @@ class ConversationControlRepository:
         status: str,
         release_handoff: bool = True,
         event_at: datetime | None = None,
-        on_session_closed: Callable[[Any, ConversationControl, datetime], None] | None = None,
+        csat_context: dict[str, Any] | None = None,
     ) -> ConversationControl:
         """记录有序状态事件；resolved 结束所有咨询，包括纯 AI 咨询。"""
         account_id, conversation_id = _validate_reference(
@@ -649,10 +662,19 @@ class ConversationControlRepository:
                         clean_status != "resolved" and not status_is_current
                     ):
                         return control
+                    csat_snapshot = None
                     if clean_status == "resolved":
-                        if not currently_closed and on_session_closed is not None:
-                            # 在释放坐席前、同一事务内记录评价邀约；重投和旧事件不重复捕获。
-                            on_session_closed(cursor, control, observed_at)
+                        if (not currently_closed and csat_context is not None
+                                and control.active_thread_id and control.session_started_at is not None):
+                            # 随原有状态 UPDATE 保存每轮事实；此处不访问评价任务表或远端。
+                            agent_id = csat_context.get("assignee", {}).get("id", control.assigned_agent_id)
+                            csat_snapshot = {
+                                "round_id": control.active_thread_id,
+                                "inbox_id": csat_context.get("inbox_id"),
+                                "assigned_agent_id": str(agent_id) if agent_id is not None else None,
+                                "after_message_id": control.last_user_message_id,
+                                "closed_at": observed_at.isoformat(),
+                            }
                         closed = max(closed, observed_at) if closed else observed_at
                     # open/reopened 可以先于更早的 resolved 送达；仍须保留
                     # 结束边界，但不能把当前 Chatwoot 状态从 open 回拨。
@@ -664,6 +686,10 @@ class ConversationControlRepository:
                         event_at is not None or clean_status == "resolved"
                     ):
                         next_status_event_at = observed_at
+                    snapshot_update = ", csat_pending_rounds = csat_pending_rounds || %s" if csat_snapshot else ""
+                    status_values: tuple[Any, ...] = (next_status, next_status_event_at, closed)
+                    if csat_snapshot:
+                        status_values += (Jsonb([csat_snapshot]),)
                     cursor.execute(
                         f"""
                         UPDATE {CONVERSATION_CONTROL_TABLE}
@@ -671,12 +697,10 @@ class ConversationControlRepository:
                             last_status_event_at = %s,
                             session_closed_at = %s,
                             updated_at = CURRENT_TIMESTAMP
+                            {snapshot_update}
                         WHERE account_id = %s AND conversation_id = %s
                         """.strip(),
-                        (
-                            next_status, next_status_event_at,
-                            closed, account_id, conversation_id,
-                        ),
+                        status_values + (account_id, conversation_id),
                     )
                     if release_handoff and clean_status == "resolved":
                         self._release_handoff_cursor(

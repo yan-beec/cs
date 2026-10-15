@@ -76,7 +76,7 @@ class ChatwootClient:
             payload.update(sender_type="AgentBot", sender_id=agent_bot_id)
         return self._request_json(
             "POST", self._conversation_path(account_id, conversation_id) + "/messages",
-            payload,
+            payload, timeout_seconds=self._settings.chatwoot_csat_api_timeout,
         )
 
     def find_csat_invitation(
@@ -91,8 +91,14 @@ class ChatwootClient:
         after = int(after_message_id) if after_message_id else 0
         path = self._conversation_path(account_id, conversation_id) + "/messages"
         token = self._user_api_token("Chatwoot CSAT message reconciliation")
+        deadline = time.monotonic() + self._settings.chatwoot_csat_api_timeout
         while True:
-            result = self._request_json("GET", path + f"?after={after}", access_token=token)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ChatwootAPIError("Chatwoot CSAT message lookup timed out.")
+            result = self._request_json(
+                "GET", path + f"?after={after}", access_token=token, timeout_seconds=remaining,
+            )
             items = result.get("payload")
             if not isinstance(items, list):
                 raise ChatwootAPIError("Chatwoot CSAT message listing is invalid.")
