@@ -2,7 +2,7 @@
 
 本阶段接收并保存原始 Webhook，生成数据库待处理任务。代码在 `quality/capture/`，复用 ICS 的 FastAPI、psycopg 和 `ics_agent.app.chatwoot.payload.verify_signature`；与机器人共用应用镜像，单独使用采集账号和数据库连接池。
 
-接收地址：`POST /quality/webhooks/chatwoot`，默认端口 3010。`GET /health` 检查数据库可用性。
+接收地址：`POST /quality/webhooks/chatwoot`，默认端口 3010。`GET /health` 检查数据库可用性。正式部署与 ICS、Chatwoot 位于同一服务器，通过服务器内网 IP 直接访问，网络设置见第 3 节。
 
 ## 接收保证
 
@@ -25,11 +25,11 @@
 ARCHIVE_SOURCE_KEY=chatwoot-main
 ARCHIVE_ALLOWED_ACCOUNT_IDS=1
 ARCHIVE_WEBHOOK_SECRET=填写该账户级Webhook的实际Secret
-ARCHIVE_RECEIVER_HOST=127.0.0.1
+ARCHIVE_RECEIVER_HOST=172.20.48.12
 ARCHIVE_RECEIVER_PORT=3010
 ```
 
-账号 ID 使用你的实际值，多个账号用逗号分隔。此入口只接受使用同一配置密钥签名的账号；如果不同账号各有不同密钥，需要分别配置接收实例，不能把不同密钥合并填写。`ARCHIVE_SOURCE_KEY` 标识 Chatwoot 实例，启用后保持稳定。独立采集数据库密码继续使用已有 `ARCHIVE_INGEST_PASSWORD`，不轮换密码。
+`172.20.48.12` 沿用现有 ICS 文档中的内网地址示例，请替换为服务器实际内网 IP。账号 ID 使用你的实际值，多个账号用逗号分隔。此入口只接受使用同一配置密钥签名的账号；如果不同账号各有不同密钥，需要分别配置接收实例，不能把不同密钥合并填写。`ARCHIVE_SOURCE_KEY` 标识 Chatwoot 实例，启用后保持稳定。独立采集数据库密码继续使用已有 `ARCHIVE_INGEST_PASSWORD`，不轮换密码。
 
 建议先创建 Webhook 获取 Secret、填配置并启动接收服务，确认地址可达后再完成 URL/订阅启用。创建到配置完成期间不声明已开始归档。
 
@@ -52,22 +52,41 @@ cd /opt/cs
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.archive.yml --profile quality-capture up -d --no-deps --wait --wait-timeout 60 quality-receiver
 ```
 
-## 3. 让 Chatwoot 访问入口
+## 3. 同一服务器内网直连
 
-同一 Docker 网络可使用 `http://quality-receiver:3010/quality/webhooks/chatwoot`。不同网络时，可通过现有 Nginx 将该精确路径转发到 `http://127.0.0.1:3010`，或把接收服务绑定到 Chatwoot 可访问的服务器内网地址。默认宿主机 127.0.0.1 不能直接被另一个 Docker 网络的 Sidekiq 容器访问。
+本部署与 ICS 使用相同的服务器内网 IP，接收服务使用独立端口 3010。Chatwoot、ICS 与采集服务均在同一服务器，通过主机内网地址互通，无需域名、证书或新增 Nginx 转发。
 
-现有 Nginx 的合适 `server` 块内可加入：
+现有 ICS 部署文档使用 `172.20.48.12` 作为内网地址示例。以下地址必须换成服务器实际持有的内网 IP，并与原有 ICS 的访问方式保持一致。
 
-```nginx
-location = /quality/webhooks/chatwoot {
-    client_max_body_size 2m;
-    proxy_pass http://127.0.0.1:3010;
-    proxy_connect_timeout 3s;
-    proxy_read_timeout 10s;
-}
+| 服务 | 同机内网地址示例 |
+| --- | --- |
+| Chatwoot | `http://172.20.48.12:3000` |
+| 原有 ICS | `http://172.20.48.12:3001` |
+| 消息接收 Webhook | `http://172.20.48.12:3010/quality/webhooks/chatwoot` |
+
+在服务器 `/opt/cs/.env` 设置 `ARCHIVE_RECEIVER_HOST=172.20.48.12`、`ARCHIVE_RECEIVER_PORT=3010`，再按第 2 节发布或更新接收容器。该值用于绑定宿主机网卡；容器内部进程监听 `0.0.0.0:3010`，宿主机仅映射到配置的内网 IP。归档 PostgreSQL 继续只在 ICS 的 Docker 网络内访问，不发布宿主机端口。
+
+模板保留 `127.0.0.1` 用于初始本机检查，正式内网直连时必须改为实际内网 IP。Chatwoot 容器中的 `127.0.0.1` 是该容器自身；两个 Compose 项目也不会自动拥有相同 Docker 网络，因此此次统一使用主机内网 IP。`ARCHIVE_RECEIVER_HOST` 填 IP，不带 `http://`、端口或路径。
+
+启动后，先在服务器检查：
+
+```bash
+curl --fail --max-time 10 http://172.20.48.12:3010/health
 ```
 
-Nginx 配置需由服务器现有部署流程应用。本次代码不会更改已启用的 Nginx 配置或自动创建远端 Chatwoot Webhook。
+再到已有 Chatwoot 部署目录，从实际发送 Webhook 的 Sidekiq 容器检查，服务名按服务器实际值修改：
+
+```bash
+docker compose exec -T sidekiq ruby -rnet/http -e 'u=URI("http://172.20.48.12:3010/health"); r=Net::HTTP.start(u.host,u.port,open_timeout:3,read_timeout:5) { |h| h.get(u.request_uri) }; puts r.code'
+```
+
+两处预期均为 HTTP 200。若主机成功、Sidekiq 失败，检查容器到主机内网 IP 的路由、端口映射及现有主机防火墙规则。同一台服务器上的访问仍需经过实际容器网络验证。
+
+内网 Webhook 还受 Chatwoot 的 URL 安全检查控制。当前本地部署已为 Rails、Sidekiq 配置 `SAFE_FETCH_ALLOW_PRIVATE_NETWORK=true`；服务器是否配置需单独核对。当前版本若因私网限制拒绝投递，应在 **Chatwoot 侧**配置该项并按原部署流程重建 Rails、Sidekiq；写入 ICS 的 `.env` 不生效。详情沿用[ICS 首次部署手册第 10B 节](../../docs/server-first-deployment.md#10b-无域名的私网测试方式)。
+
+然后把专用账户级 Webhook 的目标 URL 设置为上表中的 3010 地址，保留原有 ICS 机器人 Webhook 的 3001 地址。内网接收仍强制校验专用账户 Webhook 的签名 Secret。
+
+接收端口仅绑定实际内网 IP，沿用已有受控内网访问规则，不添加公网端口映射。上述连通检查和真实投递应在服务器执行；本次代码更新不会修改服务器网络或现有 Chatwoot Webhook。
 
 ## 4. 验收
 

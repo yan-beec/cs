@@ -45,13 +45,15 @@ bash /opt/cs-src/deploy/server/release.sh --source /opt/cs-src --target /opt/cs
 
 ## 启用消息接收
 
-在服务器同一份 `.env` 补齐 `ARCHIVE_SOURCE_KEY`、`ARCHIVE_ALLOWED_ACCOUNT_IDS` 和专用账户 Webhook 的 `ARCHIVE_WEBHOOK_SECRET` 后，发布命令增加 `--with-receiver`：
+本部署中 Chatwoot、ICS 和采集服务位于同一服务器，沿用服务器内网 IP 直接互通。采集服务使用 3010 端口，ICS 保留 3001；无需为采集新增公网域名或 Nginx 转发。
+
+在服务器同一份 `.env` 补齐 `ARCHIVE_SOURCE_KEY`、`ARCHIVE_ALLOWED_ACCOUNT_IDS`、专用账户 Webhook 的 `ARCHIVE_WEBHOOK_SECRET`，并将 `ARCHIVE_RECEIVER_HOST` 设置为服务器实际内网 IP（沿用现有 ICS 地址），`ARCHIVE_RECEIVER_PORT=3010`。模板的 `127.0.0.1` 仅用于初始本机检查。发布命令增加 `--with-receiver`：
 
 ```bash
 bash /opt/cs-src/deploy/server/release.sh --source /opt/cs-src --target /opt/cs --with-receiver
 ```
 
-脚本在构建成功后启动或更新共享镜像中的 `quality-receiver`，健康检查通过后才更新机器人；接收服务不健康则停止后续步骤。后续更新继续带该参数。完整路由、签名、网络及验收方式见[消息接收说明](../quality/capture/README.md)。默认发布流程仍不启动该可选服务。
+脚本在构建成功后启动或更新共享镜像中的 `quality-receiver`，健康检查通过后才更新机器人；接收服务不健康则停止后续步骤。后续更新继续带该参数。完整路由、签名、网络及验收方式见[消息接收说明](../quality/capture/README.md)。默认发布流程仍不启动该可选服务。发布后在 Chatwoot Sidekiq 容器内检查 `http://服务器内网IP:3010/health` 返回 200，再将专用账户 Webhook 设置为 `http://服务器内网IP:3010/quality/webhooks/chatwoot`。
 
 ## 压缩包更新
 
