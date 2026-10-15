@@ -87,11 +87,15 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:3010/health'
 
 预期返回 `status: ready`。本命令只启动或更新接收服务；`--no-deps` 要求归档库已经运行。若数据库还没启动、表未创建，先按[数据库说明](../README.md)完成准备。
 
-确认后，从 Chatwoot 任务容器检查入口：
+确认后，从 Chatwoot 任务容器检查入口。以下通过标准输入传入 Ruby 代码，兼容部分 PowerShell 版本会丢失原生程序参数中双引号的情况；请整段复制，`@'` 与结束的 `'@` 按示例放在单独的行首：
 
 ```powershell
 Set-Location D:\project\chatwoot\services\chatwoot
-docker compose -f docker-compose.yaml exec -T sidekiq ruby -rnet/http -e 'u=URI("http://host.docker.internal:3010/health"); r=Net::HTTP.start(u.host,u.port,open_timeout:3,read_timeout:5) { |h| h.get(u.request_uri) }; puts r.code'
+@'
+u = URI("http://host.docker.internal:3010/health")
+r = Net::HTTP.start(u.host, u.port, open_timeout: 3, read_timeout: 5) { |h| h.get(u.request_uri) }
+puts r.code
+'@ | docker compose -f docker-compose.yaml exec -T sidekiq ruby -rnet/http
 ```
 
 预期 200。当前本地 Compose 已为 Rails 和 Sidekiq 设置 `SAFE_FETCH_ALLOW_PRIVATE_NETWORK=true`；若更换本地配置，需确保此项在这两个 Chatwoot 容器中生效。
