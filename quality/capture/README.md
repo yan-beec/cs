@@ -4,6 +4,8 @@
 
 接收地址：`POST /quality/webhooks/chatwoot`，默认端口 3010。`GET /health` 检查数据库可用性。正式部署与 ICS、Chatwoot 位于同一服务器，通过服务器内网 IP 直接访问，网络设置见第 3 节。
 
+Windows 本地试验请使用[本地开发步骤](local-development.md)，其中包含 PowerShell API 配置与源码挂载启动方式；本机使用 Docker Desktop 的 `host.docker.internal`，与下方生产内网 IP 示例分开。
+
 ## 接收保证
 
 - 强制校验账户级 Webhook 的 `X-Chatwoot-Signature` 和 `X-Chatwoot-Timestamp`，不接受未签名请求；账号必须在配置范围内。
@@ -17,7 +19,7 @@
 
 ## 1. 配置账户级 Webhook
 
-在 Chatwoot「设置 → 集成 → Webhooks」新建用于归档的账户级 Webhook，订阅 `message_created`、`message_updated`，以及所需的 `conversation_created`、`conversation_updated`、`conversation_status_changed`。不要替换现有 AgentBot 地址。
+为归档新建账户级 Webhook，订阅 `message_created`、`message_updated`、`conversation_created`、`conversation_updated`、`conversation_status_changed`。当前内网部署若被「设置 → 集成 → Webhooks」的前端 URL 校验拒绝，直接按[账户 Webhook API 设置步骤](chatwoot-webhook-api.md)创建或更新记录并获取 Secret，可绕过前端校验。不要替换现有 AgentBot 地址。
 
 将新 Webhook 的 Secret 填入服务器已有 `/opt/cs/.env`，并设置：
 
