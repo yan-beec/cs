@@ -1,0 +1,30 @@
+# Use together with docker-compose.yml and --env-file .env.
+services:
+  archive-postgres:
+    image: postgres:16.15-alpine3.23
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${ARCHIVE_POSTGRES_DB:-ics_quality}
+      POSTGRES_USER: archive_admin
+      POSTGRES_PASSWORD: ${ARCHIVE_POSTGRES_ADMIN_PASSWORD:?Set ARCHIVE_POSTGRES_ADMIN_PASSWORD in .env}
+      ARCHIVE_INGEST_PASSWORD: ${ARCHIVE_INGEST_PASSWORD:?Set ARCHIVE_INGEST_PASSWORD in .env}
+      ARCHIVE_READER_PASSWORD: ${ARCHIVE_READER_PASSWORD:?Set ARCHIVE_READER_PASSWORD in .env}
+      ARCHIVE_QUALITY_PASSWORD: ${ARCHIVE_QUALITY_PASSWORD:?Set ARCHIVE_QUALITY_PASSWORD in .env}
+      TZ: Asia/Shanghai
+    volumes:
+      - archive_postgres_data:/var/lib/postgresql/data
+      - ./deploy/archive/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U archive_admin -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  archive_postgres_data:
