@@ -64,6 +64,12 @@ class AppSettings(BaseSettings):
         le=3600,
     )
     chatwoot_auto_reply_enabled: bool = False
+    # 每轮 resolved 后由 ICS 发送原生评价卡；启用前关闭 Inbox 自带自动邀约。
+    chatwoot_csat_enabled: bool = False
+    chatwoot_csat_message: str = Field(
+        default="本次服务已结束，请评价本次服务。", min_length=1, max_length=1000,
+    )
+    chatwoot_csat_display_type: str = Field(default="emoji", pattern="^(emoji|star)$")
     # 仅用户新消息刷新此窗口；resolved 会立即结束当前咨询。
     chatwoot_session_idle_timeout_seconds: int = Field(default=21600, gt=0)
     chatwoot_handoff_enabled: bool = True

@@ -6,6 +6,7 @@ import asyncio
 import logging
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
+from functools import partial
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -28,6 +29,7 @@ from ics_agent.app.core.context import (
     webhook_repository,
 )
 from .client import ChatwootAPIError, get_chatwoot_client
+from .csat import get_csat_repository, run_csat_worker
 from .state import ConversationControl
 from reminder.backend.service import capture_hook, ensure_notification, inbox_details
 from ics_agent.app.core.logging_config import log_event
@@ -58,6 +60,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 webhook_queue: WebhookJobQueue | None = None
 contact_block_reaper_task: asyncio.Task[None] | None = None
+csat_worker_task: asyncio.Task[None] | None = None
 _conversation_locks: dict[str, asyncio.Lock] = {}
 
 
@@ -65,6 +68,13 @@ async def start_chatwoot_webhook_workers() -> None:
     """启动 Chatwoot Webhook 后台队列和联系人静音到期任务。"""
     global webhook_queue
     global contact_block_reaper_task
+    global csat_worker_task
+    if settings.chatwoot_csat_enabled:
+        await asyncio.to_thread(get_csat_repository().ensure_table)
+        csat_worker_task = asyncio.create_task(
+            run_csat_worker(get_csat_repository(), get_chatwoot_client(), settings),
+            name="chatwoot-csat-invitations",
+        )
     webhook_queue = WebhookJobQueue(
         processor=_process_webhook_job,
         repository=webhook_repository,
@@ -80,6 +90,11 @@ async def stop_chatwoot_webhook_workers() -> None:
     """停止 Chatwoot Webhook 后台任务。"""
     global webhook_queue
     global contact_block_reaper_task
+    global csat_worker_task
+    if csat_worker_task is not None:
+        csat_worker_task.cancel()
+        await asyncio.gather(csat_worker_task, return_exceptions=True)
+        csat_worker_task = None
     if contact_block_reaper_task is not None:
         contact_block_reaper_task.cancel()
         await asyncio.gather(
@@ -619,6 +634,26 @@ def _conversation_status_transition(event: ChatwootWebhookEvent) -> str | None:
     return None
 
 
+def _csat_close_kwargs(event: ChatwootWebhookEvent) -> dict[str, object]:
+    """仅为真正的 resolved 事件附加事务内捕获，不处理普通状态快照。"""
+    if not settings.chatwoot_csat_enabled or _conversation_status_transition(event) != "resolved":
+        return {}
+    conversation = event.conversation or event.raw
+    meta = conversation.get("meta") or {}
+    source = meta if "assignee" in meta else conversation
+    assignee: dict[str, object] = {}
+    if "assignee" in source:
+        value = source["assignee"]
+        assignee = {"id": value.get("id") if isinstance(value, dict) else None}
+    elif "assignee_id" in source:
+        assignee = {"id": source["assignee_id"]}
+    return {"on_session_closed": partial(
+        get_csat_repository().capture,
+        inbox_id=str(_webhook_inbox_id(event) or "") or None,
+        assignee=assignee,
+    )}
+
+
 def _is_contact_block_event(event: ChatwootWebhookEvent) -> bool:
     event_name = event.event.strip().lower().replace("_", ".")
     if event_name in CONTACT_BLOCK_EVENTS:
@@ -873,6 +908,9 @@ async def _refresh_handoff_from_chatwoot_status(
         event_at=webhook_status_time(
             ChatwootWebhookEvent(event="conversation_updated", raw=conversation)
         ),
+        **_csat_close_kwargs(ChatwootWebhookEvent(
+            event="conversation_status_changed", raw=conversation,
+        )),
     )
 
 
@@ -1236,6 +1274,7 @@ async def _process_webhook_job_unlocked(
                 conversation_id=conversation_id,
                 status=status,
                 event_at=webhook_status_time(event) or job.received_at,
+                **_csat_close_kwargs(event),
             )
         if block_result is not None:
             return block_result
@@ -2179,6 +2218,7 @@ async def chatwoot_webhook(
                 conversation_id=conversation_id,
                 status="resolved",
                 event_at=webhook_status_time(event) or received_at,
+                **_csat_close_kwargs(event),
             )
         except Exception as exc:
             await asyncio.to_thread(

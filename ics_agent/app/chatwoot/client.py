@@ -47,6 +47,67 @@ class ChatwootClient:
             private=False,
         )
 
+    def send_csat_invitation(
+        self,
+        *,
+        account_id: str,
+        conversation_id: str,
+        round_id: str,
+        assigned_agent_id: str | None,
+        closed_at: str,
+        content: str,
+        display_type: str,
+    ) -> dict[str, Any]:
+        """创建本轮的原生 CSAT 卡；独立于普通文本回复。"""
+        payload: dict[str, Any] = {
+            "content": content,
+            "message_type": "outgoing",
+            "private": False,
+            "content_type": "input_csat",
+            "content_attributes": {
+                "display_type": display_type,
+                "ics_round_id": round_id,
+                "ics_assigned_agent_id": assigned_agent_id,
+                "ics_closed_at": closed_at,
+            },
+        }
+        agent_bot_id = self._settings.chatwoot_agent_bot_id.strip()
+        if agent_bot_id:
+            payload.update(sender_type="AgentBot", sender_id=agent_bot_id)
+        return self._request_json(
+            "POST", self._conversation_path(account_id, conversation_id) + "/messages",
+            payload,
+        )
+
+    def find_csat_invitation(
+        self,
+        *,
+        account_id: str,
+        conversation_id: str,
+        round_id: str,
+        after_message_id: str | None,
+    ) -> dict[str, Any] | None:
+        """重试前分页核对远端，恢复已创建但本地尚未确认的卡片。"""
+        after = int(after_message_id) if after_message_id else 0
+        path = self._conversation_path(account_id, conversation_id) + "/messages"
+        token = self._user_api_token("Chatwoot CSAT message reconciliation")
+        while True:
+            result = self._request_json("GET", path + f"?after={after}", access_token=token)
+            items = result.get("payload")
+            if not isinstance(items, list):
+                raise ChatwootAPIError("Chatwoot CSAT message listing is invalid.")
+            if not items:
+                return None
+            for item in items:
+                attributes = item.get("content_attributes") or {}
+                if (item.get("content_type") == "input_csat"
+                        and attributes.get("ics_round_id") == round_id):
+                    return item
+            next_after = max(int(item["id"]) for item in items)
+            if next_after <= after:
+                raise ChatwootAPIError("Chatwoot CSAT message pagination did not advance.")
+            after = next_after
+
     def toggle_typing_status(
         self,
         *,

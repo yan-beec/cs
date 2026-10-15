@@ -593,6 +593,7 @@ class ConversationControlRepository:
         status: str,
         release_handoff: bool = True,
         event_at: datetime | None = None,
+        on_session_closed: Callable[[Any, ConversationControl, datetime], None] | None = None,
     ) -> ConversationControl:
         """记录有序状态事件；resolved 结束所有咨询，包括纯 AI 咨询。"""
         account_id, conversation_id = _validate_reference(
@@ -649,6 +650,9 @@ class ConversationControlRepository:
                     ):
                         return control
                     if clean_status == "resolved":
+                        if not currently_closed and on_session_closed is not None:
+                            # 在释放坐席前、同一事务内记录评价邀约；重投和旧事件不重复捕获。
+                            on_session_closed(cursor, control, observed_at)
                         closed = max(closed, observed_at) if closed else observed_at
                     # open/reopened 可以先于更早的 resolved 送达；仍须保留
                     # 结束边界，但不能把当前 Chatwoot 状态从 open 回拨。

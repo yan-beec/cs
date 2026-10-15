@@ -1,0 +1,15 @@
+# Merge with the EXISTING Chatwoot Compose file, not the ICS Compose file.
+# Set ICS_CSAT_PATCH_PATH to the absolute path of ics_csat_rounds.rb on the host.
+services:
+  rails:
+    volumes:
+      - type: bind
+        source: ${ICS_CSAT_PATCH_PATH:?Set the absolute path to ics_csat_rounds.rb}
+        target: /app/config/initializers/ics_csat_rounds.rb
+        read_only: true
+  sidekiq:
+    volumes:
+      - type: bind
+        source: ${ICS_CSAT_PATCH_PATH:?Set the absolute path to ics_csat_rounds.rb}
+        target: /app/config/initializers/ics_csat_rounds.rb
+        read_only: true
