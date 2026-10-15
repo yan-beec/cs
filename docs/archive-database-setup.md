@@ -30,6 +30,10 @@
 
 初始化脚本设置账号、分区和原始证据的默认权限，业务表由 `quality/database` 中的版本迁移创建。**后续迁移必须以 `archive_owner` 身份创建对象**；`ops` 表按用途显式授权，不默认给质检账号采集任务写权限。原始证据不允许日常运行账号修改、删除或清空。
 
+## 服务器发布与自动迁移
+
+日常更新使用共享入口 `bash /opt/cs-src/deploy/server/release.sh`。它同步 `quality/` 和归档配置，等待数据库就绪，调用 `quality/deploy/migrate.sh` 建表并验证，再更新 ICS 应用。迁移失败则停止发布；已执行且未改变的迁移自动跳过。服务器首次使用前先在现有 `.env` 中补齐归档库配置，详见[统一发布说明](server-release.md)。
+
 ## 建表与业务权限
 
 代码位于 ICS 顶层 `quality/`，共享现有认证、渠道配置、Chatwoot 客户端和适用依赖。完整表结构、权限矩阵和后续采集约定见 [quality 模块说明](../quality/README.md)。从 ICS 项目根目录执行：

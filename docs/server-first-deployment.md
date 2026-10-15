@@ -1,10 +1,12 @@
 # 智能客服机器人：Ubuntu 服务器首次部署测试手册
 
-适用项目：`ics_agent` / `D:\project\CS`。更新日期：2026-10-08。本轮核对基线：分支 `test`，提交 `6b2e89a`，以及当前配置文件；本次国内网络构建修订还需提交、推送。实际发布以第 4 节记录的完整提交 SHA 为准。
+适用项目：`ics_agent` / `D:\project\CS`。更新日期：2026-10-15。本轮核对基线：分支 `test`，提交 `6b2e89a`，以及当前配置文件；本次国内网络构建修订还需提交、推送。实际发布以第 4 节记录的完整提交 SHA 为准。
 
 本文按你已确认的环境编写：**Ubuntu 22.04 LTS、x86_64，已有服务器端 Chatwoot，本次只部署机器人并接入 Chatwoot。** Ubuntu 24.04 可按相同步骤操作。未登录你的远端服务器执行部署；本文命令依据当前项目源码、Compose 配置及本地已验证的 Chatwoot 接口核对。
 
 当前 Chatwoot 根地址为 **`http://172.20.48.12:3000`，使用内网，没有公网域名**。前端已经单独部署，本次复用该前端。推荐通过 **Git 同步后端源码和配置模板，只单独上传模型包 `cs-models.tar.gz`**；服务器不能访问仓库时，仍可使用模型包与后端部署包 `cs-app.tar.gz` 分开上传的方案。
+
+归档数据库的自动迁移已接入统一发布入口，操作见[服务器统一发布说明](server-release.md)。服务器 `.env` 需要先配置 `ARCHIVE_*` 字段；从本版起，第 9 节首次启动和第 13.2 节日常更新都会先等待归档库就绪、执行迁移并验证权限，成功后再更新应用。
 
 已有服务器新增或升级转人工强弹窗提醒时，请按[提醒功能服务器更新部署手册](reminder-server-update.md)执行。提醒后端随 `ics-agent` 部署，Windows 客户端与浏览器插件则安装、更新在客服电脑上。
 
@@ -238,10 +240,13 @@ df -h /var/lib/docker
 /opt/cs/
 ├── Dockerfile                        解压后由后端构建模板复制生成
 ├── docker-compose.yml
+├── docker-compose.archive.yml         独立归档数据库
 ├── .dockerignore
 ├── requirements.txt
 ├── .env.example
 ├── ics_agent/                        后端包：完整应用代码
+├── reminder/                         后端包：共享提醒模块
+├── quality/                          后端包：归档、质检与迁移
 ├── knowledge_base_in/                后端包：解析和向量化代码
 ├── deploy/server/                    后端包：配置模板、Dockerfile.backend-only
 ├── docs/                             后端包：本手册
@@ -282,8 +287,8 @@ tar.exe -h -czf D:\cs-app.tar.gz `
   --exclude=*.pyc `
   --exclude=knowledge_base_in/output `
   --exclude=knowledge_base_in/vector_store `
-  docker-compose.yml .dockerignore requirements.txt .env.example `
-  ics_agent knowledge_base_in deploy docs `
+  docker-compose.yml docker-compose.archive.yml .dockerignore requirements.txt .env.example `
+  ics_agent reminder quality knowledge_base_in deploy docs `
   database/channel_xingliao/最新问答对.xlsx database/channel_xingliao/intent_dataset_4000.csv database/channel_xingliao/knowledge_base
 if ($LASTEXITCODE -ne 0) { throw '后端包打包失败，请检查上方错误。' }
 Get-FileHash D:\cs-app.tar.gz -Algorithm SHA256
@@ -495,27 +500,10 @@ test -f /opt/cs-src/deploy/server/bot.env.example && echo 'server env template O
 首次部署和以后更新都使用下面这一段。它只同步指定目录，并排除知识库生成产物：
 
 ```bash
-(
-  set -e
-  test -f /opt/cs-src/deploy/server/Dockerfile.backend-only
-  mkdir -p /opt/cs/ics_agent /opt/cs/knowledge_base_in /opt/cs/reminder /opt/cs/deploy /opt/cs/docs
-  rsync -a --delete --exclude='__pycache__/' --exclude='*.pyc' \
-    /opt/cs-src/ics_agent/ /opt/cs/ics_agent/
-  rsync -a --delete --exclude='/output/' --exclude='/vector_store/' \
-    --exclude='__pycache__/' --exclude='*.pyc' \
-    /opt/cs-src/knowledge_base_in/ /opt/cs/knowledge_base_in/
-  rsync -a --delete --exclude='/build/' --exclude='/dist/' \
-    --exclude='__pycache__/' --exclude='*.pyc' --exclude='.pytest_cache/' \
-    /opt/cs-src/reminder/ /opt/cs/reminder/
-  rsync -a /opt/cs-src/deploy/ /opt/cs/deploy/
-  rsync -a /opt/cs-src/docs/ /opt/cs/docs/
-  cp /opt/cs-src/docker-compose.yml /opt/cs-src/.dockerignore \
-    /opt/cs-src/requirements.txt /opt/cs-src/.env.example /opt/cs/
-  cp /opt/cs-src/deploy/server/Dockerfile.backend-only /opt/cs/Dockerfile
-)
+bash /opt/cs-src/deploy/server/sync-code.sh /opt/cs-src /opt/cs
 ```
 
-整段无报错、退出码为 0 后继续。`--delete` 只用于 `ics_agent/`、`knowledge_base_in/`、`reminder/` 三个代码目录，清掉新版已移除的旧代码；被排除的 `output/`、`vector_store/`、提醒构建产物和缓存会保留。不要加入 `--delete-excluded`，也不要把同步目标改成整个 `/opt/cs`。运行目录内的代码和模板视为可替换文件，定制代码应先在开发端修改并提交；实际配置修改在 `/opt/cs/.env` 中进行。
+同步脚本包含 `quality/`、`docker-compose.archive.yml` 和归档初始化文件。首次部署可单独执行此步骤，再配置 `.env` 和初始化机器人业务数据；日常更新直接使用第 13.2 节的统一发布入口。`--delete` 只用于四个代码目录 `ics_agent/`、`knowledge_base_in/`、`reminder/`、`quality/`；生成产物和缓存按脚本排除，服务器 `.env`、`database/`、`models/`、日志及数据库卷不作为同步目标。不要把整个 `/opt/cs` 设为删除同步目标。
 
 #### 第五步：首次复制业务数据
 
@@ -990,8 +978,7 @@ df -h /
 
 ```bash
 cd /opt/cs
-docker compose -f docker-compose.yml up -d ics-agent
-docker compose -f docker-compose.yml ps
+bash deploy/server/release.sh --in-place
 ```
 
 首次模型预热可能需要一段时间，CPU 和内存会上升。另开 SSH 终端观察：
@@ -1690,26 +1677,15 @@ git -C /opt/cs-src log -1 --oneline
 
 确认 pull 成功且提交 SHA 是本次目标版本。如果提示分支分叉、权限或网络错误，停止这次发布，先解决 Git 问题。
 
-3. 重新执行 **第 4.6 节第四步“仅同步运行所需的代码与模板”** 的完整代码块。无需执行第五步的初始数据复制。
-4. 在运行目录校验配置、构建并更新应用：
+3. 执行统一发布入口，它会同步代码、等待归档库就绪、执行迁移和验证，再构建并更新应用：
 
 ```bash
-cd /opt/cs
-docker compose -f docker-compose.yml config --quiet
+bash /opt/cs-src/deploy/server/release.sh --source /opt/cs-src --target /opt/cs
 ```
 
-配置检查成功后再执行：
+任一步失败会返回非零状态并停止后续步骤；迁移或权限验证失败时不构建、不更新应用容器。发布入口会阻止同一目标目录并发发布，并在应用更新成功后记录源码 SHA 到 `deployment-records/source-commit.txt`。同版本迁移可重复执行。完整行为见[统一发布说明](server-release.md)。
 
-```bash
-docker compose -f docker-compose.yml up -d --build ics-agent
-```
-
-等待预热完成，按第 9 节检查日志、FAQ、RAG 和健康接口，再从已有前端验收。成功后记录实际采用的源码版本：
-
-```bash
-mkdir -p /opt/cs/deployment-records
-git -C /opt/cs-src rev-parse HEAD > /opt/cs/deployment-records/source-commit.txt
-```
+等待模型预热完成，按第 9 节检查日志、FAQ、RAG 和健康接口，再从已有前端验收。脚本完成表示容器更新命令成功，不代替业务验收。
 
 日常同步保留服务器 `.env`、`models/`、`database/`、知识库分块与向量库、日志及数据库卷。新版本若增加环境变量，需阅读配置模板并手工补到服务器 `.env`，不要直接用模板覆盖已有值。部署目录的 Nginx 文件只是模板，同步不会自动更新 `/etc/nginx/` 中已启用的站点。
 
@@ -1731,8 +1707,7 @@ if ($LASTEXITCODE -ne 0) { throw '后端包上传失败。' }
 ```bash
 cd /opt/cs
 tar --exclude=database -xzf ~/cs-app.tar.gz
-cp deploy/server/Dockerfile.backend-only Dockerfile
-docker compose -f docker-compose.yml up -d --build ics-agent
+bash deploy/server/release.sh --in-place
 ```
 
 这里特意排除解压 `database/`，避免单纯更新代码时覆盖服务器已经通过管理后台维护的 FAQ、知识库或意图 CSV。模型目录不在后端包内，`.env` 也不在包内，二者保持原样。知识库/FAQ 更新分别按第 13.3、13.4 节操作。

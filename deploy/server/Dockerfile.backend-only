@@ -31,6 +31,7 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 
 COPY ics_agent ./ics_agent
 COPY reminder ./reminder
+COPY quality ./quality
 COPY knowledge_base_in ./knowledge_base_in
 
 EXPOSE 3001

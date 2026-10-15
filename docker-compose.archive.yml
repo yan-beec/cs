@@ -26,5 +26,43 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Optional receiver shares the ICS image and common modules, with ingest-only credentials.
+  quality-receiver:
+    profiles: [quality-capture]
+    image: ics-agent:py310
+    pull_policy: never
+    restart: unless-stopped
+    command: ["python", "-m", "uvicorn", "quality.capture.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "3010", "--no-access-log"]
+    environment:
+      ARCHIVE_POSTGRES_HOST: archive-postgres
+      ARCHIVE_POSTGRES_PORT: 5432
+      ARCHIVE_POSTGRES_DB: ${ARCHIVE_POSTGRES_DB:-ics_quality}
+      ARCHIVE_POSTGRES_SSLMODE: ${ARCHIVE_POSTGRES_SSLMODE:-prefer}
+      ARCHIVE_POSTGRES_POOL_SIZE: ${ARCHIVE_POSTGRES_POOL_SIZE:-5}
+      ARCHIVE_INGEST_USER: ${ARCHIVE_INGEST_USER:-archive_ingest}
+      ARCHIVE_INGEST_PASSWORD: ${ARCHIVE_INGEST_PASSWORD:?Set ARCHIVE_INGEST_PASSWORD in .env}
+      ARCHIVE_SOURCE_KEY: ${ARCHIVE_SOURCE_KEY:-chatwoot-main}
+      ARCHIVE_ALLOWED_ACCOUNT_IDS: ${ARCHIVE_ALLOWED_ACCOUNT_IDS:-}
+      ARCHIVE_WEBHOOK_SECRET: ${ARCHIVE_WEBHOOK_SECRET:-}
+      ARCHIVE_WEBHOOK_TOLERANCE_SECONDS: ${ARCHIVE_WEBHOOK_TOLERANCE_SECONDS:-300}
+      ARCHIVE_RECEIVER_MAX_BODY_BYTES: ${ARCHIVE_RECEIVER_MAX_BODY_BYTES:-2097152}
+      TZ: Asia/Shanghai
+    ports:
+      - "${ARCHIVE_RECEIVER_HOST:-127.0.0.1}:${ARCHIVE_RECEIVER_PORT:-3010}:3010"
+    depends_on:
+      archive-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3010/health', timeout=3).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   archive_postgres_data:
