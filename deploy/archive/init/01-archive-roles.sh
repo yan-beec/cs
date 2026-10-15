@@ -50,13 +50,9 @@ ALTER DEFAULT PRIVILEGES FOR ROLE archive_owner IN SCHEMA quality
 ALTER DEFAULT PRIVILEGES FOR ROLE archive_owner IN SCHEMA quality
     GRANT USAGE, SELECT ON SEQUENCES TO archive_quality;
 
--- Progress, retries and other mutable job state belong in ops.
-ALTER DEFAULT PRIVILEGES FOR ROLE archive_owner IN SCHEMA ops
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO archive_ingest, archive_quality;
-ALTER DEFAULT PRIVILEGES FOR ROLE archive_owner IN SCHEMA ops
-    GRANT SELECT ON TABLES TO archive_reader;
-ALTER DEFAULT PRIVILEGES FOR ROLE archive_owner IN SCHEMA ops
-    GRANT USAGE, SELECT ON SEQUENCES TO archive_ingest, archive_quality;
+-- Mutable jobs and query projections belong in ops.
+-- quality/database migrations assign privileges per table; no blanket grants.
+-- Ingestion and future quality workers must not mutate each other's queues.
 
 ALTER ROLE archive_ingest IN DATABASE :"archive_db" SET search_path = archive, ops;
 ALTER ROLE archive_reader IN DATABASE :"archive_db" SET search_path = archive, quality, ops;

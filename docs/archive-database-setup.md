@@ -1,6 +1,6 @@
 # ICS 独立归档与质检数据库
 
-日期：2026-10-15。此配置新增数据库基础设施，消息接收、业务表和后台查询在后续开发。
+日期：2026-10-15。数据库基础设施已配置，首版业务表、权限迁移及验证位于项目顶层 `quality/`；消息接收和后台查询接入为下一步开发。
 
 ## 结构
 
@@ -24,11 +24,23 @@
 | `archive_owner` | 不可登录的对象所有者，迁移时通过 `SET ROLE archive_owner` 建表 |
 | `archive_ingest` | 在 `archive` 中查询及追加原始记录，在 `ops` 中维护任务状态 |
 | `archive_reader` | 只读查询原始记录、质检结果及任务状态，供后续后台接入 |
-| `archive_quality` | 读取原始记录，在 `quality` 中追加结果，在 `ops` 中维护任务 |
+| `archive_quality` | 读取原始记录；目前仅只读采集任务，未来在 `quality` 中追加结果 |
 
 三个分区：`archive` 保存只追加证据，`quality` 保存只追加结果版本，`ops` 保存可更新的处理状态。
 
-初始化脚本设置的是后续建表的默认权限，暂未创建消息等业务表。**后续迁移必须以 `archive_owner` 身份创建对象**，默认权限才会生效；不能直接以管理账号建完表后假定应用已获授权。原始证据不允许日常运行账号修改、删除或清空。
+初始化脚本设置账号、分区和原始证据的默认权限，业务表由 `quality/database` 中的版本迁移创建。**后续迁移必须以 `archive_owner` 身份创建对象**；`ops` 表按用途显式授权，不默认给质检账号采集任务写权限。原始证据不允许日常运行账号修改、删除或清空。
+
+## 建表与业务权限
+
+代码位于 ICS 顶层 `quality/`，共享现有认证、渠道配置、Chatwoot 客户端和适用依赖。完整表结构、权限矩阵和后续采集约定见 [quality 模块说明](../quality/README.md)。从 ICS 项目根目录执行：
+
+```sh
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.archive.yml cp quality/database/. archive-postgres:/tmp/ics-quality-database
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.archive.yml exec -T archive-postgres sh /tmp/ics-quality-database/apply-migrations.sh
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.archive.yml exec -T archive-postgres sh /tmp/ics-quality-database/verify-schema.sh
+```
+
+迁移可重复执行，相同版本和校验值会跳过；禁止修改已应用 SQL，后续变更新增编号文件。无需清空数据卷或再次运行首次账号初始化脚本。验证会实际写入样本、尝试受限操作并回滚，不保留样本记录。当前不创建每日模型评分表。
 
 ## 配置与启动
 

@@ -11,13 +11,41 @@
   <style>
     :root {
       color-scheme: light;
-      --bg: #f5f7fb;
-      --text: #202635;
-      --muted: #697386;
-      --line: #d9e0ea;
-      --primary: #1f73ff;
-      --danger: #c93535;
+
+      /* 紫粉主题：主色低饱和、偏柔和，避免过于艳丽 */
+      --brand: #a273d1;
+      --brand-strong: #8657bd;
+      --brand-pink: #d68fc4;
+      --brand-soft: rgba(162, 115, 209, 0.1);
+      --brand-soft-strong: rgba(162, 115, 209, 0.18);
+      --brand-line: rgba(162, 115, 209, 0.22);
+      --brand-glow: rgba(126, 94, 178, 0.1);
+
+      --bg: #f7f4fc;
       --surface: #ffffff;
+      --surface-soft: #faf8fe;
+      --text: #2e2a3a;
+      --muted: #8b8599;
+      --line: #ece6f5;
+      --primary: #a273d1;
+      --danger: #cf5f7d;
+      --support-viewport-height: 100vh;
+      --support-viewport-top: 0px;
+      /* 聊天区保持满宽（0px = 不让出右侧空间，避免窄屏出现压缩感） */
+      --widget-aside-width: 0px;
+      /* 顶部横幅（兴聊客服 / × / <）和底部版权条要裁掉的高度，JS 会按运行时参数覆盖 */
+      --widget-header-crop: 76px;
+      --widget-footer-crop: 36px;
+      /* 输入框整体从屏幕底部抬起的距离：避开手机底部手势区，防止误触 */
+      --widget-bottom-lift: 24px;
+      /* 顶部横条已移除，聊天区铺满整个可视区高度 */
+      --widget-visible-height: var(--support-viewport-height);
+      /* 挂件容器与 iframe 的高度：整体减少底部抬起量，输入框随之抬高 */
+      --widget-frame-height: calc(var(--widget-visible-height) - var(--widget-bottom-lift));
+      --widget-iframe-height: calc(
+        var(--widget-visible-height) + var(--widget-header-crop) +
+          var(--widget-footer-crop) - var(--widget-bottom-lift)
+      );
     }
 
     * {
@@ -30,7 +58,8 @@
       height: 100%;
       margin: 0;
       overflow: hidden;
-      background: var(--bg);
+      /* 与挂件消息区同色：聊天区右侧让出的工具栏和聊天区无缝连成一片 */
+      background: #f9f9fb;
       font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
       color: var(--text);
     }
@@ -43,6 +72,36 @@
         env(safe-area-inset-left);
     }
 
+    /*
+     * 外围荧光描边：整个对话界面最外圈的一圈紫粉光边。
+     * fixed + inset:0 随分辨率自适应，始终贴住对话界面最外围；
+     * pointer-events: none，不拦截任何点击；用轻微的呼吸动画模拟荧光感。
+     */
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 2147483647;
+      border: 2px solid rgba(177, 128, 226, 0.9);
+      box-shadow:
+        inset 0 0 0 1px rgba(255, 255, 255, 0.6),
+        inset 0 0 14px rgba(162, 115, 209, 0.42),
+        inset 0 0 2px rgba(214, 143, 196, 0.55),
+        0 0 12px rgba(162, 115, 209, 0.5),
+        0 0 26px rgba(214, 143, 196, 0.32);
+      animation: frame-glow 3.2s ease-in-out infinite alternate;
+    }
+
+    @keyframes frame-glow {
+      from { opacity: 0.78; }
+      to { opacity: 1; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      body::after { animation: none; }
+    }
+
     #app-shell {
       position: fixed;
       inset: 0;
@@ -50,23 +109,27 @@
       align-items: center;
       justify-content: center;
       padding: 24px;
-      background: var(--bg);
+      background:
+        radial-gradient(circle at 50% 28%, rgba(162, 115, 209, 0.09), transparent 62%),
+        var(--bg);
       text-align: center;
       z-index: 1;
     }
 
     .panel {
-      width: min(100%, 360px);
-      padding: 22px 18px;
+      width: min(100%, 340px);
+      padding: 28px 22px;
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 20px;
       background: var(--surface);
+      box-shadow: 0 14px 34px -12px var(--brand-glow), 0 2px 6px rgba(46, 42, 58, 0.03);
     }
 
     .title {
       margin: 0 0 8px;
       font-size: 17px;
       font-weight: 600;
+      letter-spacing: 0.01em;
       line-height: 1.4;
     }
 
@@ -78,11 +141,11 @@
     }
 
     .spinner {
-      width: 28px;
-      height: 28px;
-      margin: 0 auto 14px;
-      border: 3px solid #dce5f2;
-      border-top-color: var(--primary);
+      width: 30px;
+      height: 30px;
+      margin: 0 auto 16px;
+      border: 3px solid rgba(162, 115, 209, 0.16);
+      border-top-color: var(--brand);
       border-radius: 50%;
       animation: spin 0.9s linear infinite;
     }
@@ -95,24 +158,31 @@
       display: flex;
       gap: 10px;
       justify-content: center;
-      margin-top: 16px;
+      margin-top: 18px;
     }
 
     button {
       min-width: 92px;
       height: 38px;
       border: 1px solid var(--line);
-      border-radius: 6px;
+      border-radius: 12px;
       background: var(--surface);
       color: var(--text);
       font: inherit;
       font-size: 14px;
+      -webkit-tap-highlight-color: transparent;
+      transition: background-color 0.16s ease, border-color 0.16s ease, opacity 0.16s ease;
     }
 
     button.primary {
-      border-color: var(--primary);
-      background: var(--primary);
+      border-color: transparent;
+      background: linear-gradient(135deg, #a97ade 0%, #c07cc8 100%);
       color: #fff;
+      box-shadow: 0 8px 18px -6px rgba(162, 115, 209, 0.5);
+    }
+
+    button.primary:active {
+      transform: translateY(1px);
     }
 
     @keyframes spin {
@@ -128,22 +198,29 @@
     }
 
     /*
-     * 挂件全屏铺满。
-     * --widget-footer-crop 是挂件底部要挡掉的版权条高度（默认 36px）：
-     * iframe 视口比屏幕高出这一截，版权条就落到屏幕外，
-     * 再由 holder 的 overflow: hidden 裁掉，输入框位置保持不变。
+     * 挂件铺满整个可视区（宽度保持满宽，不做任何收窄，窄屏才不会出现压缩感）。
+     * 顶部横幅和底部版权条都在跨域 iframe 内部，无法用 CSS 直接命中，
+     * 统一用「把 iframe 视口加高、再由 holder 的 overflow: hidden 裁掉」处理：
+     * --widget-header-crop：挂件顶部要挡掉的横幅高度（默认 76px）；
+     * --widget-footer-crop：挂件底部要挡掉的版权条高度（默认 36px）。
+     * iframe 整体上移横幅高度、同时向上下各加高对应尺寸，
+     * 于是横幅和版权条都落到可视区域之外，输入框始终贴在可视区域底部。
+     * --widget-aside-width 默认为 0，保留该变量只为需要时临时让出右侧空间。
      */
     .woot-widget-holder,
     .woot-widget-holder.woot-elements--right,
     .woot-widget-holder.woot-elements--left {
       position: fixed !important;
-      inset: 0 !important;
-      width: 100vw !important;
-      height: 100vh !important;
-      max-width: 100vw !important;
-      max-height: 100vh !important;
-      min-width: 100vw !important;
-      min-height: 100vh !important;
+      top: var(--support-viewport-top) !important;
+      left: 0 !important;
+      right: var(--widget-aside-width) !important;
+      bottom: auto !important;
+      width: auto !important;
+      height: var(--widget-frame-height) !important;
+      max-width: none !important;
+      max-height: var(--widget-frame-height) !important;
+      min-width: 0 !important;
+      min-height: var(--widget-frame-height) !important;
       margin: 0 !important;
       padding: 0 !important;
       border: 0 !important;
@@ -151,14 +228,16 @@
       box-shadow: none !important;
       transform: none !important;
       overflow: hidden !important;
-      z-index: 2147483647 !important;
+      z-index: 2147483646 !important;
     }
 
     .woot-widget-holder iframe {
       width: 100% !important;
-      height: calc(100vh + var(--widget-footer-crop, 36px)) !important;
+      height: var(--widget-iframe-height) !important;
+      /* 上移横幅高度，让顶部的「兴聊客服」横幅落到可视区域之外 */
+      margin-top: calc(-1 * var(--widget-header-crop, 76px)) !important;
       /* Chatwoot SDK 自带样式会把 iframe 限制在 max-height: 100vh，
-         这里必须放开，否则多出来的版权条高度不生效 */
+         这里必须放开，否则多出来的加高部分不生效 */
       max-height: none !important;
       min-width: 100% !important;
       min-height: 0 !important;
@@ -166,6 +245,184 @@
       border-radius: 0 !important;
     }
 
+    /*
+     * 上传控件浮层：聊天区保持满宽，上传按钮靠左排在输入框「上方」一条，
+     * 既不在输入框内部、也不占横向空间（窄屏不会出现压缩感）。
+     * 容器铺满视口但完全透明且不接收点击，两个子元素各自定位：
+     * - .media-actions：两个「图标 + 文字」小胶囊按钮，左对齐悬浮在输入框正上方；
+     * - #media-status-bar：状态提示浮条，出现在按钮上方，仅在有内容时显示。
+     * 几何（实测 Chatwoot 挂件）：输入框含 2px 描边高 57px，裁掉底部 36px 版权条后
+     * 输入框底贴住可视区底，其顶边距 BASE（viewport-top + visible-height + footerCrop）
+     * 为 93px；再叠加 --widget-bottom-lift（24px，避开手机底部手势区）后
+     * 输入框顶边 = BASE - 117px。按钮高 34px、下边距输入框顶边 8px，
+     * 故按钮顶边 = BASE - 159px，状态浮条底边 = BASE - 167px。
+     * 公式里的 +footerCrop 用于在 ?footerCrop=0（保留版权条）时整体自动上移 36px；
+     * 键盘弹出时随 visualViewport 跟随。
+     */
+    #media-toolbar {
+      position: fixed;
+      inset: 0;
+      display: block;
+      min-height: 0;
+      padding: 0;
+      border: 0;
+      background: none;
+      box-shadow: none;
+      pointer-events: none;
+      z-index: 2147483647;
+    }
+
+    #media-toolbar[hidden],
+    #media-toolbar [hidden] {
+      display: none !important;
+    }
+
+    /* 状态浮条：默认隐藏，由 syncMediaStatusBar() 按内容显隐；左对齐在按钮上方 */
+    #media-status-bar {
+      position: absolute;
+      top: calc(
+        var(--support-viewport-top) + var(--widget-visible-height) +
+          var(--widget-footer-crop, 36px) - 167px
+      );
+      left: calc(17px + env(safe-area-inset-left, 0px));
+      transform: translateY(-100%);
+      display: none;
+      align-items: center;
+      gap: 8px;
+      max-width: min(72vw, 300px);
+      padding: 6px 6px 6px 12px;
+      border: 1px solid var(--brand-line);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.96);
+      box-shadow: 0 10px 24px -12px var(--brand-glow), 0 1px 3px rgba(46, 42, 58, 0.05);
+      pointer-events: auto;
+      -webkit-backdrop-filter: blur(6px);
+      backdrop-filter: blur(6px);
+    }
+
+    #media-status-bar.visible {
+      display: flex;
+    }
+
+    /* 上传按钮：靠左悬浮在输入框正上方，与输入框左边缘对齐、互不遮挡 */
+    .media-actions {
+      position: absolute;
+      top: calc(
+        var(--support-viewport-top) + var(--widget-visible-height) +
+          var(--widget-footer-crop, 36px) - 159px
+      );
+      left: calc(17px + env(safe-area-inset-left, 0px));
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      pointer-events: auto;
+    }
+
+    /*
+     * 上传按钮：图标 + 文字的小胶囊，靠左悬浮在输入框上方、互不遮挡。
+     * 高度比输入框矮，宽度随文字自适应。
+     */
+    #media-toolbar button {
+      min-width: 0;
+      height: 34px;
+      padding: 0 13px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      border: 1.5px solid var(--brand-line);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.97);
+      color: var(--brand-strong);
+      font-size: 12.5px;
+      font-weight: 500;
+      line-height: 1;
+      white-space: nowrap;
+      box-shadow: 0 5px 14px -6px var(--brand-glow), 0 1px 3px rgba(46, 42, 58, 0.06);
+      flex-shrink: 0;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+      transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease,
+        transform 0.16s ease, box-shadow 0.16s ease;
+    }
+
+    #media-toolbar button svg {
+      display: block;
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
+    }
+
+    #media-toolbar button:not(:disabled):active {
+      background: var(--brand-soft-strong);
+      border-color: rgba(162, 115, 209, 0.38);
+      transform: scale(0.94);
+    }
+
+    #media-toolbar button:disabled {
+      border-color: var(--line);
+      background: var(--surface-soft);
+      color: #b4aec2;
+      box-shadow: none;
+    }
+
+    /* 浮条里的「取消」是文字胶囊，覆盖圆形按钮的默认样式 */
+    #media-status-bar #cancel-image {
+      width: auto;
+      height: 27px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--surface-soft);
+      color: var(--muted);
+      box-shadow: none;
+      font-size: 12px;
+    }
+
+    #media-status-bar #cancel-image:active {
+      background: var(--brand-soft-strong);
+      color: var(--brand-strong);
+      transform: none;
+    }
+
+    #media-status {
+      margin: 0;
+      font-size: 12px;
+      line-height: 18px;
+      color: var(--muted);
+      overflow-wrap: anywhere;
+    }
+
+    #media-status.error {
+      color: var(--danger);
+    }
+
+    .media-input {
+      position: fixed;
+      left: -10000px;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+    }
+
+    #upload-debug {
+      position: fixed;
+      top: calc(var(--support-viewport-top) + 56px);
+      left: 12px;
+      right: 12px;
+      max-height: 40vh;
+      overflow: auto;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface);
+      box-shadow: 0 10px 26px -12px var(--brand-glow);
+      z-index: 2147483647;
+      font-size: 12px;
+    }
+
+    #upload-debug[hidden] { display: none !important; }
+    #upload-debug pre { white-space: pre-wrap; overflow-wrap: anywhere; }
   </style>
 </head>
 <body>
@@ -176,6 +433,38 @@
       <p class="desc">请稍候，正在为你打开在线客服。</p>
     </section>
   </main>
+
+  <section id="media-toolbar" aria-label="发送图片和视频" hidden>
+    <div id="media-status-bar">
+      <p id="media-status" role="status" aria-live="polite">正在连接客服…</p>
+      <button type="button" id="cancel-image" hidden>取消</button>
+    </div>
+    <div class="media-actions">
+      <button type="button" id="choose-image" disabled aria-label="发送图片">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="4.5" width="18" height="15" rx="3.5"></rect>
+          <circle cx="8.4" cy="9.6" r="1.5"></circle>
+          <path d="M4.2 18.4l4.6-4.1a2 2 0 0 1 2.7.05L20 19.4"></path>
+        </svg>
+        <span>图片</span>
+      </button>
+      <button type="button" id="choose-video" disabled aria-label="发送视频">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="5" width="18" height="14" rx="3.5"></rect>
+          <path d="M10.3 9.4l4.6 2.6-4.6 2.6z" fill="currentColor" stroke="none"></path>
+        </svg>
+        <span>视频</span>
+      </button>
+    </div>
+  </section>
+  <input class="media-input" id="image-input" type="file" accept="image/*" multiple tabindex="-1" aria-label="选择图片">
+  <input class="media-input" id="video-input" type="file" accept="video/*" tabindex="-1" aria-label="选择视频">
+  <details id="upload-debug" hidden>
+    <summary>上传诊断（可展开截图）</summary>
+    <pre id="upload-debug-output"></pre>
+  </details>
 
   <script>
     (function () {
@@ -208,12 +497,18 @@
        *   }
        * }
        *
-       * 5. 挂件底部的「由 Chatwoot 支持」版权条由 Chatwoot 自己渲染在
-       *    iframe 内部（输入框下方、挂件最底部的 36px 高的一行）。
-       *    跨域 iframe 无法用 CSS 直接命中，这里用「把 iframe 视口加高 36px，
-       *    再让外层容器裁掉溢出部分」的方式把它挡在可视区域之外，
-       *    聊天收发、会话记录、身份校验等能力完全不受影响。
-       *    高度可用 URL 参数微调：?footerCrop=36（0 表示不隐藏）。
+       * 5. 挂件顶部的「兴聊客服 / 通常在几分钟内回复您 / × / <」横幅和
+       *    底部的「由 Chatwoot 支持」版权条都由 Chatwoot 自己渲染在
+       *    iframe 内部（横幅在挂件最顶部，版权条在输入框下方、挂件最底部）。
+       *    跨域 iframe 无法用 CSS 直接命中，这里用「把 iframe 视口整体上移
+       *    横幅高度、并向上下各加高对应尺寸，再让外层容器裁掉溢出部分」的
+       *    方式把这两块都挡在可视区域之外。
+       *    聊天收发、会话记录、身份校验等能力完全不受影响，
+       *    输入框始终贴在可视区域底部。
+       *    高度可用 URL 参数微调：?headerCrop=76（0 表示不隐藏横幅）、
+       *    ?footerCrop=36（0 表示不隐藏版权条）。
+       *    顶部不再有任何页面自绘元素，聊天区铺满整个可视区；退出客服窗口
+       *    由 APP 的原生返回承担。
        *
        * 6. 打开页面直接进入聊天输入框状态，跳过挂件自带的 Home 屏
        *    （「当前已离线 / 开始会话 / 继续对话」那张卡片）。
@@ -234,7 +529,21 @@
         // 隐藏输入框下方的「由 Chatwoot 支持」版权条。
         // 36 = 版权条高度（上下各 12px 内边距 + 12px 文字行高）。
         HIDE_FOOTER_BRANDING: true,
-        FOOTER_BRANDING_HEIGHT: 36
+        FOOTER_BRANDING_HEIGHT: 36,
+        // 隐藏挂件顶部的「兴聊客服 / 通常在几分钟内回复您 / × / <」横幅。
+        // 76 = 实测横幅高度 72px + 4px 容差；多裁的部分只是消息区顶部的空白，
+        // 多裁不会影响输入框位置（输入框始终贴在可视区域底部）。
+        HIDE_HEADER_BANNER: true,
+        HEADER_BANNER_HEIGHT: 76,
+        // 原生先上传图片，H5 再读取 URL 并作为附件上传给 Chatwoot。
+        // 图片 URL 必须允许当前 H5 跨域读取；/api/v1/widget/* 需同源或允许跨域。
+        MAX_IMAGE_COUNT: 9,
+        // APP 的 uploadXFile 回调返回七牛 key。项目已有图片使用此七牛域名，
+        // 已验证公开图片可跨域读取；新上传 key 是否同属该域名需 APP 实机验证。
+        NATIVE_IMAGE_BASE_URL: "https://qn-video.oxing.ren/",
+        MAX_UPLOAD_SIZE_MB: 40,
+        MEDIA_UPLOAD_TIMEOUT_MS: 120000,
+        NATIVE_IMAGE_TIMEOUT_MS: 180000
       };
 
       function resolveFooterCrop(value) {
@@ -247,6 +556,18 @@
           return parsed;
         }
         return CONFIG.HIDE_FOOTER_BRANDING ? CONFIG.FOOTER_BRANDING_HEIGHT : 0;
+      }
+
+      function resolveHeaderCrop(value) {
+        var raw = String(value == null ? "" : value).trim().toLowerCase();
+        if (raw === "0" || raw === "off" || raw === "false" || raw === "none") {
+          return 0;
+        }
+        var parsed = parseInt(raw, 10);
+        if (!isNaN(parsed) && parsed >= 0 && parsed <= 200) {
+          return parsed;
+        }
+        return CONFIG.HIDE_HEADER_BANNER ? CONFIG.HEADER_BANNER_HEIGHT : 0;
       }
 
       var shell = document.getElementById("app-shell");
@@ -262,13 +583,553 @@
         authToken: search.get("appToken") || search.get("token") || search.get("authToken") || "",
         profileEndpoint: search.get("profileEndpoint") ||
           CONFIG.PROFILE_ENDPOINT,
-        footerCrop: resolveFooterCrop(search.get("footerCrop"))
+        footerCrop: resolveFooterCrop(search.get("footerCrop")),
+        headerCrop: resolveHeaderCrop(search.get("headerCrop"))
       };
 
+      document.documentElement.style.setProperty(
+        "--widget-header-crop",
+        runtime.headerCrop + "px"
+      );
       document.documentElement.style.setProperty(
         "--widget-footer-crop",
         runtime.footerCrop + "px"
       );
+
+      var media = {
+        ready: false,
+        token: "",
+        identityPending: false,
+        identityError: false,
+        expectedIdentifier: "",
+        identityDeadline: 0,
+        identityTimer: null,
+        attachmentsEnabled: true,
+        busy: false,
+        nativeRequest: null,
+        nativeTimer: null
+      };
+      var mediaToolbar = document.getElementById("media-toolbar");
+      var imageButton = document.getElementById("choose-image");
+      var videoButton = document.getElementById("choose-video");
+      var cancelImageButton = document.getElementById("cancel-image");
+      var imageInput = document.getElementById("image-input");
+      var videoInput = document.getElementById("video-input");
+      var mediaStatus = document.getElementById("media-status");
+      var uploadDebug = document.getElementById("upload-debug");
+      var uploadDebugOutput = document.getElementById("upload-debug-output");
+      var uploadDebugEnabled = search.get("uploadDebug") === "1";
+      var uploadDebugEvents = [];
+
+      function recordMediaDiagnostic(stage, details) {
+        if (!uploadDebugEnabled) return;
+        uploadDebug.hidden = false;
+        uploadDebugEvents.push({ stage: stage, details: details || {} });
+        uploadDebugEvents = uploadDebugEvents.slice(-16);
+        // 只记录来源、数据结构和状态；不记录访客 token、完整图片 URL 或签名。
+        uploadDebugOutput.textContent = JSON.stringify({
+          version: "20261014-5",
+          pageOrigin: window.location.origin,
+          apiOrigin: new URL(runtime.chatwootBaseUrl).origin,
+          events: uploadDebugEvents
+        }, null, 2);
+      }
+
+      function mediaUploadError(code, message) {
+        var error = new Error(message);
+        error.code = code;
+        return error;
+      }
+
+      function describeNativeImages(value) {
+        var text = typeof value === "string" ? value.trim() : "";
+        return {
+          type: Array.isArray(value) ? "array" : typeof value,
+          format: !text ? "empty-or-object" : /^[\[{]/.test(text) ? "json-or-list" :
+            /^[\"']/.test(text) ? "quoted" : /^https?:/i.test(text) ? "web-url" :
+            /^\/\//.test(text) ? "protocol-relative" : /^(content|file):/i.test(text) ? "local-uri" :
+            /^\//.test(text) ? "relative-path" : "other",
+          length: text.length,
+          fields: value && typeof value === "object" && !Array.isArray(value) ? Object.keys(value).slice(0, 10) : []
+        };
+      }
+
+      function describeNativeImageAddress(value) {
+        var text = String(value).trim();
+        var format = /^https?:\/\//i.test(text) ? "web-url" :
+          /^\/\//.test(text) ? "protocol-relative" :
+          /^(content|file):/i.test(text) ? "local-uri" :
+          /^\/(storage|sdcard|mnt|data)\//i.test(text) ? "android-file-path" :
+          /^\//.test(text) ? "root-relative-path" :
+          /^\.\.?\//.test(text) ? "relative-path" :
+          /^[a-z0-9.-]+\.[a-z]{2,}(?::\d+)?\//i.test(text) ? "host-without-scheme" :
+          /^[a-z][a-z0-9+.-]*:/i.test(text) ? "other-scheme" : "relative-or-other";
+        var origin = "";
+        if (format === "web-url") {
+          try { origin = new URL(text).origin; } catch (error) {}
+        }
+        return { format: format, length: text.length, origin: origin,
+          hasComma: text.indexOf(",") !== -1, hasQuery: text.indexOf("?") !== -1,
+          hasWhitespace: /\s/.test(text) };
+      }
+
+      function nativeImageAddressError(code, message, value) {
+        recordMediaDiagnostic("native-address-error", { code: code, address: describeNativeImageAddress(value) });
+        return mediaUploadError(code, message);
+      }
+
+      function extractNativeImageValues(value, depth, single) {
+        if (depth > 5) throw mediaUploadError("P101", "图片返回格式无法识别（P101），请联系 APP 客服。");
+        if (value == null || value === "") return [];
+        if (Array.isArray(value)) {
+          return value.reduce(function (all, item) { return all.concat(extractNativeImageValues(item, depth + 1, true)); }, []);
+        }
+        if (typeof value === "object") {
+          var keys = ["url", "urls", "imageUrl", "imageUrls", "image_url", "fileUrl", "file_url", "path", "data", "result", "images", "files"];
+          for (var i = 0; i < keys.length; i++) {
+            if (Object.prototype.hasOwnProperty.call(value, keys[i])) {
+              return extractNativeImageValues(value[keys[i]], depth + 1, ["url", "imageUrl", "image_url", "fileUrl", "file_url", "path"].indexOf(keys[i]) !== -1);
+            }
+          }
+          throw mediaUploadError("P101", "图片返回格式无法识别（P101），请联系 APP 客服。");
+        }
+        if (typeof value !== "string") throw mediaUploadError("P101", "图片返回格式无法识别（P101），请联系 APP 客服。");
+        var text = value.trim();
+        if (!text || text === "null" || text === "undefined") return [];
+        if (/^[\[{"]/.test(text)) {
+          var parsed;
+          var parsedJson = false;
+          try { parsed = JSON.parse(text); parsedJson = true; } catch (error) {}
+          if (parsedJson) return extractNativeImageValues(parsed, depth + 1, single);
+        }
+        // 兼容 Java List.toString() 的 [URL1, URL2]，以及带引号的逗号分隔字符串。
+        if (text[0] === "[" && text[text.length - 1] === "]") text = text.slice(1, -1);
+        text = text.replace(/\\\//g, "/").trim();
+        // APP 以逗号连接多个完整 URL；URL 自身的图片处理参数也可能含逗号。
+        // 只有逗号后开始另一个 URL 时才分隔，避免把参数误当成相对图片路径。
+        var startsWithUrl = /^["']?(https?:\/\/|\/\/|https?%3a%2f%2f)/i.test(text);
+        var values = single ? [text] : startsWithUrl ?
+          text.split(/,\s*(?=["']?(?:https?:\/\/|\/\/|https?%3a%2f%2f))/i) : text.split(",");
+        return values.map(function (item) {
+          item = item.trim();
+          if ((item[0] === '"' && item[item.length - 1] === '"') ||
+              (item[0] === "'" && item[item.length - 1] === "'")) item = item.slice(1, -1).trim();
+          if (/^https?%3a%2f%2f/i.test(item)) {
+            try { item = decodeURIComponent(item); } catch (error) {}
+          }
+          return item;
+        }).filter(Boolean);
+      }
+
+      function resolveNativeImageUrl(value) {
+        var text = String(value).trim();
+        if (/^(content|file):/i.test(text) || /^\/(storage|sdcard|mnt|data\/user)\//i.test(text)) {
+          throw nativeImageAddressError("P103", "APP 返回的是手机本地图片路径（P103），请联系 APP 客服。", text);
+        }
+        var base = CONFIG.NATIVE_IMAGE_BASE_URL;
+        var isStorageKey = !/^[a-z][a-z0-9+.-]*:/i.test(text) && !/^\/\//.test(text);
+        if (/^\/\//.test(text)) base = base || runtime.chatwootBaseUrl;
+        else if (isStorageKey && !base) {
+          throw nativeImageAddressError("P102", "APP 返回的图片地址不完整（P102），请联系 APP 客服。", text);
+        }
+        try {
+          var target = text;
+          if (isStorageKey) {
+            var segments = text.split("/");
+            if (segments.some(function (part) { return part === "." || part === ".."; })) throw new Error();
+            // r.key 是原始对象名；其中的空格、中文、#、?、% 都作为路径内容编码。
+            // 完整 HTTP URL 不重新编码，避免破坏原生返回的签名参数。
+            target = segments.map(function (part) { return encodeURIComponent(part); }).join("/");
+          }
+          var url = base ? new URL(target, base) : new URL(target);
+          if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password) throw new Error();
+          return url;
+        } catch (error) {
+          throw nativeImageAddressError("P104", "APP 返回的图片地址无法识别（P104），请联系 APP 客服。", text);
+        }
+      }
+
+      function setMediaStatus(message, isError) {
+        mediaStatus.textContent = message || "";
+        mediaStatus.classList.toggle("error", !!isError);
+        syncMediaStatusBar();
+      }
+
+      // 状态浮条按「有无文案 / 是否在等原生结果」显隐（浮层不占用聊天区空间）。
+      function syncMediaStatusBar() {
+        var statusBar = document.getElementById("media-status-bar");
+        if (!statusBar) return;
+        var visible = !!mediaStatus.textContent || !cancelImageButton.hidden;
+        statusBar.classList.toggle("visible", visible);
+      }
+
+      function syncMediaToolbarHeight() {
+        // 上传控件已改为输入框右侧浮层，不再占据聊天区下方空间，无需预留高度。
+      }
+
+      function updateMediaControls() {
+        var disabled = !media.ready || !media.token || media.identityPending ||
+          media.identityError || !media.attachmentsEnabled || media.busy || !!media.nativeRequest;
+        imageButton.disabled = disabled;
+        videoButton.disabled = disabled;
+        cancelImageButton.hidden = !media.nativeRequest;
+        syncMediaStatusBar();
+        mediaToolbar.setAttribute("aria-busy", String(media.busy));
+        if (media.identityError) {
+          setMediaStatus("身份验证失败，请重新进入客服。", true);
+        } else if (!media.attachmentsEnabled) {
+          setMediaStatus("当前客服暂不支持发送附件。", false);
+        } else if (media.identityPending || !media.token) {
+          setMediaStatus("正在连接客服…", false);
+        }
+        syncMediaToolbarHeight();
+      }
+
+      function cancelNativeSelection() {
+        window.clearTimeout(media.nativeTimer);
+        media.nativeTimer = null;
+        media.nativeRequest = null;
+        updateMediaControls();
+      }
+
+      function syncMediaViewport() {
+        var viewport = window.visualViewport;
+        document.documentElement.style.setProperty(
+          "--support-viewport-height", (viewport ? viewport.height : window.innerHeight) + "px"
+        );
+        // 顶部横条已移除，聊天区直接从可视区顶部开始。
+        document.documentElement.style.setProperty(
+          "--support-viewport-top", (viewport ? viewport.offsetTop : 0) + "px"
+        );
+        syncMediaToolbarHeight();
+      }
+
+      function showMediaToolbar() {
+        media.ready = true;
+        mediaToolbar.hidden = false;
+        syncMediaViewport();
+        updateMediaControls();
+      }
+
+      function widgetMediaUrl(resource) {
+        var url = new URL(runtime.chatwootBaseUrl.replace(/\/$/, "") + "/api/v1/widget/" + resource);
+        url.searchParams.set("website_token", runtime.websiteToken);
+        return url.href;
+      }
+
+      // setUser 可能复用已有 token，或因 SDK 缓存直接返回；不能只等待 setAuthCookie。
+      // 通过现有 contact 接口确认 token 已绑定目标用户，确认前始终禁止上传。
+      async function verifyMediaIdentity() {
+        window.clearTimeout(media.identityTimer);
+        if (!media.identityPending || media.identityError || !media.token) return;
+        var token = media.token;
+        var identifier = media.expectedIdentifier;
+        try {
+          var response = await fetchWithTimeout(widgetMediaUrl("contact"), {
+            credentials: "omit",
+            headers: { "Accept": "application/json", "X-Auth-Token": token }
+          }, CONFIG.PROFILE_TIMEOUT_MS);
+          var contact = response.ok ? await response.json() : null;
+          if (media.token !== token || media.expectedIdentifier !== identifier || media.identityError) return;
+          if (contact && String(contact.identifier) === identifier) {
+            media.identityPending = false;
+            setMediaStatus("", false);
+            updateMediaControls();
+            return;
+          }
+        } catch (error) {
+          // 等待 SDK 完成身份绑定，网络或跨域错误最终会在超时后结束等待。
+        }
+        if (media.token !== token || media.expectedIdentifier !== identifier || media.identityError) return;
+        if (Date.now() >= media.identityDeadline) {
+          media.identityPending = false;
+          media.identityError = true;
+          media.token = "";
+          updateMediaControls();
+        } else {
+          media.identityTimer = window.setTimeout(verifyMediaIdentity, 500);
+        }
+      }
+
+      // 只接受客服 iframe 的现有 SDK 消息，不接收其他窗口传入的访客凭证。
+      function receiveWidgetSession(event) {
+        var iframe = document.getElementById("chatwoot_live_chat_widget");
+        if (!iframe || event.source !== iframe.contentWindow ||
+            event.origin !== new URL(runtime.chatwootBaseUrl).origin ||
+            typeof event.data !== "string" || event.data.indexOf("chatwoot-widget:") !== 0) {
+          return;
+        }
+        var message;
+        try {
+          message = JSON.parse(event.data.slice("chatwoot-widget:".length));
+        } catch (error) {
+          return;
+        }
+        if (!message || typeof message !== "object") return;
+        var token = "";
+        if (message.event === "loaded" && message.config) {
+          var features = (message.config.channelConfig || {}).enabledFeatures;
+          if (Array.isArray(features)) {
+            media.attachmentsEnabled = features.indexOf("attachments") !== -1;
+          }
+          if (!media.identityError) token = message.config.authToken;
+          if (media.expectedIdentifier && !media.identityError) {
+            media.identityPending = true;
+            media.identityDeadline = Date.now() + CONFIG.WIDGET_READY_TIMEOUT_MS;
+          }
+        } else if (message.event === "setAuthCookie" && message.data) {
+          token = message.data.widgetAuthToken;
+          if (typeof token === "string" && token) {
+            media.identityError = false;
+            if (media.expectedIdentifier) {
+              media.identityPending = true;
+              media.identityDeadline = Date.now() + CONFIG.WIDGET_READY_TIMEOUT_MS;
+            }
+          }
+        } else if (message.event === "error" && message.errorType === "SET_USER_ERROR") {
+          media.token = "";
+          media.identityPending = false;
+          media.identityError = true;
+          cancelNativeSelection();
+        }
+        if (typeof token === "string" && token) {
+          if (media.nativeRequest && media.nativeRequest.token !== token) cancelNativeSelection();
+          media.token = token;
+          if (!media.busy && !media.nativeRequest) setMediaStatus("", false);
+          if (media.identityPending) verifyMediaIdentity();
+        }
+        updateMediaControls();
+      }
+
+      function canSendMedia(token) {
+        return media.ready && !!media.token && !media.identityPending &&
+          !media.identityError && media.attachmentsEnabled && (!token || token === media.token);
+      }
+
+      function checkMediaSize(size) {
+        if (size > CONFIG.MAX_UPLOAD_SIZE_MB * 1024 * 1024) {
+          throw new Error("单个文件不能超过 " + CONFIG.MAX_UPLOAD_SIZE_MB + " MB。");
+        }
+      }
+
+      function readMediaHeader(blob) {
+        var head = blob.slice(0, 32);
+        if (typeof head.arrayBuffer === "function") return head.arrayBuffer();
+        // Android 较旧的 WebView 不支持 Blob.arrayBuffer()。
+        return new Promise(function (resolve, reject) {
+          var reader = new FileReader();
+          reader.onload = function () { resolve(reader.result); };
+          reader.onerror = function () { reject(mediaUploadError("F101", "无法读取所选文件，请重新选择。")); };
+          reader.readAsArrayBuffer(head);
+        });
+      }
+
+      async function prepareMediaFile(blob, name, kind) {
+        checkMediaSize(blob.size);
+        if (!blob.size) throw new Error("选择的文件为空，请重新选择。");
+        var mime = String(blob.type || "").split(";")[0].toLowerCase();
+        var aliases = { "image/jpg": "image/jpeg", "image/x-png": "image/png", "application/mp4": "video/mp4" };
+        mime = aliases[mime] || mime;
+        var extensions = {
+          jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif",
+          webp: "image/webp", bmp: "image/bmp", heic: "image/heic", heif: "image/heif",
+          avif: "image/avif", mp4: "video/mp4", m4v: "video/x-m4v", mov: "video/quicktime",
+          webm: "video/webm", "3gp": "video/3gpp", mkv: "video/x-matroska", avi: "video/x-msvideo"
+        };
+        if (!mime || mime === "application/octet-stream" || mime === "binary/octet-stream" || mime === kind) {
+          // 部分 Android 相册或 CDN 不提供 MIME；先检查图片文件头，再使用后缀。
+          var head = new Uint8Array(await readMediaHeader(blob));
+          if (head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) mime = "image/png";
+          else if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) mime = "image/jpeg";
+          else if (head[0] === 0x47 && head[1] === 0x49 && head[2] === 0x46) mime = "image/gif";
+          else if (head[0] === 0x52 && head[1] === 0x49 && head[8] === 0x57 && head[9] === 0x45) mime = "image/webp";
+          else if (head[4] === 0x66 && head[5] === 0x74 && head[6] === 0x79 && head[7] === 0x70) {
+            var brand = String.fromCharCode.apply(null, head.slice(8, 12));
+            if (/^(heic|heix|hevc|hevx|mif1|msf1)$/.test(brand)) mime = "image/heic";
+            else if (/^(avif|avis)$/.test(brand)) mime = "image/avif";
+            else if (/^(isom|iso[2-9]|mp4[12]|avc1|M4V |M4VH|M4VP|3gp[4-9]|qt  )$/.test(brand)) {
+              mime = brand === "qt  " ? "video/quicktime" : /^3gp/.test(brand) ? "video/3gpp" : "video/mp4";
+            } else mime = extensions[String(name).split(".").pop().toLowerCase()] || "";
+          } else mime = extensions[String(name).split(".").pop().toLowerCase()] || "";
+        }
+        if (mime.indexOf(kind + "/") !== 0) {
+          throw new Error(kind === "image" ? "请选择图片文件。" : "请选择视频文件。");
+        }
+        var fallbackExtension = Object.keys(extensions).find(function (key) { return extensions[key] === mime; });
+        name = String(name || (kind + "-" + Date.now()));
+        if (name.indexOf(".") === -1) name += "." + (fallbackExtension || "bin");
+        return new File([blob], name, { type: mime, lastModified: blob.lastModified || Date.now() });
+      }
+
+      async function readNativeImage(value) {
+        var url = resolveNativeImageUrl(value);
+        recordMediaDiagnostic("image-read", { origin: url.origin });
+        var blob;
+        try {
+          blob = await fetchWithTimeout(url.href, { credentials: "omit" }, CONFIG.MEDIA_UPLOAD_TIMEOUT_MS, function (response) {
+            recordMediaDiagnostic("image-response", { status: response.status });
+            if (!response.ok) throw new Error();
+            checkMediaSize(Number(response.headers.get("Content-Length")) || 0);
+            return response.blob();
+          });
+        } catch (error) {
+          recordMediaDiagnostic("image-read-error", { name: error.name, code: error.code || "" });
+          if (error.message.indexOf("MB") !== -1) throw error;
+          throw new Error("图片读取失败，请检查网络后重新选择。");
+        }
+        var name = "";
+        try { name = decodeURIComponent(url.pathname.split("/").pop()); } catch (error) {}
+        return prepareMediaFile(blob, name, "image");
+      }
+
+      async function sendMediaAttachment(file, token) {
+        if (!canSendMedia(token)) throw new Error("登录状态已变化，请重新进入客服后发送。");
+        recordMediaDiagnostic("upload-start", { type: file.type, size: file.size });
+        var form = new FormData();
+        form.append("message[attachments][]", file, file.name);
+        form.append("message[timestamp]", new Date().toString());
+        // 不把 H5 地址中的 APP 登录 token 写进附件消息。
+        form.append("message[referer_url]", window.location.origin + window.location.pathname);
+        var response;
+        try {
+          response = await fetchWithTimeout(widgetMediaUrl("messages"), {
+            method: "POST",
+            credentials: "omit",
+            headers: { "Accept": "application/json", "X-Auth-Token": token },
+            body: form
+          }, CONFIG.MEDIA_UPLOAD_TIMEOUT_MS);
+        } catch (error) {
+          recordMediaDiagnostic("upload-network-error", { name: error.name });
+          // 不自动重试 POST，避免超时但服务器已接收时重复发送。
+          throw new Error("发送结果未确认，请先查看聊天记录再重试。");
+        }
+        recordMediaDiagnostic("upload-response", { status: response.status });
+        if (response.ok) return;
+        if (response.status === 401) {
+          media.token = "";
+          media.identityError = true;
+          throw new Error("登录状态已失效，请重新进入客服。");
+        }
+        if (response.status === 403) throw new Error("当前会话暂不允许发送，请重新进入客服。");
+        if (response.status === 413) throw new Error("文件超过客服允许的大小，请选择较小的文件。");
+        if (response.status === 422) throw new Error("文件格式暂不支持，请重新选择。");
+        throw new Error("附件发送失败，请稍后重试。");
+      }
+
+      async function sendMediaFiles(items, kind, fromNative, token) {
+        if (media.busy || !canSendMedia(token)) return;
+        if (!items.length) return;
+        if (kind === "image" && items.length > CONFIG.MAX_IMAGE_COUNT) {
+          setMediaStatus("一次最多选择 " + CONFIG.MAX_IMAGE_COUNT + " 张图片。", true);
+          return;
+        }
+        media.busy = true;
+        updateMediaControls();
+        var sent = 0;
+        var failed = 0;
+        var firstError = "";
+        try {
+          for (var i = 0; i < items.length; i++) {
+            if (!canSendMedia(token)) {
+              failed += items.length - i;
+              firstError = "登录状态已变化，请重新进入客服后发送。";
+              break;
+            }
+            setMediaStatus("正在发送" + (kind === "image" ? "图片 " : "视频 ") + (i + 1) + "/" + items.length + "…", false);
+            try {
+              var file = fromNative ? await readNativeImage(items[i]) :
+                await prepareMediaFile(items[i], items[i].name, kind);
+              await sendMediaAttachment(file, token);
+              sent += 1;
+            } catch (error) {
+              recordMediaDiagnostic("file-error", { code: error.code || "", name: error.name });
+              failed += 1;
+              firstError = firstError || error.message;
+            }
+          }
+          if (!failed) setMediaStatus("已发送" + (kind === "image" ? "图片" : "视频") + "。", false);
+          else if (!sent) setMediaStatus(firstError, true);
+          else setMediaStatus("已发送 " + sent + " 个，" + failed + " 个未成功。" + firstError, true);
+        } finally {
+          media.busy = false;
+          updateMediaControls();
+        }
+      }
+
+      function chooseImages() {
+        if (!canSendMedia() || media.busy || media.nativeRequest) return;
+        imageInput.value = "";
+        if (!window.xys || typeof window.xys.imageFileChose !== "function") {
+          imageInput.click();
+          return;
+        }
+        media.nativeRequest = { token: media.token };
+        setMediaStatus("请选择图片，返回后将自动发送。", false);
+        updateMediaControls();
+        media.nativeTimer = window.setTimeout(function () {
+          cancelNativeSelection();
+          setMediaStatus("未收到图片，请重新选择。", true);
+        }, CONFIG.NATIVE_IMAGE_TIMEOUT_MS);
+        try {
+          window.xys.imageFileChose("album", false, CONFIG.MAX_IMAGE_COUNT);
+        } catch (error) {
+          cancelNativeSelection();
+          setMediaStatus("相册暂时无法打开，请稍后重试。", true);
+        }
+      }
+
+      function bindMediaUpload() {
+        recordMediaDiagnostic("init", {});
+        window.addEventListener("message", receiveWidgetSession);
+        window.addEventListener("resize", syncMediaViewport);
+        if (window.visualViewport) {
+          window.visualViewport.addEventListener("resize", syncMediaViewport);
+          window.visualViewport.addEventListener("scroll", syncMediaViewport);
+        }
+        imageButton.addEventListener("click", chooseImages);
+        videoButton.addEventListener("click", function () {
+          if (!canSendMedia() || media.busy || media.nativeRequest) return;
+          videoInput.value = "";
+          recordMediaDiagnostic("video-picker-open", {});
+          // 保持在用户点击事件内打开，不加 capture，不走仅支持图片的原生桥。
+          videoInput.click();
+        });
+        imageInput.addEventListener("change", function () {
+          var files = Array.from(imageInput.files || []);
+          sendMediaFiles(files, "image", false, media.token).finally(function () { imageInput.value = ""; });
+        });
+        videoInput.addEventListener("change", function () {
+          var files = Array.from(videoInput.files || []);
+          recordMediaDiagnostic("video-input-change", { count: files.length, types: files.map(function (file) { return file.type; }) });
+          sendMediaFiles(files.slice(0, 1), "video", false, media.token).finally(function () { videoInput.value = ""; });
+        });
+        cancelImageButton.addEventListener("click", function () {
+          cancelNativeSelection();
+          setMediaStatus("已取消等待图片。", false);
+        });
+        window.receiveImageUploadUrl = function (urls) {
+          var request = media.nativeRequest;
+          if (!request) return;
+          cancelNativeSelection();
+          if (!canSendMedia(request.token)) return;
+          recordMediaDiagnostic("native-callback", describeNativeImages(urls));
+          var values;
+          try {
+            values = Array.from(new Set(extractNativeImageValues(urls, 0)));
+            recordMediaDiagnostic("native-images-parsed", { count: values.length,
+              addresses: values.slice(0, CONFIG.MAX_IMAGE_COUNT).map(describeNativeImageAddress) });
+          } catch (error) {
+            recordMediaDiagnostic("native-parse-error", { code: error.code || "P101" });
+            setMediaStatus(error.message, true);
+            return;
+          }
+          if (!values.length) {
+            setMediaStatus("未选择图片。", false);
+            return;
+          }
+          sendMediaFiles(values, "image", true, request.token);
+        };
+      }
 
       function renderLoading(text) {
         shell.innerHTML =
@@ -477,7 +1338,7 @@
         } catch (error) {}
       }
 
-      function fetchWithTimeout(url, options, timeoutMs) {
+      function fetchWithTimeout(url, options, timeoutMs, readResponse) {
         var controller = new AbortController();
         var timer = window.setTimeout(function () {
           controller.abort();
@@ -485,7 +1346,9 @@
         options = options || {};
         options.signal = controller.signal;
 
-        return fetch(url, options).finally(function () {
+        return fetch(url, options).then(function (response) {
+          return readResponse ? readResponse(response) : response;
+        }).finally(function () {
           window.clearTimeout(timer);
         });
       }
@@ -586,6 +1449,9 @@
       }
 
       function runChatwoot() {
+        window.chatwootSettings = Object.assign({}, window.chatwootSettings, {
+          enableFileUpload: false
+        });
         window.chatwootSDK.run({
           websiteToken: runtime.websiteToken,
           baseUrl: runtime.chatwootBaseUrl
@@ -614,7 +1480,14 @@
           }
         });
 
+        // setUser 异步绑定用户；确认当前 token 的 identifier 前禁止发送附件。
+        media.identityPending = true;
+        media.identityError = false;
+        media.expectedIdentifier = String(profile.identifier);
+        media.identityDeadline = Date.now() + CONFIG.WIDGET_READY_TIMEOUT_MS;
+        updateMediaControls();
         window.$chatwoot.setUser(String(profile.identifier), user);
+        verifyMediaIdentity();
 
         if (profile.custom_attributes) {
           window.$chatwoot.setCustomAttributes(profile.custom_attributes);
@@ -633,23 +1506,26 @@
 
         if (holder) {
           holder.style.setProperty("position", "fixed", "important");
-          holder.style.setProperty("inset", "0", "important");
-          holder.style.setProperty("width", "100vw", "important");
-          holder.style.setProperty("height", "100vh", "important");
-          holder.style.setProperty("max-width", "100vw", "important");
-          holder.style.setProperty("max-height", "100vh", "important");
-          holder.style.setProperty("min-width", "100vw", "important");
-          holder.style.setProperty("min-height", "100vh", "important");
+          holder.style.setProperty("top", "var(--support-viewport-top)", "important");
+          holder.style.setProperty("left", "0", "important");
+          holder.style.setProperty("right", "var(--widget-aside-width)", "important");
+          holder.style.setProperty("bottom", "auto", "important");
+          holder.style.setProperty("width", "auto", "important");
+          holder.style.setProperty("height", "var(--widget-frame-height)", "important");
+          holder.style.setProperty("max-width", "none", "important");
+          holder.style.setProperty("max-height", "var(--widget-frame-height)", "important");
+          holder.style.setProperty("min-width", "0", "important");
+          holder.style.setProperty("min-height", "var(--widget-frame-height)", "important");
           holder.style.setProperty("margin", "0", "important");
           holder.style.setProperty("padding", "0", "important");
           holder.style.setProperty("border", "0", "important");
           holder.style.setProperty("border-radius", "0", "important");
           holder.style.setProperty("box-shadow", "none", "important");
           holder.style.setProperty("transform", "none", "important");
-          holder.style.setProperty("z-index", "2147483647", "important");
+          holder.style.setProperty("z-index", "2147483646", "important");
         }
 
-        applyFooterCrop();
+        applyWidgetCrop();
       }
 
       function normalizeStyleValue(value) {
@@ -657,12 +1533,15 @@
       }
 
       /*
-       * 「由 Chatwoot 支持」版权条由 Chatwoot 渲染在挂件 iframe 内部（输入框下方、
-       * 挂件最底部高度 36px 的一行），跨域 iframe 无法直接用 CSS 命中。
-       * 这里把 iframe 视口设成「屏幕高度 + 版权条高度」，版权条就被挤到屏幕外，
-       * 再由 holder 的 overflow: hidden 裁掉；输入框、消息区和收发消息都不受影响。
+       * 顶部横幅和底部版权条都由 Chatwoot 渲染在挂件 iframe 内部
+       * （横幅在挂件最顶部、版权条在输入框下方最底部），跨域 iframe 无法直接
+       * 用 CSS 命中。这里把 iframe 视口设成「屏幕高度 + 横幅高度 + 版权条高度 - 底部抬起量」
+       * 并整体上移横幅高度：横幅和版权条都被挤到可视区域之外，
+       * 由 holder 的 overflow: hidden 裁掉；输入框、消息区和收发消息都不受影响。
+       * 减去 --widget-bottom-lift 后，输入框从屏幕底部抬起一段距离，
+       * 避开手机底部手势区，避免误触。
        */
-      function applyFooterCrop() {
+      function applyWidgetCrop() {
         var holder = document.querySelector(".woot-widget-holder");
         if (!holder) {
           return;
@@ -676,9 +1555,11 @@
         holder.style.setProperty("overflow", "hidden", "important");
 
         var width = "100%";
-        var height = runtime.footerCrop > 0
-          ? "calc(100vh + " + runtime.footerCrop + "px)"
-          : "100%";
+        var totalCrop = runtime.headerCrop + runtime.footerCrop;
+        var height =
+          "calc(var(--widget-visible-height) + " + totalCrop +
+          "px - var(--widget-bottom-lift, 0px))";
+        var marginTop = "-" + runtime.headerCrop + "px";
 
         // SDK 自带样式是 .woot-widget-holder iframe { max-height: 100vh !important }，
         // 会把加高的部分裁回去，必须用行内样式放开。
@@ -702,22 +1583,30 @@
         ) {
           iframe.style.setProperty("height", height, "important");
         }
+
+        if (
+          normalizeStyleValue(iframe.style.getPropertyValue("margin-top")) !==
+          normalizeStyleValue(marginTop)
+        ) {
+          iframe.style.setProperty("margin-top", marginTop, "important");
+        }
       }
 
       /*
        * Chatwoot SDK 在路由切换、高度自适应时会重写 iframe 的行内样式
-       * （style 属性整体替换，包含 height/max-height），所以用 MutationObserver
-       * 即时纠正，再用低频轮询兜底，确保版权条一直被裁掉。
+       * （style 属性整体替换，包含 height/max-height/margin），所以用
+       * MutationObserver 即时纠正，再用低频轮询兜底，
+       * 确保顶部横幅和底部版权条一直被裁掉。
        */
-      function startFooterCropWatcher() {
-        if (runtime.footerCrop <= 0 || cropTimer) {
+      function startWidgetCropWatcher() {
+        if ((runtime.footerCrop <= 0 && runtime.headerCrop <= 0) || cropTimer) {
           return;
         }
 
         var holder = document.querySelector(".woot-widget-holder");
         if (holder && window.MutationObserver && !cropObserver) {
           cropObserver = new MutationObserver(function () {
-            applyFooterCrop();
+            applyWidgetCrop();
           });
           cropObserver.observe(holder, {
             subtree: true,
@@ -728,7 +1617,7 @@
         }
 
         if (!cropTimer) {
-          cropTimer = window.setInterval(applyFooterCrop, 800);
+          cropTimer = window.setInterval(applyWidgetCrop, 800);
         }
       }
 
@@ -802,6 +1691,7 @@
       }
 
       function openChat() {
+        showMediaToolbar();
         if (runtime.locale && window.$chatwoot.setLocale) {
           window.$chatwoot.setLocale(runtime.locale);
         }
@@ -810,7 +1700,7 @@
         }
         window.$chatwoot.toggle("open");
         openMessagesView();
-        startFooterCropWatcher();
+        startWidgetCropWatcher();
         window.setTimeout(openMessagesView, 300);
         window.setTimeout(openMessagesView, 1000);
         window.setTimeout(openMessagesView, 1800);
@@ -895,6 +1785,7 @@
           })
           .then(function (results) {
             var profile = results[0];
+            bindMediaUpload();
             bindChatwootEvents();
             startMessagesRouteInterceptor();
             var ready = waitForChatwootReady();
