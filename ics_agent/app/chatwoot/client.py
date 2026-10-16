@@ -258,17 +258,50 @@ class ChatwootClient:
         self,
         *,
         account_id: str,
+        timeout_seconds: float | None = None,
+        max_response_bytes: int | None = None,
+        strict_response: bool = False,
     ) -> list[dict[str, Any]]:
         """列出账号下的 Chatwoot 坐席及其可用状态。"""
         account_id = str(account_id or "").strip()
         if not account_id:
             raise ChatwootAPIError("Chatwoot account_id is missing.")
+        bounds = {}
+        if timeout_seconds is not None:
+            bounds["timeout_seconds"] = timeout_seconds
+        if max_response_bytes is not None:
+            bounds["max_response_bytes"] = max_response_bytes
         result = self._request_json(
             "GET",
             f"/api/v1/accounts/{quote(account_id, safe='')}/agents",
             access_token=self._user_api_token("Chatwoot agent operations"),
+            **bounds,
         )
-        return self._response_items(result)
+        return self._directory_response_items(result) if strict_response else self._response_items(result)
+
+    def list_inboxes(
+        self,
+        *,
+        account_id: str,
+        timeout_seconds: float | None = None,
+        max_response_bytes: int | None = None,
+        strict_response: bool = False,
+    ) -> list[dict[str, Any]]:
+        """读取收件箱目录，使用与坐席目录相同的账户用户凭据。"""
+        account_id = str(account_id or "").strip()
+        if not account_id:
+            raise ChatwootAPIError("Chatwoot account_id is missing.")
+        bounds = {}
+        if timeout_seconds is not None:
+            bounds["timeout_seconds"] = timeout_seconds
+        if max_response_bytes is not None:
+            bounds["max_response_bytes"] = max_response_bytes
+        result = self._request_json(
+            "GET", f"/api/v1/accounts/{quote(account_id, safe='')}/inboxes",
+            access_token=self._user_api_token("Chatwoot inbox operations"),
+            **bounds,
+        )
+        return self._directory_response_items(result) if strict_response else self._response_items(result)
 
     def list_team_members(
         self,
@@ -752,7 +785,10 @@ class ChatwootClient:
         *,
         access_token: str | None = None,
         timeout_seconds: float | None = None,
+        max_response_bytes: int | None = None,
     ) -> dict[str, Any]:
+        if max_response_bytes is not None and max_response_bytes <= 0:
+            raise ValueError("max_response_bytes must be positive")
         token = (access_token or "").strip() or (
             self._settings.chatwoot_agent_bot_access_token.strip()
             or self._settings.chatwoot_api_token.strip()
@@ -790,10 +826,12 @@ class ChatwootClient:
                     else max(0.001, timeout_seconds)
                 ),
             ) as response:
-                raw_response = response.read()
+                raw_response = response.read() if max_response_bytes is None else response.read(max_response_bytes + 1)
+                if max_response_bytes is not None and len(raw_response) > max_response_bytes:
+                    raise ChatwootAPIError("Chatwoot API response exceeds the configured byte limit.")
                 status_code = int(response.status)
         except HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")[:1000]
+            body = exc.read(1000).decode("utf-8", errors="replace")[:1000]
             raise ChatwootAPIError(
                 f"Chatwoot API returned HTTP {exc.code}: {body}",
                 status_code=exc.code,
@@ -817,6 +855,17 @@ class ChatwootClient:
         except json.JSONDecodeError:
             return {"raw_response": raw_response.decode("utf-8", errors="replace")}
         return result if isinstance(result, dict) else {"data": result}
+
+    @staticmethod
+    def _directory_response_items(result: dict[str, Any]) -> list[dict[str, Any]]:
+        candidates = result.get("data")
+        if candidates is None:
+            candidates = result.get("payload")
+        if isinstance(candidates, dict):
+            candidates = candidates.get("payload")
+        if not isinstance(candidates, list) or any(not isinstance(item, dict) for item in candidates):
+            raise ChatwootAPIError("Chatwoot directory response is invalid.")
+        return candidates
 
     @staticmethod
     def _response_items(result: dict[str, Any]) -> list[dict[str, Any]]:

@@ -721,6 +721,46 @@
     .preview-table { min-width: 680px; }
     .preview-table th { position: static; }
 
+    /* ============ 对话归档 ============ */
+    .quality-stack { display: grid; gap: 16px; }
+    .quality-stack > .panel > .panel-header { flex-wrap: wrap; }
+    .quality-status { margin: 0; color: var(--muted); font-size: 13px; }
+    .quality-filters { margin: 0; padding: 0; border: 0; min-width: 0; }
+    .quality-filter-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .quality-field { display: grid; gap: 6px; min-width: 0; color: var(--ink-soft); font-size: 12px; font-weight: 700; }
+    .quality-field input, .quality-field select {
+      width: 100%; min-width: 0; min-height: 37px; padding: 8px 10px; border: 1px solid var(--line-strong);
+      border-radius: var(--radius-sm); background: #fff; color: var(--ink); font: inherit; font-weight: 400;
+    }
+    .quality-field input:focus, .quality-field select:focus { outline: none; border-color: var(--blue); box-shadow: var(--ring); }
+    .quality-filters:disabled { opacity: .6; }
+    .quality-advanced { margin-top: 14px; }
+    .quality-advanced summary { width: fit-content; margin-bottom: 12px; color: var(--blue-dark); cursor: pointer; font-size: 12px; font-weight: 700; }
+    .quality-form-actions, .quality-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+    .quality-form-actions { margin-top: 16px; }
+    .quality-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+    .quality-tabs button[aria-pressed="true"] { color: var(--blue-dark); border-color: var(--blue-line); background: var(--blue-soft); }
+    .quality-table { max-height: 560px; }
+    .quality-table table { min-width: 940px; }
+    .quality-rating-feedback { max-width: 320px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .quality-secondary { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; font-weight: 400; overflow-wrap: anywhere; }
+    .quality-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+    .quality-meta { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 0 0 14px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .quality-timeline { display: grid; gap: 12px; }
+    .quality-message { border: 1px solid var(--line); border-left: 3px solid var(--blue-line); border-radius: var(--radius); padding: 13px 15px; background: var(--surface-soft); }
+    .quality-message.private { border-left-color: var(--amber); }
+    .quality-message.deleted { border-left-color: var(--red); }
+    .quality-message-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .quality-message-content { margin: 0; color: var(--ink-soft); white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 13px; }
+    .quality-message-footer { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin-top: 12px; color: var(--muted); font-size: 11px; }
+    .quality-attachments { display: grid; gap: 5px; margin: 12px 0 0; padding: 10px 12px; border: 1px dashed var(--line-strong); border-radius: var(--radius-sm); font-size: 12px; overflow-wrap: anywhere; }
+    .quality-attachments a { color: var(--blue-dark); }
+    .quality-versions { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line); }
+    .quality-versions h4 { margin-bottom: 4px; }
+    .quality-empty { padding: 28px 18px; text-align: center; color: var(--muted); font-size: 13px; }
+    @media (max-width: 1100px) { .quality-filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 560px) { .quality-filter-grid { grid-template-columns: 1fr; } }
+
     @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
     .content > section:not(.hidden) { animation: rise .28s ease both; }
     @media (prefers-reduced-motion: reduce) {
@@ -772,7 +812,7 @@
       <form id="loginForm" class="login-panel">
         <div class="brand-mark">零</div>
         <h1>零新智能客服</h1>
-        <p class="subtitle">登录后管理知识库、FAQ 数据和系统运行日志</p>
+        <p class="subtitle">登录后管理知识库、FAQ、对话归档和系统日志</p>
         <div class="field">
           <label for="username">管理员账号</label>
           <input id="username" name="username" autocomplete="username" placeholder="请输入管理员账号" required>
@@ -806,6 +846,10 @@
           </div>
           <div class="nav-group">
             <div class="nav-label">系统管理</div>
+            <button id="qualityNav" class="nav-item" type="button">
+              <span class="nav-icon" aria-hidden="true">档</span>
+              <span>对话归档<small>用户历史 · 接待轮次 · 服务评价</small></span>
+            </button>
             <button id="logsNav" class="nav-item" type="button">
               <span class="nav-icon" aria-hidden="true">志</span>
               <span>系统日志<small>查看全部渠道的运行日志</small></span>
@@ -942,6 +986,64 @@
           </div>
           </section>
 
+          <section id="qualityPage" class="hidden" aria-label="对话归档">
+            <div class="workspace-heading">
+              <div>
+                <span class="eyebrow">Conversation Archive</span>
+                <h3>对话归档</h3>
+                <p>按接待轮次筛选，或查看同一用户跨会话的完整历史。所有时间均为北京时间（UTC+8）。</p>
+              </div>
+              <span id="qualityStatusTag" class="tag amber">等待读取</span>
+            </div>
+            <div class="quality-stack">
+              <section class="panel" aria-label="归档筛选">
+                <div class="panel-header"><div class="panel-heading"><h3 id="qualityFilterHeading">筛选对话</h3><p id="qualityStatus" class="quality-status" role="status">正在检查归档状态...</p><p id="qualityDirectoryWarning" class="hint hidden" role="status"></p></div></div>
+                <form id="qualityFilterForm" class="panel-body">
+                  <fieldset id="qualityFilters" class="quality-filters" disabled>
+                    <div class="quality-filter-grid">
+                      <label class="quality-field">用户<input id="qualityCustomer" name="customer_query" placeholder="姓名、联系人 ID 或业务用户 ID" maxlength="200"></label>
+                      <label class="quality-field">正文关键词<input id="qualityKeyword" name="keyword" placeholder="在已归档正文中查找" maxlength="200"></label>
+                      <label class="quality-field">来源 / 账号<select id="qualitySource"><option value="">全部来源和账号</option></select></label>
+                      <label class="quality-field">Chatwoot 收件箱<select id="qualityInbox"><option value="">全部收件箱</option></select></label>
+                      <label class="quality-field">ICS 业务渠道<select id="qualityChannel" name="channel_key"><option value="">全部 ICS 业务渠道</option><option value="unmapped">未映射渠道</option></select></label>
+                      <label class="quality-field">接待分类<select id="qualityReception" name="reception_type"><option value="">全部分类</option><option value="ai_only">纯 AI 接待</option><option value="human">人工介入</option></select></label>
+                    </div>
+                    <details class="quality-advanced">
+                      <summary>更多筛选：坐席、时间、评价及消息类型</summary>
+                      <div class="quality-filter-grid">
+                        <label class="quality-field">坐席<select id="qualityAgent"><option value="">全部坐席</option></select></label>
+                        <label class="quality-field">坐席范围<select id="qualityAgentScope" name="agent_scope"><option value="responsible">本轮责任坐席（ICS分配）</option><option value="replied">本轮全部回复坐席</option><option value="assigned">历史分配（非责任）</option><option value="current">会话当前分配（非责任）</option></select></label>
+                        <label class="quality-field">会话 ID<input id="qualityConversation" name="conversation_id" placeholder="Chatwoot 会话 ID" inputmode="numeric" pattern="[1-9][0-9]*" maxlength="19"></label>
+                        <label class="quality-field">轮次编号（会话内）<input id="qualityRoundNo" name="round_no" type="number" min="1" max="2147483647" step="1" placeholder="会话内第几轮"></label>
+                        <label class="quality-field">轮次状态<select id="qualityRoundStatus" name="status"><option value="">全部状态</option><option value="active">未结束</option><option value="resolved">已解决</option><option value="idle_boundary">超时分轮</option><option value="unknown">待确认</option></select></label>
+                        <label class="quality-field">筛选时间依据<select id="qualityTimeField" name="time_field"><option value="started_at">轮次开始时间</option><option value="message_at">消息时间</option><option value="resolved_at">解决时间</option><option value="rating_at">评价时间</option></select></label>
+                        <label class="quality-field">开始时间（北京时间）<input id="qualityStart" name="start" type="datetime-local"></label>
+                        <label class="quality-field">结束时间（北京时间，不含该时刻）<input id="qualityEnd" name="end" type="datetime-local"></label>
+                        <label class="quality-field">评价状态<select id="qualityRatingStatus" name="rating_status"><option value="">全部评价状态</option><option value="rated">已评价</option></select></label>
+                        <label class="quality-field">评价分数<select id="qualityRating" name="rating"><option value="">全部分数</option><option value="1">1 分</option><option value="2">2 分</option><option value="3">3 分</option><option value="4">4 分</option><option value="5">5 分</option></select></label>
+                        <label class="quality-field">消息范围<select id="qualityMessageScope" name="message_scope"><option value="all">全部消息</option><option value="contact">客户消息</option><option value="agent">真人客服公开回复</option><option value="bot">机器人消息</option><option value="private">私密消息 / 内部备注</option></select></label>
+                        <label class="quality-field">附件<select id="qualityAttachment" name="has_attachment"><option value="">不限附件</option><option value="true">含附件</option><option value="false">无附件</option></select></label>
+                      </div>
+                    </details>
+                    <div class="quality-form-actions"><p class="hint">收件箱和坐席按来源 / 账号区分；责任坐席固定为本轮 ICS 原始分配者，后续改派或他人回复不改变责任。ICS 业务渠道按现有映射筛选。消息范围用于选择包含该类消息的轮次或用户，详情展示完整对话；用户历史包含未归轮消息。</p><div class="toolbar-actions"><button id="qualityReset" class="button secondary" type="button">重置</button><button class="button" type="submit">查询归档</button></div></div>
+                  </fieldset>
+                </form>
+              </section>
+              <section class="panel" aria-label="归档查询结果">
+                <div class="panel-header"><div class="panel-heading"><h3 id="qualityListTitle">接待轮次</h3><p id="qualityListSummary" role="status">等待读取归档</p></div><div class="toolbar-actions"><div class="quality-tabs" role="group" aria-label="归档查看方式"><button id="qualityRoundsTab" class="button secondary" type="button" aria-pressed="true" disabled>按轮次</button><button id="qualityCustomersTab" class="button secondary" type="button" aria-pressed="false" disabled>按用户</button></div><button id="qualityExportList" class="button secondary" type="button" title="导出所选轮次完整消息，包含所有分页" disabled>导出筛选结果（Excel）</button></div></div>
+                <div class="panel-body"><div id="qualityList" class="table-wrap quality-table"><div class="quality-empty">请选择筛选条件后查询对话。</div></div></div>
+                <div class="panel-footer quality-pagination"><div><span id="qualityPageInfo" class="hint">第 1 页</span><span class="quality-secondary">Excel 导出包含全部匹配结果，不限当前页。</span></div><div class="toolbar-actions"><button id="qualityPrev" class="button tertiary" type="button" disabled>上一页</button><button id="qualityNext" class="button tertiary" type="button" disabled>下一页</button></div></div>
+              </section>
+              <section id="qualityDetail" class="panel hidden" aria-label="归档详情">
+                <div class="panel-header"><div class="panel-heading"><h3 id="qualityDetailTitle">对话详情</h3><p id="qualityDetailHint">完整归档时间线</p></div><div class="toolbar-actions"><button id="qualityExportDetail" class="button secondary hidden" type="button" disabled>导出本轮（Excel）</button><button id="qualityCustomerHistory" class="button secondary hidden" type="button">查看用户完整历史</button><button id="qualityCloseDetail" class="button tertiary" type="button">收起详情</button></div></div>
+                <div class="panel-body"><div id="qualityDetailMeta" class="quality-meta"></div><div id="qualityTimeline" class="quality-timeline" aria-live="polite"></div>
+                  <section id="qualityVersions" class="quality-versions hidden" aria-label="消息版本"><div class="quality-message-header"><div><h4 id="qualityVersionsTitle">消息观察版本</h4><p class="hint">保留创建、编辑和删除时已收到的内容；缺少最初事件时不会将后续观察标为原文。</p></div><button id="qualityCloseVersions" class="button tertiary" type="button">收起版本</button></div><div id="qualityVersionList" class="quality-timeline"></div><div class="quality-form-actions"><span id="qualityVersionsPageInfo" class="hint">第 1 页</span><div class="toolbar-actions"><button id="qualityVersionsPrev" class="button tertiary" type="button" disabled>上一页版本</button><button id="qualityVersionsNext" class="button tertiary" type="button" disabled>下一页版本</button></div></div></section>
+                </div>
+                <div class="panel-footer quality-pagination"><span id="qualityDetailPageInfo" class="hint">第 1 页</span><div class="toolbar-actions"><button id="qualityDetailPrev" class="button tertiary" type="button" disabled>上一页消息</button><button id="qualityDetailNext" class="button tertiary" type="button" disabled>下一页消息</button></div></div>
+              </section>
+            </div>
+          </section>
+
           <section id="logsPage" class="hidden" aria-label="系统日志">
             <div class="workspace-heading">
               <div>
@@ -1004,7 +1106,7 @@
     const $ = (id) => document.getElementById(id);
     const currentChannelName = () => state.channels.find((channel) => channel.key === state.channelKey)?.name || state.channelKey;
     const setNavigationBusy = () => {
-      document.querySelectorAll("#channelNav button, #logsNav").forEach((button) => {
+      document.querySelectorAll("#channelNav button, #logsNav, #qualityNav").forEach((button) => {
         button.disabled = state.pendingMutations > 0;
       });
     };
@@ -1020,8 +1122,9 @@
       return scoped.toString();
     };
     const api = async (url, options = {}) => {
+      const requestToken = state.token;
       const headers = new Headers(options.headers || {});
-      if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
+      if (requestToken) headers.set("Authorization", `Bearer ${requestToken}`);
       const mutation = options.method && options.method !== "GET";
       if (mutation) {
         state.pendingMutations++;
@@ -1030,7 +1133,7 @@
       try {
         const response = await fetch(channelUrl(url), { ...options, headers });
         if (response.status === 401) {
-          logout(false);
+          if (requestToken === state.token && !options.signal?.aborted) logout(false);
           throw new Error("登录已失效，请重新登录。");
         }
         let payload = null;
@@ -1065,6 +1168,627 @@
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
     }[char]));
+
+    const qualityState = {
+      generation: 0, controllers: new Map(), ready: false, mode: "rounds", page: 1, pageSize: 30,
+      total: 0, items: [], filters: { sources: [], channels: [], agents: [], inboxes: [] }, applied: new URLSearchParams(),
+      detail: null, versions: null, messages: [], listVersion: 0, detailVersion: 0, versionsVersion: 0,
+      listLoading: false, detailLoading: false, exportJob: null, exportEpoch: 0
+    };
+    const qualityAbort = () => new DOMException("归档请求已取消", "AbortError");
+    const isQualityCurrent = (generation, token) => state.view === "quality" && !!token && state.token === token && qualityState.generation === generation;
+    const cancelQualityRequest = (slot) => {
+      qualityState.controllers.get(slot)?.abort();
+      qualityState.controllers.delete(slot);
+    };
+    const qualityRequest = async (slot, path) => {
+      cancelQualityRequest(slot);
+      const controller = new AbortController();
+      const generation = qualityState.generation, token = state.token;
+      qualityState.controllers.set(slot, controller);
+      try {
+        const result = await api(`/admin/api/quality${path}`, { signal: controller.signal });
+        if (controller.signal.aborted || !isQualityCurrent(generation, token) || qualityState.controllers.get(slot) !== controller) throw qualityAbort();
+        return result;
+      } catch (error) {
+        if (controller.signal.aborted || !isQualityCurrent(generation, token)) throw qualityAbort();
+        throw error;
+      } finally {
+        if (qualityState.controllers.get(slot) === controller) qualityState.controllers.delete(slot);
+      }
+    };
+    const qualityTime = (value) => {
+      if (!value) return "时间未知";
+      const parsed = new Date(value);
+      if (!Number.isFinite(parsed.getTime())) return "时间未知";
+      return new Intl.DateTimeFormat("zh-CN", {
+        timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
+      }).format(parsed);
+    };
+    const qualityLocalTime = (value) => value ? `${value}${value.length === 16 ? ":00" : ""}+08:00` : "";
+    const qualityTag = (label, color = "") => `<span class="tag ${color}">${escapeHtml(label)}</span>`;
+    const qualityStatusLabel = (value) => ({ active: "未结束", resolved: "已解决", idle_boundary: "超时分轮", unknown: "待确认" }[value] || "待确认");
+    const qualityReceptionLabel = (round) => {
+      const value = String(round.reception_type || "unknown").toLowerCase();
+      if (["human", "human_involved"].includes(value)) return "人工介入";
+      return value === "ai_only" ? "纯 AI 接待" : "待确认";
+    };
+    const qualityResponsibleAgentLabel = (item) => {
+      if (item.responsibility_basis === "assignment_unobserved") return "未记录 ICS 分配";
+      if (item.responsibility_basis !== "ics_assignment" || item.responsible_agent_id === null || item.responsible_agent_id === undefined || item.responsible_agent_id === "") return "待确认";
+      return item.responsible_agent_name || `坐席 ${item.responsible_agent_id}`;
+    };
+    const qualityRatingLabel = (item) => item.rating_status === "rated" && item.rating !== null && item.rating !== undefined ? `${item.rating} 分` : "—";
+    const qualityRatingFeedback = (item) => item.rating_status === "rated" && typeof item.rating_feedback === "string" ? item.rating_feedback.trim() : "";
+    const qualityRoleLabel = (role) => ({ contact: "客户", customer: "客户", agent: "真人客服", bot: "机器人", system: "系统", unknown: "身份待确认" }[role] || "身份待确认");
+    const qualityChannelName = (key) => !key || key === "unmapped" ? "未映射渠道" : qualityState.filters.channels.find((item) => item.key === key)?.name || state.channels.find((item) => item.key === key)?.name || key;
+    const qualityInboxName = (item) => {
+      if (item.inbox_id === null || item.inbox_id === undefined) return "收件箱未知";
+      const inbox = (qualityState.filters.inboxes || []).find((candidate) => String(candidate.source_key) === String(item.source_key) && String(candidate.account_id) === String(item.account_id) && String(candidate.inbox_id) === String(item.inbox_id));
+      return `${inbox?.name || "收件箱"} · #${item.inbox_id}`;
+    };
+    const qualitySafeLink = (value) => {
+      try {
+        const url = new URL(String(value || ""));
+        return ["http:", "https:"].includes(url.protocol) ? url.href : "";
+      } catch (_) { return ""; }
+    };
+    const updateQualityExportButtons = () => {
+      const available = qualityState.ready && state.view === "quality" && !!state.token;
+      const busy = !!qualityState.exportJob;
+      $("qualityExportList").disabled = !available || busy || qualityState.listLoading;
+      $("qualityExportList").textContent = qualityState.exportJob?.scope === "list" ? "正在导出..." : "导出筛选结果（Excel）";
+      $("qualityExportList").title = qualityState.mode === "customers" ? "导出筛选选中用户完整历史，跨会话且不受列表时间、关键词等筛选限制，包含所有分页" : "导出所选轮次完整消息，包含所有分页";
+      const detailReady = !!qualityState.detail?.item;
+      $("qualityExportDetail").classList.toggle("hidden", !detailReady);
+      $("qualityExportDetail").disabled = !available || busy || qualityState.detailLoading || !detailReady;
+      $("qualityExportDetail").textContent = qualityState.exportJob?.scope === "detail" ? "正在导出..." : qualityState.detail?.type === "customer" ? "下载完整历史（Excel）" : "导出本轮（Excel）";
+    };
+    const cancelQualityExport = () => {
+      cancelQualityRequest("export");
+      qualityState.exportEpoch++;
+      qualityState.exportJob = null;
+      updateQualityExportButtons();
+    };
+    const qualityExportFilename = (disposition) => {
+      const fallback = "对话归档.xlsx";
+      let filename = "";
+      const encoded = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(disposition || "");
+      if (encoded) { try { filename = decodeURIComponent(encoded[1].trim().replace(/^"|"$/g, "")); } catch (_) {} }
+      if (!filename) {
+        const plain = /filename\s*=\s*(?:"([^"]*)"|([^;]+))/i.exec(disposition || "");
+        filename = plain?.[1] || plain?.[2] || "";
+      }
+      filename = filename.replace(/[\\/\u0000-\u001f<>:"|?*]/g, "_").trim();
+      return filename && filename.length <= 200 && /\.xlsx$/i.test(filename) ? filename : fallback;
+    };
+    const qualityExportFilterSummary = (params) => {
+      const labels = { source_key: "来源", account_id: "账号", inbox_id: "收件箱", channel_key: "ICS 业务渠道", customer_query: "用户", keyword: "关键词", reception_type: "接待分类", agent_id: "坐席", agent_scope: "坐席范围", conversation_id: "会话", round_no: "轮次", status: "轮次状态", time_field: "时间依据", start: "开始时间", end: "结束时间（不含）", rating_status: "评价状态", rating: "评价分数", message_scope: "消息范围", has_attachment: "附件" };
+      const values = { reception_type: { ai_only: "纯 AI 接待", human: "人工介入" }, agent_scope: { responsible: "本轮责任坐席（ICS分配）", replied: "本轮全部回复坐席", assigned: "历史分配（非责任）", current: "会话当前分配（非责任）" }, time_field: { started_at: "轮次开始", message_at: "消息时间", resolved_at: "解决时间", rating_at: "评价时间" }, rating_status: { rated: "已评价" }, message_scope: { all: "全部消息", private: "私密备注", contact: "客户", agent: "真人客服", bot: "机器人", system: "系统", unknown: "身份待确认" }, has_attachment: { true: "有附件", false: "无附件" } };
+      const summary = [];
+      for (const [key, value] of params) {
+        if (!labels[key]) continue;
+        if (key === "agent_scope" && !params.has("agent_id")) continue;
+        if (key === "time_field" && !params.has("start") && !params.has("end")) continue;
+        if (key === "message_scope" && value === "all") continue;
+        let display = values[key]?.[value] || value;
+        if (key === "channel_key") display = qualityChannelName(value);
+        if (key === "status") display = qualityStatusLabel(value);
+        if (key === "rating") display = `${value} 分`;
+        if (key === "inbox_id") display = qualityInboxName({ source_key: params.get("source_key"), account_id: params.get("account_id"), inbox_id: value });
+        if (key === "agent_id") display = qualityState.filters.agents.find((agent) => String(agent.source_key) === params.get("source_key") && String(agent.account_id) === params.get("account_id") && String(agent.agent_id) === value)?.agent_name || value;
+        summary.push(`${labels[key]}：${display}`);
+      }
+      return summary.length ? summary.join("\n") : "全部归档（未限定筛选条件）";
+    };
+    const exportQuality = async (scope) => {
+      const detail = qualityState.detail;
+      if (!qualityState.ready || state.view !== "quality" || !state.token || qualityState.exportJob) return;
+      if (!["list", "detail"].includes(scope)) return;
+      if (scope === "list" && qualityState.listLoading) return;
+      if (scope === "detail" && (!detail?.item || qualityState.detailLoading)) return;
+      const params = new URLSearchParams(qualityState.applied), mode = qualityState.mode;
+      params.delete("page"); params.delete("page_size");
+      let confirmation;
+      if (scope === "detail") {
+        confirmation = detail.type === "customer"
+          ? `确认下载用户“${detail.item.display_name || detail.id}”的完整历史（Excel）？\n\n包含全部分页、跨会话的完整历史和未归轮消息，不受列表筛选限制。`
+          : `确认导出会话 ${detail.item.conversation_id ?? "未知"} · 第 ${detail.item.round_no ?? "未知"} 轮（Excel）？\n\n包含本轮全部分页的完整消息，不受列表筛选限制。`;
+      } else {
+        confirmation = `确认导出筛选结果（Excel）？\n\n当前已应用筛选：\n${qualityExportFilterSummary(params)}\n\n${mode === "customers" ? "导出全部分页中匹配用户跨会话的完整历史，包含未归轮消息；用户历史不受列表时间、关键词等筛选限制。" : "导出全部分页中匹配的轮次及每轮完整消息；时间、关键词、消息范围等条件用于选中轮次，不裁剪轮次内消息。"}`;
+      }
+      if (!window.confirm(confirmation)) return;
+      const controller = new AbortController(), generation = qualityState.generation, token = state.token;
+      const job = { scope, controller, epoch: ++qualityState.exportEpoch };
+      qualityState.exportJob = job;
+      qualityState.controllers.set("export", controller);
+      updateQualityExportButtons();
+      const isCurrent = () => !controller.signal.aborted && isQualityCurrent(generation, token) && qualityState.exportJob === job && qualityState.exportEpoch === job.epoch;
+      let path;
+      if (scope === "detail") {
+        path = `/${detail.type === "customer" ? "customers" : "rounds"}/${encodeURIComponent(detail.id)}/export.xlsx`;
+      } else {
+        params.set("mode", mode);
+        path = `/export.xlsx?${params}`;
+      }
+      try {
+        const response = await fetch(`/admin/api/quality${path}`, { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal });
+        if (!isCurrent()) return;
+        if (response.status === 401) { logout(false); showToast("登录已失效，请重新登录。", true); return; }
+        if (response.status !== 200) {
+          let payload = null;
+          try { payload = await response.json(); } catch (_) {}
+          const detail = payload?.detail;
+          const message = typeof detail === "string" ? detail : Array.isArray(detail) ? detail.map((item) => item.msg || "参数无效").join("；") : "导出失败，请稍后重试。";
+          throw new Error(message);
+        }
+        const blob = await response.blob();
+        if (!isCurrent()) return;
+        downloadBlob(blob, qualityExportFilename(response.headers?.get("Content-Disposition")));
+      } catch (error) {
+        if (error.name !== "AbortError" && isCurrent()) showToast(error.message || "导出失败，请稍后重试。", true);
+      } finally {
+        if (qualityState.exportJob === job) {
+          qualityState.exportJob = null;
+          if (qualityState.controllers.get("export") === controller) qualityState.controllers.delete("export");
+          updateQualityExportButtons();
+        }
+      }
+    };
+    const closeQualityVersions = () => {
+      cancelQualityRequest("versions");
+      cancelQualityRequest("download");
+      qualityState.versionsVersion++;
+      qualityState.versions = null;
+      $("qualityVersions").classList.add("hidden");
+      $("qualityVersionList").innerHTML = "";
+      $("qualityVersionsTitle").textContent = "消息观察版本";
+      $("qualityVersionsPrev").disabled = true;
+      $("qualityVersionsNext").disabled = true;
+      $("qualityVersionsPageInfo").textContent = "第 1 页";
+    };
+    const closeQualityDetail = () => {
+      cancelQualityExport();
+      cancelQualityRequest("detail");
+      qualityState.detailVersion++;
+      qualityState.detail = null;
+      qualityState.detailLoading = false;
+      qualityState.messages = [];
+      closeQualityVersions();
+      $("qualityDetail").classList.add("hidden");
+      $("qualityDetailTitle").textContent = "对话详情";
+      $("qualityDetailHint").textContent = "完整归档时间线";
+      $("qualityDetailMeta").innerHTML = "";
+      $("qualityTimeline").innerHTML = "";
+      $("qualityCustomerHistory").classList.add("hidden");
+      $("qualityCustomerHistory").onclick = null;
+      $("qualityDetailPrev").disabled = true;
+      $("qualityDetailNext").disabled = true;
+      $("qualityDetailPageInfo").textContent = "第 1 页";
+      updateQualityExportButtons();
+    };
+    const stopQuality = (reset = false) => {
+      qualityState.generation++;
+      for (const controller of qualityState.controllers.values()) controller.abort();
+      qualityState.controllers.clear();
+      qualityState.ready = false;
+      qualityState.listLoading = false;
+      qualityState.detailLoading = false;
+      qualityState.items = [];
+      qualityState.total = 0;
+      qualityState.listVersion++;
+      closeQualityDetail();
+      $("qualityFilters").disabled = true;
+      $("qualityRoundsTab").disabled = true;
+      $("qualityCustomersTab").disabled = true;
+      $("qualityPrev").disabled = true;
+      $("qualityNext").disabled = true;
+      $("qualityList").innerHTML = '<div class="quality-empty">等待读取归档。</div>';
+      $("qualityListSummary").textContent = "等待读取归档";
+      $("qualityStatus").textContent = "正在检查归档状态...";
+      $("qualityDirectoryWarning").textContent = "";
+      $("qualityDirectoryWarning").classList.add("hidden");
+      $("qualityStatusTag").textContent = "等待读取";
+      $("qualityStatusTag").className = "tag amber";
+      $("qualityPageInfo").textContent = "第 1 页";
+      if (reset) {
+        qualityState.filters = { sources: [], channels: [], agents: [], inboxes: [] };
+        qualityState.applied = new URLSearchParams();
+        qualityState.mode = "rounds";
+        qualityState.page = 1;
+        $("qualityListTitle").textContent = "接待轮次";
+        $("qualityFilterHeading").textContent = "筛选对话";
+        $("qualityFilterForm").classList.remove("hidden");
+        $("qualityRoundsTab").setAttribute("aria-pressed", "true");
+        $("qualityCustomersTab").setAttribute("aria-pressed", "false");
+        $("qualityFilterForm").reset();
+        $("qualitySource").innerHTML = '<option value="">全部来源和账号</option>';
+        $("qualityInbox").innerHTML = '<option value="">全部收件箱</option>';
+        $("qualityAgent").innerHTML = '<option value="">全部坐席</option>';
+        $("qualityChannel").innerHTML = '<option value="">全部 ICS 业务渠道</option><option value="unmapped">未映射渠道</option>';
+      }
+    };
+    const scopedQualityValue = (item) => JSON.stringify({ source_key: String(item.source_key), account_id: String(item.account_id), ...(item.agent_id !== undefined ? { agent_id: String(item.agent_id) } : {}), ...(item.inbox_id !== undefined ? { inbox_id: String(item.inbox_id) } : {}) });
+    const parseQualityScope = (value) => {
+      try { return value ? JSON.parse(value) : null; } catch (_) { return null; }
+    };
+    const qualityScopesMatch = (left, right) => String(left.source_key) === String(right.source_key) && String(left.account_id) === String(right.account_id);
+    const populateQualityInboxes = () => {
+      const previous = $("qualityInbox").value, source = parseQualityScope($("qualitySource").value);
+      const inboxes = (qualityState.filters.inboxes || []).filter((item) => !source || qualityScopesMatch(item, source));
+      $("qualityInbox").innerHTML = '<option value="">全部收件箱</option>' + inboxes.map((item) => `<option value="${escapeHtml(scopedQualityValue(item))}">${escapeHtml(item.name || "收件箱")} · #${escapeHtml(item.inbox_id)} · ${escapeHtml(item.source_key)} / 账号 ${escapeHtml(item.account_id)}</option>`).join("");
+      if ([...$("qualityInbox").options].some((item) => item.value === previous)) $("qualityInbox").value = previous;
+    };
+    const populateQualityAgents = () => {
+      const previous = $("qualityAgent").value;
+      const source = parseQualityScope($("qualitySource").value);
+      const agents = (qualityState.filters.agents || []).filter((item) => !source || qualityScopesMatch(item, source));
+      $("qualityAgent").innerHTML = '<option value="">全部坐席</option>' + agents.map((item) => `<option value="${escapeHtml(scopedQualityValue(item))}">${escapeHtml(item.agent_name || `坐席 ${item.agent_id}`)} · ${escapeHtml(item.source_key)} / 账号 ${escapeHtml(item.account_id)}</option>`).join("");
+      if ([...$("qualityAgent").options].some((item) => item.value === previous)) $("qualityAgent").value = previous;
+    };
+    const populateQualityFilters = () => {
+      const previousSource = $("qualitySource").value, previousChannel = $("qualityChannel").value;
+      const sources = new Map();
+      for (const item of [...qualityState.filters.sources, ...(qualityState.filters.inboxes || []), ...qualityState.filters.agents]) {
+        const source = { source_key: String(item.source_key), account_id: String(item.account_id) };
+        sources.set(scopedQualityValue(source), source);
+      }
+      $("qualitySource").innerHTML = '<option value="">全部来源和账号</option>' + [...sources.values()].map((item) => `<option value="${escapeHtml(scopedQualityValue(item))}">${escapeHtml(item.source_key)} · 账号 ${escapeHtml(item.account_id)}</option>`).join("");
+      if ([...$("qualitySource").options].some((item) => item.value === previousSource)) $("qualitySource").value = previousSource;
+      const channels = new Map(state.channels.map((item) => [item.key, item]));
+      for (const item of qualityState.filters.channels) if (item.key && item.key !== "unmapped") channels.set(item.key, item);
+      $("qualityChannel").innerHTML = '<option value="">全部 ICS 业务渠道</option><option value="unmapped">未映射渠道</option>' + [...channels.values()].map((item) => `<option value="${escapeHtml(item.key)}">${escapeHtml(item.name || item.key)}</option>`).join("");
+      if ([...$("qualityChannel").options].some((item) => item.value === previousChannel)) $("qualityChannel").value = previousChannel;
+      populateQualityInboxes();
+      populateQualityAgents();
+    };
+    const changeQualitySource = () => {
+      if (!$("qualitySource").value) { $("qualityInbox").value = ""; $("qualityAgent").value = ""; }
+      populateQualityInboxes();
+      populateQualityAgents();
+    };
+    const changeQualityScopedFilter = (id) => {
+      const selected = parseQualityScope($(id).value);
+      if (selected) $("qualitySource").value = scopedQualityValue({ source_key: selected.source_key, account_id: selected.account_id });
+      populateQualityInboxes();
+      populateQualityAgents();
+    };
+    const collectQualityFilters = () => {
+      const params = new URLSearchParams();
+      for (const [key, raw] of new FormData($("qualityFilterForm"))) {
+        const value = String(raw).trim();
+        if (value) params.set(key, key === "start" || key === "end" ? qualityLocalTime(value) : value);
+      }
+      const source = parseQualityScope($("qualitySource").value), agent = parseQualityScope($("qualityAgent").value), inbox = parseQualityScope($("qualityInbox").value);
+      const scope = source || inbox || agent;
+      if (scope && [source, inbox, agent].some((item) => item && !qualityScopesMatch(item, scope))) throw new Error("收件箱、坐席与来源 / 账号不一致，请重新选择。");
+      if (scope) { params.set("source_key", scope.source_key); params.set("account_id", scope.account_id); }
+      if (agent) params.set("agent_id", agent.agent_id);
+      if (inbox) params.set("inbox_id", inbox.inbox_id);
+      if (params.has("start") && params.has("end") && new Date(params.get("start")) >= new Date(params.get("end"))) throw new Error("结束时间必须晚于开始时间。");
+      return params;
+    };
+    const loadQuality = async () => {
+      const generation = qualityState.generation, token = state.token;
+      $("qualityStatus").textContent = "正在检查归档状态...";
+      try {
+        const status = await qualityRequest("status", "/status");
+        if (!isQualityCurrent(generation, token)) return;
+        if (!status.enabled || !status.ready) {
+          $("qualityStatusTag").textContent = status.enabled ? "暂不可用" : "未启用";
+          $("qualityStatusTag").className = "tag amber";
+          $("qualityStatus").textContent = status.enabled ? "对话归档暂不可用，请稍后刷新。其他后台功能可继续使用。" : "对话归档尚未启用。启用后可在这里查询已采集的对话。";
+          $("qualityList").innerHTML = '<div class="quality-empty">归档查询就绪后即可查看对话。</div>';
+          return;
+        }
+        const filters = await qualityRequest("filters", "/filters");
+        if (!isQualityCurrent(generation, token)) return;
+        qualityState.filters = { sources: filters.sources || [], channels: filters.channels || [], agents: filters.agents || [], inboxes: filters.inboxes || [] };
+        populateQualityFilters();
+        $("qualityDirectoryWarning").textContent = typeof filters.directory_warning === "string" ? filters.directory_warning : "";
+        $("qualityDirectoryWarning").classList.toggle("hidden", !$("qualityDirectoryWarning").textContent);
+        qualityState.ready = true;
+        $("qualityFilters").disabled = false;
+        $("qualityRoundsTab").disabled = false;
+        $("qualityCustomersTab").disabled = false;
+        $("qualityStatusTag").textContent = "归档可查询";
+        $("qualityStatusTag").className = "tag green";
+        const pendingJobs = Number(status.jobs?.queued ?? status.jobs?.pending ?? 0) + Number(status.jobs?.processing || 0) + Number(status.jobs?.retry || 0);
+        const assignmentPending = Number(status.assignment_sync_pending_count || 0), assignmentBlocked = Number(status.assignment_sync_blocked_count || 0);
+        const assignmentUnavailable = ["connecting", "unavailable", "configuration_error", "stopped"].includes(status.assignment_sync_status);
+        const assignmentNotice = `${status.assignment_sync_status === "disabled" ? "ICS 责任记录同步未启用。" : ""}${assignmentUnavailable ? "ICS 责任记录同步暂不可用，部分责任坐席可能暂未显示。" : ""}${assignmentPending ? `有 ${assignmentPending} 条 ICS 责任记录等待同步。` : ""}${assignmentBlocked ? `有 ${assignmentBlocked} 条 ICS 责任记录需核查，相关责任坐席可能暂未显示。` : ""}`;
+        if (assignmentUnavailable || assignmentBlocked) {
+          $("qualityStatusTag").textContent = "归档可查询 · 责任同步待处理";
+          $("qualityStatusTag").className = "tag amber";
+        }
+        $("qualityStatus").textContent = `${status.last_received_at ? `最近收到 ${qualityTime(status.last_received_at)}。` : ""}${pendingJobs ? `有 ${pendingJobs} 条事件等待整理，部分对话可能暂不可见。` : ""}${Number(status.jobs?.failed || 0) ? "存在整理失败记录。" : ""}${assignmentNotice}只读查看已采集内容；附件尚未独立保存。`;
+        qualityState.applied = collectQualityFilters();
+        qualityState.page = 1;
+        await loadQualityList();
+      } catch (error) {
+        if (error.name === "AbortError" || !isQualityCurrent(generation, token)) return;
+        $("qualityStatusTag").textContent = "读取失败";
+        $("qualityStatusTag").className = "tag amber";
+        $("qualityStatus").textContent = error.message;
+        $("qualityList").innerHTML = '<div class="quality-empty">无法读取归档，请刷新重试。其他后台功能可继续使用。</div>';
+      }
+    };
+    const renderQualityList = () => {
+      const rounds = qualityState.mode === "rounds";
+      $("qualityRoundsTab").setAttribute("aria-pressed", String(rounds));
+      $("qualityCustomersTab").setAttribute("aria-pressed", String(!rounds));
+      $("qualityListTitle").textContent = rounds ? "接待轮次" : "归档用户";
+      $("qualityListSummary").textContent = `共 ${qualityState.total} ${rounds ? "轮接待" : "位用户"}${rounds ? "" : " · 点击用户查看不受列表筛选限制的完整历史"}`;
+      if (!qualityState.items.length) {
+        $("qualityList").innerHTML = '<div class="quality-empty">没有符合条件的归档记录。可调整筛选，或刷新查看最新采集内容。</div>';
+        return;
+      }
+      const rows = qualityState.items.map((item, index) => {
+        const source = `${escapeHtml(item.source_key)} / 账号 ${escapeHtml(item.account_id)}`;
+        if (!rounds) return `<tr><td>${escapeHtml(item.display_name || "未命名用户")}<span class="quality-secondary">联系人 ${escapeHtml(item.contact_id || "未知")} · 业务用户 ${escapeHtml(item.business_user_id || "未关联")}</span></td><td>${source}</td><td>${escapeHtml(item.round_count ?? 0)} 轮</td><td>${escapeHtml(item.message_count ?? 0)} 条</td><td>${escapeHtml(qualityTime(item.last_message_at))}</td><td><button class="button tertiary" type="button" data-quality-open="${index}">完整历史</button></td></tr>`;
+        const responsible = qualityResponsibleAgentLabel(item);
+        const feedback = qualityRatingFeedback(item);
+        return `<tr><td>${escapeHtml(item.customer_name || "未命名用户")}<span class="quality-secondary">${source}</span></td><td>会话 ${escapeHtml(item.conversation_id)} · 第 ${escapeHtml(item.round_no)} 轮<span class="quality-secondary">${escapeHtml(qualityInboxName(item))}</span><span class="quality-secondary">ICS 业务渠道：${escapeHtml(qualityChannelName(item.channel_key))}</span></td><td><div class="quality-tags">${qualityTag(qualityReceptionLabel(item), item.reception_type === "human" ? "green" : "")}${qualityTag(qualityStatusLabel(item.status), item.status === "active" ? "amber" : "")}</div></td><td>${escapeHtml(responsible)}</td><td>${escapeHtml(qualityTime(item.started_at))}<span class="quality-secondary">最近消息 ${escapeHtml(qualityTime(item.last_message_at))}</span></td><td>${escapeHtml(qualityRatingLabel(item))}${feedback ? `<span class="quality-secondary quality-rating-feedback">${escapeHtml(feedback)}</span>` : ""}</td><td><div class="row-actions"><button class="button tertiary" type="button" data-quality-open="${index}">本轮详情</button>${item.customer_id ? `<button class="button tertiary" type="button" data-quality-history="${index}">用户全史</button>` : ""}</div></td></tr>`;
+      }).join("");
+      const headings = rounds ? ["用户 / 来源", "会话 / 轮次", "分类 / 状态", "本轮责任坐席", "北京时间", "服务评价", "操作"] : ["用户身份", "来源 / 账号", "接待轮次", "消息", "最近消息（北京时间）", "操作"];
+      $("qualityList").innerHTML = `<table><thead><tr>${headings.map((heading) => `<th>${heading}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>`;
+      $("qualityList").querySelectorAll("[data-quality-open]").forEach((button) => button.addEventListener("click", () => {
+        const item = qualityState.items[Number(button.dataset.qualityOpen)];
+        if (item) openQualityDetail(rounds ? "round" : "customer", rounds ? item.round_id : item.customer_id);
+      }));
+      $("qualityList").querySelectorAll("[data-quality-history]").forEach((button) => button.addEventListener("click", () => {
+        const item = qualityState.items[Number(button.dataset.qualityHistory)];
+        if (item?.customer_id) openQualityDetail("customer", item.customer_id);
+      }));
+    };
+    const loadQualityList = async () => {
+      if (!qualityState.ready || state.view !== "quality" || !state.token) return;
+      const version = ++qualityState.listVersion, generation = qualityState.generation, token = state.token;
+      const params = new URLSearchParams(qualityState.applied);
+      params.set("page", qualityState.page); params.set("page_size", qualityState.pageSize);
+      qualityState.listLoading = true;
+      qualityState.items = [];
+      closeQualityDetail();
+      $("qualityList").innerHTML = '<div class="quality-empty">正在查询归档...</div>';
+      $("qualityListSummary").textContent = "正在查询...";
+      $("qualityPrev").disabled = true; $("qualityNext").disabled = true;
+      try {
+        const result = await qualityRequest("list", `/${qualityState.mode}?${params}`);
+        if (!isQualityCurrent(generation, token) || version !== qualityState.listVersion) return;
+        qualityState.items = result.items || [];
+        qualityState.total = Number(result.total || 0);
+        qualityState.page = Number(result.page || qualityState.page);
+        renderQualityList();
+        const pages = Math.max(1, Math.ceil(qualityState.total / qualityState.pageSize));
+        $("qualityPageInfo").textContent = `第 ${qualityState.page} / ${pages} 页 · 每页 ${qualityState.pageSize} 条`;
+        $("qualityPrev").disabled = qualityState.page <= 1;
+        $("qualityNext").disabled = qualityState.page >= pages;
+      } catch (error) {
+        if (error.name === "AbortError" || !isQualityCurrent(generation, token) || version !== qualityState.listVersion) return;
+        $("qualityListSummary").textContent = error.message;
+        $("qualityList").innerHTML = '<div class="quality-empty">本次查询失败，可调整条件后重试。</div>';
+        $("qualityPageInfo").textContent = "查询未完成";
+      } finally {
+        if (isQualityCurrent(generation, token) && version === qualityState.listVersion) {
+          qualityState.listLoading = false;
+          updateQualityExportButtons();
+        }
+      }
+    };
+    const qualityAttachments = (items) => {
+      if (!Array.isArray(items) || !items.length) return "";
+      return `<div class="quality-attachments"><span class="hint">附件尚未独立复制；以下为来源链接，点击后才打开，链接可能失效。</span>${items.map((item) => {
+        const url = qualitySafeLink(item.source_url);
+        const name = item.filename || item.media_type || "未命名附件";
+        return `<div>${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">${escapeHtml(name)} ↗</a>` : `<span>${escapeHtml(name)} · 暂无可打开的来源链接</span>`}${item.media_type ? `<span class="quality-secondary">${escapeHtml(item.media_type)}</span>` : ""}</div>`;
+      }).join("")}</div>`;
+    };
+    const renderQualityTimeline = () => {
+      const history = qualityState.detail?.type === "customer";
+      if (!qualityState.messages.length) {
+        $("qualityTimeline").innerHTML = '<div class="quality-empty">暂无已解析的消息。原始事件可能仍在处理中，请稍后刷新。</div>';
+        return;
+      }
+      $("qualityTimeline").innerHTML = qualityState.messages.map((message, index) => {
+        const badges = [qualityTag(qualityRoleLabel(message.sender_role))];
+        if (message.is_private) badges.push(qualityTag("私密消息 / 内部备注", "amber"));
+        if (message.is_deleted) badges.push(qualityTag("已观察到删除", "red"));
+        if (message.has_creation_event === false) badges.push(qualityTag("缺少创建时原文", "amber"));
+        if (!message.round_id) badges.push(qualityTag("未归轮", "amber"));
+        const content = message.content === null || message.content === undefined || message.content === "" ? "（无文字内容）" : message.content;
+        const roundLink = history && message.round_id ? `<button class="button tertiary" type="button" data-quality-round="${index}">查看第 ${escapeHtml(message.round_no ?? "未知")} 轮</button>` : "";
+        return `<article class="quality-message${message.is_private ? " private" : ""}${message.is_deleted ? " deleted" : ""}"><div class="quality-message-header"><div class="quality-tags">${badges.join("")}<strong>${escapeHtml(message.sender_name || "名称未知")}</strong></div><span class="hint">${escapeHtml(qualityTime(message.sent_at))}</span></div><p class="quality-message-content">${escapeHtml(content)}</p>${qualityAttachments(message.attachments)}<div class="quality-message-footer"><span>会话 ${escapeHtml(message.conversation_id ?? "未知")} · 消息 ${escapeHtml(message.message_id)}${message.is_deleted ? " · 展示删除前最后收到的内容" : ""}</span><div class="row-actions">${roundLink}<button class="button tertiary" type="button" data-quality-versions="${index}">原文与版本</button></div></div></article>`;
+      }).join("");
+      $("qualityTimeline").querySelectorAll("[data-quality-round]").forEach((button) => button.addEventListener("click", () => {
+        const message = qualityState.messages[Number(button.dataset.qualityRound)];
+        if (message?.round_id) openQualityDetail("round", message.round_id);
+      }));
+      $("qualityTimeline").querySelectorAll("[data-quality-versions]").forEach((button) => button.addEventListener("click", () => {
+        const message = qualityState.messages[Number(button.dataset.qualityVersions)];
+        if (message) openQualityVersions(message);
+      }));
+    };
+    const qualityDetailMetadata = (item, type) => {
+      const fields = [["来源", item.source_key], ["账号", item.account_id]];
+      if (type === "customer") {
+        fields.push(["联系人", item.contact_id || "未知"], ["业务用户", item.business_user_id || "未关联"], ["归档轮次", item.round_count ?? "未知"], ["归档消息", item.message_count ?? "未知"]);
+      } else {
+        fields.push(["Chatwoot 收件箱", qualityInboxName(item)], ["ICS 业务渠道", qualityChannelName(item.channel_key)], ["开始", qualityTime(item.started_at)], ["最近消息", qualityTime(item.last_message_at)], ["状态", qualityStatusLabel(item.status)], ["接待分类", qualityReceptionLabel(item)]);
+        fields.push(["本轮责任坐席", qualityResponsibleAgentLabel(item)], ["责任依据", { ics_assignment: "本轮 ICS 原始分配", assignment_unobserved: "未记录 ICS 分配", assignment_conflict: "ICS 分配记录冲突，待确认" }[item.responsibility_basis] || "待确认"]);
+        if (item.responsibility_basis === "ics_assignment") {
+          fields.push(["ICS 原始分配时间", qualityTime(item.responsible_assigned_at)], ["分配事件 ID", item.responsibility_event_id ?? "待确认"], ["ICS 轮次标识", item.responsibility_external_round_id ?? "待确认"], ["触发消息 ID", item.responsibility_trigger_message_id ?? "待确认"]);
+        }
+        if (item.last_public_agent_id !== null && item.last_public_agent_id !== undefined || item.last_public_agent_name || item.last_public_reply_at || item.last_public_message_id !== null && item.last_public_message_id !== undefined) {
+          const lastAgent = item.last_public_agent_name || (item.last_public_agent_id !== null && item.last_public_agent_id !== undefined ? `坐席 ${item.last_public_agent_id}` : "待确认");
+          fields.push(["实际最后人工回复人（非责任依据）", lastAgent], ["实际最后人工回复时间", qualityTime(item.last_public_reply_at)], ["实际最后人工回复消息 ID", item.last_public_message_id ?? "待确认"]);
+        }
+        if (qualityRatingLabel(item) !== "—") fields.push(["服务评价", qualityRatingLabel(item)]);
+        if (qualityRatingFeedback(item)) fields.push(["评价反馈", qualityRatingFeedback(item)]);
+        if (item.resolved_at) fields.push(["解决", qualityTime(item.resolved_at)]);
+        if (item.ended_at) fields.push(["结束", qualityTime(item.ended_at)]);
+        const composition = { ai_only: "仅机器人回复", bot_only: "仅机器人回复", human_only: "仅真人回复", agent_only: "仅真人回复", mixed: "机器人与真人均回复", bot_and_human: "机器人与真人均回复", no_reply: "暂无公开回复", none: "暂无公开回复", unknown: "待确认" };
+        if (item.reply_composition) fields.push(["回复构成", composition[item.reply_composition] || "待确认"]);
+        if (typeof item.has_agent_reply === "boolean") fields.push(["本轮客服公开回复", item.has_agent_reply ? "已有回复" : "暂无回复"]);
+        if (item.takeover_inherited) fields.push(["接管状态", "沿用上一轮人工接管"]);
+        if ((item.agents || []).length) fields.push(["坐席参与及分配记录（非责任依据）", item.agents.map((agent) => {
+          const participation = [];
+          if (agent.replied) participation.push(`公开回复 ${agent.reply_count ?? 0} 条`);
+          if (agent.was_assigned) participation.push("历史分配（非责任）");
+          if (agent.noted) participation.push("有内部备注");
+          return `${agent.agent_name || `坐席 ${agent.agent_id}`}${participation.length ? `（${participation.join("，")}）` : ""}`;
+        }).join("、")]);
+        const handoff = item.handoff_result || item.handoff_status;
+        const handoffLabels = { requested: "已申请", assigned: "已分配", completed: "已确认接管", replied: "真人已回复", failed: "转接失败", no_agent: "暂无可接待坐席", pending: "等待处理", not_requested: "未申请", none: "未申请" };
+        if (handoff) fields.push(["转接结果", handoffLabels[handoff] || "待确认"]);
+      }
+      return fields.map(([label, value]) => `<span${label === "评价反馈" ? ' class="quality-rating-feedback"' : ""}>${escapeHtml(label)}：${escapeHtml(value ?? "未知")}</span>`).join("");
+    };
+    const openQualityDetail = async (type, id) => {
+      if (!id || !qualityState.ready || state.view !== "quality") return;
+      closeQualityDetail();
+      qualityState.detail = { type, id: String(id), page: 1, total: 0, item: null };
+      $("qualityDetail").classList.remove("hidden");
+      $("qualityDetail").scrollIntoView({ behavior: "smooth", block: "start" });
+      await loadQualityDetail();
+    };
+    const loadQualityDetail = async () => {
+      const detail = qualityState.detail;
+      if (!detail || !qualityState.ready || state.view !== "quality") return;
+      closeQualityVersions();
+      const version = ++qualityState.detailVersion, generation = qualityState.generation, token = state.token;
+      qualityState.detailLoading = true;
+      updateQualityExportButtons();
+      qualityState.messages = [];
+      $("qualityTimeline").innerHTML = '<div class="quality-empty">正在读取对话时间线...</div>';
+      $("qualityDetailPrev").disabled = true; $("qualityDetailNext").disabled = true;
+      $("qualityCustomerHistory").classList.add("hidden");
+      const path = detail.type === "customer" ? `/customers/${encodeURIComponent(detail.id)}/history` : `/rounds/${encodeURIComponent(detail.id)}`;
+      try {
+        const result = await qualityRequest("detail", `${path}?page=${detail.page}&page_size=${qualityState.pageSize}`);
+        if (!isQualityCurrent(generation, token) || version !== qualityState.detailVersion || qualityState.detail !== detail) return;
+        const item = detail.type === "customer" ? result.customer : result.round;
+        detail.item = item || {};
+        detail.total = Number(result.total || 0);
+        detail.page = Number(result.page || detail.page);
+        qualityState.messages = result.messages || [];
+        $("qualityDetailTitle").textContent = detail.type === "customer" ? `${item?.display_name || "未命名用户"} · 完整历史` : `${item?.customer_name || "未命名用户"} · 会话 ${item?.conversation_id ?? "未知"} · 第 ${item?.round_no ?? "未知"} 轮`;
+        $("qualityDetailHint").textContent = detail.type === "customer" ? "同一归档用户跨会话的完整历史 · 包含未归轮消息 · 不受列表筛选限制" : "本轮完整消息 · 可查看用户全史和每条消息的观察版本";
+        $("qualityDetailMeta").innerHTML = qualityDetailMetadata(detail.item, detail.type);
+        if (detail.type === "round" && item?.customer_id) {
+          $("qualityCustomerHistory").classList.remove("hidden");
+          $("qualityCustomerHistory").onclick = () => openQualityDetail("customer", item.customer_id);
+        }
+        renderQualityTimeline();
+        const pages = Math.max(1, Math.ceil(detail.total / qualityState.pageSize));
+        $("qualityDetailPageInfo").textContent = `共 ${detail.total} 条消息 · 第 ${detail.page} / ${pages} 页 · 北京时间`;
+        $("qualityDetailPrev").disabled = detail.page <= 1;
+        $("qualityDetailNext").disabled = detail.page >= pages;
+      } catch (error) {
+        if (error.name === "AbortError" || !isQualityCurrent(generation, token) || version !== qualityState.detailVersion || qualityState.detail !== detail) return;
+        $("qualityDetailHint").textContent = error.message;
+        $("qualityTimeline").innerHTML = '<div class="quality-empty">无法读取本次详情，请重新打开。</div>';
+        $("qualityDetailPageInfo").textContent = "读取未完成";
+      } finally {
+        if (isQualityCurrent(generation, token) && version === qualityState.detailVersion && qualityState.detail === detail) {
+          qualityState.detailLoading = false;
+          updateQualityExportButtons();
+        }
+      }
+    };
+    const qualitySnapshotLabel = (snapshot, message) => {
+      const kind = String(snapshot.snapshot_kind || "").toLowerCase();
+      if (["deleted", "delete", "message_deleted", "message.deleted"].includes(kind)) return "删除时观察";
+      if (["created", "create", "message_created", "message.created"].includes(kind)) return "创建时原文";
+      if (["updated", "edited", "update", "message_updated", "message.updated"].includes(kind)) return "编辑时观察";
+      if (kind.includes("backfill")) return "补录时观察";
+      if (message.has_creation_event && String(snapshot.snapshot_id ?? snapshot.id) === String(message.original_snapshot_id)) return "创建时原文";
+      return "观察版本";
+    };
+    const openQualityVersions = async (message) => {
+      closeQualityVersions();
+      qualityState.versions = { message, page: 1, total: 0 };
+      $("qualityVersions").classList.remove("hidden");
+      $("qualityVersions").scrollIntoView({ behavior: "smooth", block: "nearest" });
+      await loadQualityVersions();
+    };
+    const loadQualityVersions = async () => {
+      const versions = qualityState.versions;
+      if (!versions || !qualityState.detail || state.view !== "quality") return;
+      cancelQualityRequest("download");
+      const version = ++qualityState.versionsVersion, generation = qualityState.generation, token = state.token;
+      const message = versions.message;
+      $("qualityVersionsTitle").textContent = `消息 ${message.message_id} · 原文与观察版本`;
+      $("qualityVersionList").innerHTML = '<div class="quality-empty">正在读取消息版本...</div>';
+      $("qualityVersionsPrev").disabled = true; $("qualityVersionsNext").disabled = true;
+      const params = new URLSearchParams({ source_key: message.source_key, account_id: message.account_id, page: versions.page, page_size: qualityState.pageSize });
+      try {
+        const result = await qualityRequest("versions", `/messages/${encodeURIComponent(message.message_id)}/versions?${params}`);
+        if (!isQualityCurrent(generation, token) || version !== qualityState.versionsVersion || qualityState.versions !== versions) return;
+        const snapshots = result.items || [];
+        versions.items = snapshots;
+        versions.total = Number(result.total ?? snapshots.length);
+        versions.page = Number(result.page || versions.page);
+        $("qualityVersionList").innerHTML = snapshots.length ? snapshots.map((snapshot, index) => {
+          const id = snapshot.snapshot_id ?? snapshot.id;
+          const label = qualitySnapshotLabel(snapshot, message);
+          const latest = id !== undefined && String(id) === String(message.latest_snapshot_id);
+          const badges = [qualityTag(label, label.includes("删除") ? "red" : ""), qualityTag(qualityRoleLabel(snapshot.sender_role))];
+          if (latest) badges.push(qualityTag("最新观察", "green"));
+          if (snapshot.is_private) badges.push(qualityTag("私密消息", "amber"));
+          return `<article class="quality-message"><div class="quality-message-header"><div class="quality-tags">${badges.join("")}<strong>${escapeHtml(snapshot.sender_name || "名称未知")}</strong></div><span class="hint">收到于 ${escapeHtml(qualityTime(snapshot.recorded_at))}</span></div><p class="quality-message-content">${escapeHtml(snapshot.content ?? "（无文字内容）")}</p><div class="quality-message-footer"><span>源端消息时间 ${escapeHtml(qualityTime(snapshot.sent_at))}</span><span>观察 ${escapeHtml(id ?? "未知")} · 来源事件 ${escapeHtml(snapshot.event_id ?? "未知")}</span>${snapshot.event_id !== null && snapshot.event_id !== undefined ? `<button class="button tertiary" type="button" data-quality-event="${index}">下载原始事件</button>` : ""}</div></article>`;
+        }).join("") : '<div class="quality-empty">暂无可展示的观察版本。</div>';
+        $("qualityVersionList").querySelectorAll("[data-quality-event]").forEach((button) => button.addEventListener("click", () => {
+          const snapshot = versions.items[Number(button.dataset.qualityEvent)];
+          if (snapshot) downloadQualityEvent(snapshot, message, button);
+        }));
+        const pages = Math.max(1, Math.ceil(versions.total / qualityState.pageSize));
+        $("qualityVersionsPageInfo").textContent = `共 ${versions.total} 个版本 · 第 ${versions.page} / ${pages} 页`;
+        $("qualityVersionsPrev").disabled = versions.page <= 1;
+        $("qualityVersionsNext").disabled = versions.page >= pages;
+      } catch (error) {
+        if (error.name === "AbortError" || !isQualityCurrent(generation, token) || version !== qualityState.versionsVersion || qualityState.versions !== versions) return;
+        $("qualityVersionList").textContent = error.message;
+        $("qualityVersionsPageInfo").textContent = "读取未完成";
+      }
+    };
+    const downloadQualityEvent = async (snapshot, message, button, errorTarget = "qualityVersionsPageInfo") => {
+      cancelQualityRequest("download");
+      const controller = new AbortController(), generation = qualityState.generation, token = state.token;
+      qualityState.controllers.set("download", controller);
+      button.disabled = true;
+      try {
+        const params = new URLSearchParams({ source_key: message.source_key, account_id: message.account_id });
+        const response = await fetch(`/admin/api/quality/events/${encodeURIComponent(snapshot.event_id)}?${params}`, { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal });
+        if (controller.signal.aborted || !isQualityCurrent(generation, token)) throw qualityAbort();
+        if (response.status === 401) { logout(false); throw qualityAbort(); }
+        if (!response.ok) throw new Error("原始事件下载失败，请稍后重试。");
+        const blob = await response.blob();
+        if (controller.signal.aborted || !isQualityCurrent(generation, token)) throw qualityAbort();
+        downloadBlob(blob, `归档事件-${String(snapshot.event_id).replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
+      } catch (error) {
+        if (error.name !== "AbortError" && !controller.signal.aborted && isQualityCurrent(generation, token)) $(errorTarget).textContent = error.message;
+      } finally {
+        button.disabled = false;
+        if (qualityState.controllers.get("download") === controller) qualityState.controllers.delete("download");
+      }
+    };
+    const changeQualityMode = (mode) => {
+      if (!qualityState.ready || !["rounds", "customers"].includes(mode) || mode === qualityState.mode) return;
+      qualityState.mode = mode; qualityState.page = 1;
+      $("qualityRoundsTab").setAttribute("aria-pressed", String(mode === "rounds"));
+      $("qualityCustomersTab").setAttribute("aria-pressed", String(mode === "customers"));
+      $("qualityListTitle").textContent = mode === "rounds" ? "接待轮次" : "归档用户";
+      loadQualityList();
+    };
+    const applyQualityFilters = () => {
+      if (!qualityState.ready) return;
+      try {
+        qualityState.applied = collectQualityFilters();
+        qualityState.page = 1;
+        loadQualityList();
+      } catch (error) { $("qualityListSummary").textContent = error.message; }
+    };
     const navigateTo = (route) => {
       if (state.pendingMutations) return;
       window.location.hash = route;
@@ -1095,19 +1819,21 @@
       const hash = window.location.hash;
       const match = /^#channel\/([a-z][a-z0-9_]*)$/.exec(hash);
       const channel = state.channels.find((item) => item.key === match?.[1]);
-      const view = hash === "#logs" ? "logs" : "channel";
+      const view = hash === "#logs" ? "logs" : hash === "#quality" ? "quality" : "channel";
       const key = channel?.key || "xingliao";
       state.view = view;
       if (view === "channel") state.channelKey = key;
-      state.route = view === "logs" ? "#logs" : `#channel/${key}`;
+      state.route = view === "channel" ? `#channel/${key}` : `#${view}`;
       if (hash !== state.route) history.replaceState(null, "", state.route);
       state.contentVersion++;
       stopLogs();
+      stopQuality();
       closePreview();
       $("channelPage").classList.toggle("hidden", view !== "channel");
       $("logsPage").classList.toggle("hidden", view !== "logs");
-      document.querySelectorAll("#channelNav button, #logsNav").forEach((button) => {
-        const active = view === "logs" ? button.id === "logsNav" : button.dataset.channelKey === key;
+      $("qualityPage").classList.toggle("hidden", view !== "quality");
+      document.querySelectorAll("#channelNav button, #logsNav, #qualityNav").forEach((button) => {
+        const active = view === "channel" ? button.dataset.channelKey === key : button.id === `${view}Nav`;
         button.classList.toggle("active", active);
         if (active) button.setAttribute("aria-current", "page");
         else button.removeAttribute("aria-current");
@@ -1117,6 +1843,11 @@
         $("pageContext").textContent = "全部渠道 · 服务运行状态";
         document.title = "系统日志 - 零新智能客服";
         startLogs();
+      } else if (view === "quality") {
+        $("pageTitle").textContent = "对话归档";
+        $("pageContext").textContent = "全部渠道 · 原始对话与服务评价";
+        document.title = "对话归档 - 零新智能客服";
+        loadQuality();
       } else {
         $("pageTitle").textContent = `${currentChannelName()} · 内容管理`;
         $("pageContext").textContent = "知识库与 FAQ 问答对";
@@ -1129,21 +1860,24 @@
       }
     };
     const setLoggedIn = () => {
+      const loginToken = state.token;
       $("loginScreen").classList.add("hidden");
       $("appScreen").classList.remove("hidden");
       $("userChip").textContent = `管理员：${state.username}`;
       renderChannelNavigation();
       api("/admin/api/channels").then((result) => {
+        if (!state.token || state.token !== loginToken) return;
         state.channels = result.items;
         renderChannelNavigation();
         showCurrentPage();
-      }).catch((error) => showToast(error.message, true));
+      }).catch((error) => { if (state.token === loginToken) showToast(error.message, true); });
     };
     const logout = (notify = true) => {
       state.token = "";
       localStorage.removeItem("ics_admin_token");
       localStorage.removeItem("ics_admin_username");
       stopLogs();
+      stopQuality(true);
       state.contentVersion++;
       state.logGeneration++;
       state.logId = 0;
@@ -1444,11 +2178,37 @@
       } catch (error) { $("loginMessage").textContent = error.message; }
     });
     $("logoutButton").addEventListener("click", () => logout());
-    $("refreshAll").addEventListener("click", () => state.view === "logs" ? loadLogs() : loadDashboard());
+    $("refreshAll").addEventListener("click", () => {
+      if (state.view === "logs") loadLogs();
+      else if (state.view === "quality") { stopQuality(); loadQuality(); }
+      else loadDashboard();
+    });
     $("knowledgeRefresh").addEventListener("click", () => loadKnowledgeFiles().catch((error) => showToast(error.message, true)));
     $("knowledgeUpload").addEventListener("click", uploadKnowledge);
     $("knowledgeUpdate").addEventListener("click", submitKnowledgeUpdate);
     $("logsNav").addEventListener("click", () => navigateTo("#logs"));
+    $("qualityNav").addEventListener("click", () => navigateTo("#quality"));
+    $("qualityFilterForm").addEventListener("submit", (event) => { event.preventDefault(); applyQualityFilters(); });
+    $("qualitySource").addEventListener("change", changeQualitySource);
+    $("qualityInbox").addEventListener("change", () => changeQualityScopedFilter("qualityInbox"));
+    $("qualityAgent").addEventListener("change", () => changeQualityScopedFilter("qualityAgent"));
+    $("qualityReset").addEventListener("click", () => {
+      $("qualityFilterForm").reset();
+      changeQualitySource();
+      applyQualityFilters();
+    });
+    $("qualityRoundsTab").addEventListener("click", () => changeQualityMode("rounds"));
+    $("qualityCustomersTab").addEventListener("click", () => changeQualityMode("customers"));
+    $("qualityExportList").addEventListener("click", () => exportQuality("list"));
+    $("qualityExportDetail").addEventListener("click", () => exportQuality("detail"));
+    $("qualityPrev").addEventListener("click", () => { if (qualityState.page > 1) { qualityState.page--; loadQualityList(); } });
+    $("qualityNext").addEventListener("click", () => { if (qualityState.page * qualityState.pageSize < qualityState.total) { qualityState.page++; loadQualityList(); } });
+    $("qualityCloseDetail").addEventListener("click", closeQualityDetail);
+    $("qualityCloseVersions").addEventListener("click", closeQualityVersions);
+    $("qualityDetailPrev").addEventListener("click", () => { if (qualityState.detail?.page > 1) { qualityState.detail.page--; loadQualityDetail(); } });
+    $("qualityDetailNext").addEventListener("click", () => { if (qualityState.detail && qualityState.detail.page * qualityState.pageSize < qualityState.detail.total) { qualityState.detail.page++; loadQualityDetail(); } });
+    $("qualityVersionsPrev").addEventListener("click", () => { if (qualityState.versions?.page > 1) { qualityState.versions.page--; loadQualityVersions(); } });
+    $("qualityVersionsNext").addEventListener("click", () => { if (qualityState.versions && qualityState.versions.page * qualityState.pageSize < qualityState.versions.total) { qualityState.versions.page++; loadQualityVersions(); } });
     window.addEventListener("hashchange", showCurrentPage);
     $("faqPreview").addEventListener("click", previewFaqFile);
     $("faqDownload").addEventListener("click", downloadFaqFile);

@@ -1932,12 +1932,16 @@ async def _complete_handoff(
                 team_id=team_id,
                 assignee_id=assignee_id,
             )
-        await asyncio.to_thread(
+        marked = await asyncio.to_thread(
             conversation_control_repository.mark_handoff_action,
             account_id=account_id,
             conversation_id=conversation_id,
             action="assignment_applied",
+            expected_round_id=control.active_thread_id,
+            expected_agent_id=str(assignee_id),
         )
+        if marked is False:
+            return _session_suppressed_result("consultation_ended_or_changed")
     actions["assignment_applied"] = (
         team_id is not None or assignee_id is not None
     )

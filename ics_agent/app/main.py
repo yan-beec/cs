@@ -33,6 +33,10 @@ from ics_agent.rag.graph import get_rag_graph
 from ics_agent.rag.memory import get_conversation_memory_manager
 from reminder.backend.routes import router as reminder_router
 from reminder.backend.repository import get_repository as get_reminder_repository
+from quality.query.routes import router as quality_query_router
+from quality.query.runtime import get_query_runtime
+from quality.assignment.runtime import start_assignment_sync, stop_assignment_sync
+from .chatwoot.schema_recovery import ConversationControlSchemaRecovery
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +44,8 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """初始化基础设施、后台任务和可选的 RAG 预热。"""
+    control_schema_failed = False
+    control_schema_recovery = ConversationControlSchemaRecovery()
     memory_manager = get_conversation_memory_manager()
     try:
         await memory_manager.startup()
@@ -63,6 +69,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await asyncio.to_thread(conversation_control_repository.ensure_table)
         log_event(logger, logging.INFO, "app.conversation_control.ready")
     except Exception as exc:
+        control_schema_failed = True
         logger.exception(
             "事件=应用.Chatwoot会话控制.初始化失败 错误类型=%s",
             type(exc).__name__,
@@ -139,11 +146,18 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
             reason="disabled_by_config",
         )
 
+    await get_query_runtime().start()
+    await start_assignment_sync()
+    if control_schema_failed:
+        await control_schema_recovery.start(settings)
     log_event(logger, logging.INFO, "app.lifecycle.started")
     try:
         yield
     finally:
         await stop_chatwoot_webhook_workers()
+        await control_schema_recovery.close()
+        await stop_assignment_sync()
+        await get_query_runtime().close()
         await memory_manager.shutdown()
         log_event(logger, logging.INFO, "app.lifecycle.stopped")
 
@@ -175,3 +189,4 @@ app.include_router(public_router)
 app.include_router(admin_router)
 app.include_router(chatwoot_webhook_router)
 app.include_router(reminder_router)
+app.include_router(quality_query_router)

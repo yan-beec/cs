@@ -1,6 +1,7 @@
 """后台渠道选择与上传、预览、查询参数的集成验证。"""
 
 import asyncio
+from dataclasses import replace
 import json
 from io import BytesIO
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from ics_agent.app.chatwoot import routes as webhook
 from ics_agent.app.chatwoot.jobs import WebhookJob
 from ics_agent.app.chatwoot.payload import parse_event
 from ics_agent.app.core.config import Settings
+from ics_agent.channels import config as channel_config
 
 
 @pytest.fixture
@@ -93,6 +95,13 @@ def test_webhook_answer_forwards_channel_before_faq_lookup(monkeypatch):
 def test_webhook_job_selects_channel_from_inbox_before_query(
     monkeypatch, caplog, inbox_id, channel_key, inbox_location,
 ):
+    # Inbox IDs are deployment data. Exercise routing against a controlled
+    # mapping without relying on or changing the user's channels.json.
+    inbox_by_channel = {"xingliao": "1", "yanliao": "2", "xingyingtong": "3", "wechat": "4"}
+    channels = tuple(replace(channel, inboxes=(("1", inbox_by_channel[channel.key]),)
+                             if channel.key in inbox_by_channel else ())
+                     for channel in channel_config.list_channels())
+    monkeypatch.setattr(channel_config, "list_channels", lambda: channels)
     payload = {
         "event": "message_created", "id": 1201,
         "account": {"id": 1},

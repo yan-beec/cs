@@ -10,6 +10,7 @@ services:
       ARCHIVE_INGEST_PASSWORD: ${ARCHIVE_INGEST_PASSWORD:?Set ARCHIVE_INGEST_PASSWORD in .env}
       ARCHIVE_READER_PASSWORD: ${ARCHIVE_READER_PASSWORD:?Set ARCHIVE_READER_PASSWORD in .env}
       ARCHIVE_QUALITY_PASSWORD: ${ARCHIVE_QUALITY_PASSWORD:?Set ARCHIVE_QUALITY_PASSWORD in .env}
+      ARCHIVE_ASSIGNMENT_PASSWORD: ${ARCHIVE_ASSIGNMENT_PASSWORD:-}
       TZ: Asia/Shanghai
     volumes:
       - archive_postgres_data:/var/lib/postgresql/data
@@ -58,6 +59,40 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional post-capture processing. Does not receive bot/admin/model credentials.
+  quality-worker:
+    profiles: [quality-query]
+    image: ics-agent:py310
+    pull_policy: never
+    restart: unless-stopped
+    command: ["python", "-m", "quality.processing.worker"]
+    environment:
+      ARCHIVE_POSTGRES_HOST: archive-postgres
+      ARCHIVE_POSTGRES_PORT: 5432
+      ARCHIVE_POSTGRES_DB: ${ARCHIVE_POSTGRES_DB:-ics_quality}
+      ARCHIVE_POSTGRES_SSLMODE: ${ARCHIVE_POSTGRES_SSLMODE:-prefer}
+      ARCHIVE_INGEST_USER: ${ARCHIVE_INGEST_USER:-archive_ingest}
+      ARCHIVE_INGEST_PASSWORD: ${ARCHIVE_INGEST_PASSWORD:?Set ARCHIVE_INGEST_PASSWORD in .env}
+      ARCHIVE_PROCESSOR_POOL_SIZE: ${ARCHIVE_PROCESSOR_POOL_SIZE:-2}
+      ARCHIVE_PROCESSOR_LEASE_SECONDS: ${ARCHIVE_PROCESSOR_LEASE_SECONDS:-120}
+      ARCHIVE_PROCESSOR_POLL_SECONDS: ${ARCHIVE_PROCESSOR_POLL_SECONDS:-2}
+      ARCHIVE_PROCESSOR_MAX_ATTEMPTS: ${ARCHIVE_PROCESSOR_MAX_ATTEMPTS:-8}
+      ARCHIVE_PROCESSOR_MAX_CONVERSATION_EVENTS: ${ARCHIVE_PROCESSOR_MAX_CONVERSATION_EVENTS:-20000}
+      ARCHIVE_PROCESSOR_MAX_CONVERSATION_BYTES: ${ARCHIVE_PROCESSOR_MAX_CONVERSATION_BYTES:-67108864}
+      CHATWOOT_SESSION_IDLE_TIMEOUT_SECONDS: ${CHATWOOT_SESSION_IDLE_TIMEOUT_SECONDS:-21600}
+    volumes:
+      - ./database/channels.json:/app/database/channels.json:ro
+    depends_on:
+      archive-postgres:
+        condition: service_healthy
+    mem_limit: 512m
+    cpus: 0.5
     logging:
       driver: json-file
       options:

@@ -55,6 +55,17 @@ bash /opt/cs-src/deploy/server/release.sh --source /opt/cs-src --target /opt/cs 
 
 脚本在构建成功后启动或更新共享镜像中的 `quality-receiver`，健康检查通过后才更新机器人；接收服务不健康则停止后续步骤。后续更新继续带该参数。完整路由、签名、网络及验收方式见[消息接收说明](../quality/capture/README.md)。默认发布流程仍不启动该可选服务。发布后在 Chatwoot Sidekiq 容器内检查 `http://服务器内网IP:3010/health` 返回 200，再将专用账户 Webhook 设置为 `http://服务器内网IP:3010/quality/webhooks/chatwoot`。
 
+## 启用归档查询与解析
+
+归档查询首版默认关闭。先按上述发布流程应用新增 `002_query` 迁移，并在同一份 `.env` 设置 `ARCHIVE_QUERY_ENABLED=true`；ICS 只使用已有 reader 凭据。发布构建成功后，从服务器运行目录显式启动或更新独立解析进程：
+
+```bash
+cd /opt/cs
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.archive.yml --profile quality-query up -d quality-worker
+```
+
+以后更新也需要执行该命令以让解析进程使用新镜像；现有 `release.sh` 的 `--with-receiver` 仅管理采集器。后台从 `/admin` 的“对话归档”进入，详细配置、资源限制和索引重建见[归档查询首版说明](../quality/query/README.md)。查询未开启或不可用不会改变现有客服入口。
+
 ## 压缩包更新
 
 按首次部署手册制作包含 `reminder/`、`quality/`、`deploy/`、`docker-compose.archive.yml` 的新后端包。服务器核对包后执行：

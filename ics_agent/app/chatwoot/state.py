@@ -16,6 +16,7 @@ CONVERSATION_CONTROL_TABLE = "chatwoot_conversation_control"
 CONTACT_BLOCK_TABLE = "chatwoot_contact_block"
 HANDOFF_CURSOR_TABLE = "chatwoot_handoff_round_robin"
 HANDOFF_RESERVATION_TABLE = "chatwoot_handoff_reservation"
+ASSIGNMENT_OUTBOX_TABLE = "chatwoot_assignment_outbox"
 _CONTROL_COLUMNS = """
     account_id, conversation_id, active_thread_id,
     last_chatwoot_status,
@@ -110,6 +111,7 @@ class ConversationControlRepository:
                                 DEFAULT FALSE,
                             handoff_notice_sent BOOLEAN NOT NULL DEFAULT FALSE,
                             handoff_trigger_message_id TEXT,
+                            handoff_round_id TEXT,
                             session_started_at TIMESTAMPTZ,
                             session_closed_at TIMESTAMPTZ,
                             last_user_message_at TIMESTAMPTZ,
@@ -141,6 +143,12 @@ class ConversationControlRepository:
                         ADD COLUMN IF NOT EXISTS handoff_trigger_message_id TEXT
                         """.strip()
                     )
+                    cursor.execute(
+                        f"ALTER TABLE {CONVERSATION_CONTROL_TABLE} "
+                        "ADD COLUMN IF NOT EXISTS handoff_round_id TEXT"
+                    )
+                    # Never infer an old handoff's round from processing clocks.
+                    # Idle rollover keeps this proof attached to its original round.
                     for column in (
                         "session_started_at", "session_closed_at",
                         "last_user_message_at", "last_status_event_at",
@@ -251,11 +259,110 @@ class ConversationControlRepository:
                             handoff_assignment_applied = FALSE,
                             handoff_notice_sent = FALSE,
                             handoff_trigger_message_id = NULL,
+                            handoff_round_id = NULL,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE handoff_required = TRUE
                           AND last_chatwoot_status = 'resolved'
                         """.strip()
                     )
+                    cursor.execute(
+                        f"""
+                        CREATE TABLE IF NOT EXISTS {ASSIGNMENT_OUTBOX_TABLE} (
+                            account_id TEXT NOT NULL,
+                            conversation_id TEXT NOT NULL,
+                            business_round_id TEXT NOT NULL,
+                            agent_id TEXT NOT NULL,
+                            trigger_message_id TEXT NOT NULL,
+                            session_started_at TIMESTAMPTZ NOT NULL,
+                            assigned_at TIMESTAMPTZ,
+                            recorded_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                            evidence_kind TEXT NOT NULL CHECK (
+                                evidence_kind IN ('assignment_applied', 'current_control_backfill')
+                            ),
+                            delivered_at TIMESTAMPTZ,
+                            delivery_error_code TEXT CHECK (
+                                delivery_error_code IN ('evidence_conflict', 'invalid_evidence')
+                            ),
+                            delivery_failed_at TIMESTAMPTZ,
+                            PRIMARY KEY (account_id, conversation_id, business_round_id)
+                        )
+                        """.strip()
+                    )
+                    cursor.execute(
+                        f"""
+                        ALTER TABLE {ASSIGNMENT_OUTBOX_TABLE}
+                            ADD COLUMN IF NOT EXISTS recorded_at TIMESTAMPTZ,
+                            ADD COLUMN IF NOT EXISTS evidence_kind TEXT,
+                            ADD COLUMN IF NOT EXISTS delivery_error_code TEXT,
+                            ADD COLUMN IF NOT EXISTS delivery_failed_at TIMESTAMPTZ,
+                            ALTER COLUMN assigned_at DROP NOT NULL,
+                            ALTER COLUMN assigned_at DROP DEFAULT
+                        """.strip()
+                    )
+                    # Early deployments had only assigned_at. Some may also
+                    # have created_at; reading the row as JSON makes its absence
+                    # safe. Backfill recording metadata without rewriting the
+                    # original owner, business round or actual assignment time.
+                    cursor.execute(
+                        f"""
+                        UPDATE {ASSIGNMENT_OUTBOX_TABLE} AS snapshot
+                        SET recorded_at = COALESCE(
+                            (to_jsonb(snapshot) ->> 'created_at')::timestamptz,
+                            assigned_at, CURRENT_TIMESTAMP
+                        )
+                        WHERE recorded_at IS NULL
+                        """.strip()
+                    )
+                    cursor.execute(
+                        f"""
+                        UPDATE {ASSIGNMENT_OUTBOX_TABLE}
+                        SET evidence_kind = CASE WHEN assigned_at IS NULL
+                            THEN 'current_control_backfill' ELSE 'assignment_applied' END
+                        WHERE evidence_kind IS NULL
+                        """.strip()
+                    )
+                    cursor.execute(
+                        f"""
+                        ALTER TABLE {ASSIGNMENT_OUTBOX_TABLE}
+                            ALTER COLUMN recorded_at SET DEFAULT CURRENT_TIMESTAMP,
+                            ALTER COLUMN recorded_at SET NOT NULL,
+                            ALTER COLUMN evidence_kind SET NOT NULL
+                        """.strip()
+                    )
+                    cursor.execute(
+                        f"""
+                        DO $assignment_outbox_upgrade$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM pg_constraint
+                                WHERE conrelid='{ASSIGNMENT_OUTBOX_TABLE}'::regclass
+                                  AND conname='{ASSIGNMENT_OUTBOX_TABLE}_evidence_kind_check'
+                            ) THEN
+                                ALTER TABLE {ASSIGNMENT_OUTBOX_TABLE}
+                                    ADD CONSTRAINT {ASSIGNMENT_OUTBOX_TABLE}_evidence_kind_check
+                                    CHECK (evidence_kind IN ('assignment_applied', 'current_control_backfill'));
+                            END IF;
+                            IF NOT EXISTS (
+                                SELECT 1 FROM pg_constraint
+                                WHERE conrelid='{ASSIGNMENT_OUTBOX_TABLE}'::regclass
+                                  AND conname='{ASSIGNMENT_OUTBOX_TABLE}_delivery_error_code_check'
+                            ) THEN
+                                ALTER TABLE {ASSIGNMENT_OUTBOX_TABLE}
+                                    ADD CONSTRAINT {ASSIGNMENT_OUTBOX_TABLE}_delivery_error_code_check
+                                    CHECK (delivery_error_code IN ('evidence_conflict', 'invalid_evidence'));
+                            END IF;
+                        END;
+                        $assignment_outbox_upgrade$
+                        """.strip()
+                    )
+                    cursor.execute(
+                        f"CREATE INDEX IF NOT EXISTS {ASSIGNMENT_OUTBOX_TABLE}_deliverable_idx "
+                        f"ON {ASSIGNMENT_OUTBOX_TABLE} (recorded_at, account_id, conversation_id) "
+                        "WHERE delivered_at IS NULL AND delivery_error_code IS NULL"
+                    )
+                    # Upgrade only a still-open, successful current assignment.
+                    # Ended/released rows cannot establish historical ownership.
+                    self._record_assignment_snapshot(cursor, backfill=True)
                 finally:
                     cursor.close()
         finally:
@@ -456,11 +563,11 @@ class ConversationControlRepository:
                             last_chatwoot_status, ai_enabled,
                             handoff_required, handoff_reason,
                             handoff_at, last_user_message_id,
-                            handoff_trigger_message_id
+                            handoff_trigger_message_id, handoff_round_id
                         )
                         VALUES (
                             %s, %s, %s, %s, FALSE, TRUE, %s,
-                            CURRENT_TIMESTAMP, %s, %s
+                            CURRENT_TIMESTAMP, %s, %s, %s
                         )
                         ON CONFLICT (account_id, conversation_id)
                         DO NOTHING
@@ -473,6 +580,7 @@ class ConversationControlRepository:
                             clean_reason,
                             message_id,
                             message_id,
+                            clean_thread_id,
                         ),
                     )
                     inserted = cursor.rowcount == 1
@@ -538,6 +646,7 @@ class ConversationControlRepository:
                                 ai_enabled = FALSE,
                                 handoff_required = TRUE,
                                 handoff_reason = %s,
+                                handoff_round_id = active_thread_id,
                                 assigned_team_id = NULL,
                                 assigned_agent_id = NULL,
                                 last_chatwoot_status = COALESCE(
@@ -1000,6 +1109,8 @@ class ConversationControlRepository:
         action: str,
         message_id: str | None = None,
         on_mark: Callable[[Any, ConversationControl], bool] | None = None,
+        expected_round_id: str | None = None,
+        expected_agent_id: str | None = None,
     ) -> bool:
         fields = {
             "conversation_updated": "handoff_conversation_updated",
@@ -1011,6 +1122,11 @@ class ConversationControlRepository:
         column = fields.get(action)
         if column is None:
             raise ValueError(f"Unsupported handoff action: {action}")
+        scoped_assignment = action == "assignment_applied" and (
+            expected_round_id is not None or expected_agent_id is not None
+        )
+        if scoped_assignment and (not expected_round_id or not expected_agent_id):
+            raise ValueError("Assignment success requires both the expected business round and agent")
         account_id, conversation_id = _validate_reference(
             account_id,
             conversation_id,
@@ -1027,6 +1143,16 @@ class ConversationControlRepository:
                         )
                         if latest is None or not on_mark(cursor, latest):
                             return False
+                    assignment_scope = ""
+                    mark_values = (message_id, account_id, conversation_id)
+                    if scoped_assignment:
+                        assignment_scope = """
+                            AND active_thread_id=%s AND assigned_agent_id=%s
+                            AND handoff_required=TRUE AND session_started_at IS NOT NULL
+                            AND (session_closed_at IS NULL OR session_closed_at < session_started_at)
+                            AND COALESCE(last_chatwoot_status,'') <> 'resolved'
+                        """
+                        mark_values += (expected_round_id, expected_agent_id)
                     cursor.execute(
                         f"""
                         UPDATE {CONVERSATION_CONTROL_TABLE}
@@ -1037,15 +1163,59 @@ class ConversationControlRepository:
                             ),
                             updated_at = CURRENT_TIMESTAMP
                         WHERE account_id = %s AND conversation_id = %s
+                        {assignment_scope}
                         """.strip(),
-                        (message_id, account_id, conversation_id),
+                        mark_values,
                     )
+                    if scoped_assignment and cursor.rowcount == 0:
+                        return False
+                    if action == "assignment_applied":
+                        # Snapshot the ICS selection in the same successful local
+                        # transaction. Chatwoot reassignment cannot overwrite it.
+                        self._record_assignment_snapshot(cursor, account_id, conversation_id)
                 finally:
                     cursor.close()
         finally:
             connection.close()
 
         return True
+
+    @staticmethod
+    def _record_assignment_snapshot(
+        cursor: Any, account_id: str | None = None, conversation_id: str | None = None,
+        *, backfill: bool = False,
+    ) -> None:
+        scope = " AND account_id=%s AND conversation_id=%s" if account_id is not None else ""
+        upgrade_scope = """
+            AND handoff_round_id = active_thread_id
+        """ if backfill else ""
+        cursor.execute(
+            f"""
+            INSERT INTO {ASSIGNMENT_OUTBOX_TABLE}
+                (account_id, conversation_id, business_round_id, agent_id,
+                 trigger_message_id, session_started_at, assigned_at, evidence_kind)
+            SELECT account_id, conversation_id, active_thread_id, assigned_agent_id,
+                   handoff_trigger_message_id, session_started_at,
+                   {"NULL" if backfill else "CURRENT_TIMESTAMP"},
+                   {"'current_control_backfill'" if backfill else "'assignment_applied'"}
+            FROM {CONVERSATION_CONTROL_TABLE}
+            WHERE handoff_assignment_applied=TRUE AND handoff_required=TRUE
+              AND NULLIF(btrim(active_thread_id),'') IS NOT NULL
+              AND CASE WHEN assigned_agent_id ~ '^[0-9]{{1,19}}$'
+                       THEN assigned_agent_id::numeric BETWEEN 1 AND 9223372036854775807
+                       ELSE FALSE END
+              AND CASE WHEN handoff_trigger_message_id ~ '^[0-9]{{1,19}}$'
+                       THEN handoff_trigger_message_id::numeric BETWEEN 1 AND 9223372036854775807
+                       ELSE FALSE END
+              AND session_started_at IS NOT NULL
+              AND (session_closed_at IS NULL OR session_closed_at < session_started_at)
+              AND COALESCE(last_chatwoot_status,'') <> 'resolved'
+              {upgrade_scope}
+              {scope}
+            ON CONFLICT (account_id, conversation_id, business_round_id) DO NOTHING
+            """.strip(),
+            (account_id, conversation_id) if account_id is not None else (),
+        )
 
     def mark_ai_message(
         self,
@@ -1129,6 +1299,7 @@ class ConversationControlRepository:
                 handoff_assignment_applied = FALSE,
                 handoff_notice_sent = FALSE,
                 handoff_trigger_message_id = NULL,
+                handoff_round_id = NULL,
                 updated_at = CURRENT_TIMESTAMP
             WHERE account_id = %s AND conversation_id = %s
             """.strip(),

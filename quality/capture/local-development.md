@@ -117,7 +117,7 @@ Set-Location D:\project\CS
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.archive.yml exec -T archive-postgres psql -U archive_reader -d ics_quality -c "SELECT e.id,e.event_type,e.account_id,e.conversation_id,e.message_id,e.received_at,j.status FROM archive.events e JOIN ops.event_jobs j ON j.event_id=e.id WHERE e.source_key='chatwoot-local' ORDER BY e.id DESC LIMIT 20;"
 ```
 
-数据库名如不是 `ics_quality`，替换为实际值。预期有客户、机器人、人工的 `message_created`，以及编辑/删除产生的 `message_updated`。任务状态目前为 `queued`，因为整理消息的工作进程尚未开发。
+数据库名如不是 `ics_quality`，替换为实际值。预期有客户、机器人、人工的 `message_created`，以及编辑/删除产生的 `message_updated`。仅启用捕获时任务为 `queued`；按[归档查询说明](../query/README.md)应用 `002_query` 并启用 `quality-worker` 后，任务应逐步变成 `completed`。解析进程停止期间捕获可继续，原始事件落库后排队。
 
 要检查原文与修改/删除版本，在下面 SQL 中将 `123` 换成测试消息的实际 ID：
 
@@ -125,7 +125,7 @@ docker compose --env-file .env -f docker-compose.yml -f docker-compose.archive.y
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.archive.yml exec -T archive-postgres psql -U archive_reader -d ics_quality -c "SELECT id,event_type,payload->>'content' AS content,received_at FROM archive.events WHERE source_key='chatwoot-local' AND account_id=1 AND message_id=123 ORDER BY id;"
 ```
 
-账号 ID 也按实际修改。应能看到最初内容仍在，后续版本另行追加。具体事件数量取决于 Chatwoot 实际发送的通知；删除观察只有源端发出后才会出现。附件目前只归档链接，不复制文件，后台消息查阅页面尚未实现。
+账号 ID 也按实际修改。应能看到最初内容仍在，后续版本另行追加。具体事件数量取决于 Chatwoot 实际发送的通知；删除观察只有源端发出后才会出现。附件目前只归档链接，不复制文件。启用查询后可在本机 `http://127.0.0.1:3001/admin` 的“对话归档”查看用户历史、接待轮次、坐席、收件箱、版本并导出 Excel。
 
 如果没有入库，先看接收服务日志中的签名、账号、数据库等错误，并在 Chatwoot Sidekiq 日志核对实际投递。不要把完整客户消息或 Secret 贴到日志输出中。
 

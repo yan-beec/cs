@@ -41,3 +41,16 @@ for quality_migration in "$quality_database_directory"/migrations/*.sql; do
         exit 1
     fi
 done
+
+# Optional assignment delivery uses its own role. Existing installations keep
+# working without enabling this feature or giving ICS processor credentials.
+case "${ARCHIVE_ASSIGNMENT_PASSWORD:-}" in
+    ''|REPLACE_*|change-me*) ;;
+    *)
+        psql -X --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
+            --set ON_ERROR_STOP=1 <<'SQL'
+\getenv assignment_password ARCHIVE_ASSIGNMENT_PASSWORD
+ALTER ROLE archive_assignment LOGIN PASSWORD :'assignment_password';
+SQL
+        ;;
+esac

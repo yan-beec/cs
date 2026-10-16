@@ -233,5 +233,30 @@ BEGIN
     END;
 END
 $check$;
+SET LOCAL ROLE archive_assignment;
+DO $check$
+BEGIN
+    IF NOT has_table_privilege(current_user, 'archive.events', 'SELECT')
+       OR NOT has_table_privilege(current_user, 'archive.events', 'INSERT')
+       OR NOT has_table_privilege(current_user, 'ops.event_jobs', 'INSERT') THEN
+        RAISE EXCEPTION 'FAIL: assignment delivery cannot append durable events';
+    END IF;
+    BEGIN
+        UPDATE archive.events SET event_type = 'overwritten' WHERE FALSE;
+        RAISE EXCEPTION 'FAIL: assignment delivery can overwrite original events';
+    EXCEPTION WHEN insufficient_privilege THEN NULL;
+    END;
+    BEGIN
+        UPDATE ops.event_jobs SET attempts = attempts + 1 WHERE FALSE;
+        RAISE EXCEPTION 'FAIL: assignment delivery can mutate processing jobs';
+    EXCEPTION WHEN insufficient_privilege THEN NULL;
+    END;
+    BEGIN
+        DELETE FROM ops.round_index WHERE FALSE;
+        RAISE EXCEPTION 'FAIL: assignment delivery can mutate query projections';
+    EXCEPTION WHEN insufficient_privilege THEN NULL;
+    END;
+END
+$check$;
 ROLLBACK;
 SELECT 'PASS: transactional schema and privilege checks; sample rows rolled back' AS verification;

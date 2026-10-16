@@ -1,0 +1,137 @@
+# 对话归档查询首版
+
+查询接口和页面共用 ICS 的 FastAPI、`/admin` 登录及渠道配置。原始 Webhook 接收入口和确认机制保持原样。新增工作进程消费归档库的持久化任务，追加消息、会话、评价快照，生成可重建的用户、轮次和坐席查询索引。
+
+## 本版功能
+
+- 按轮次或按用户浏览；从任一轮进入用户完整历史，历史查询不继承列表筛选。
+- 筛选来源/账号、渠道、用户、会话号、轮次号、接待类型、坐席、时间、评价、关键词、消息角色、私密消息和附件。
+- 坐席筛选默认按本轮责任坐席，即 ICS 本轮成功分配时记录的坐席，后续 Chatwoot 改派和实际回复人不改变责任；另可查询全部实际回复、历史分配和会话当前分配（非责任），并强制指定来源与账号，避免编号跨账号碰撞。
+- 自动读取当前配置的 Chatwoot 账号完整坐席、收件箱目录；收件箱按真实名称和编号筛选，ICS 业务渠道继续使用现有明确 Inbox 映射，两者独立显示。历史已删除坐席仍可从归档记录中筛选。
+- 消息按逻辑消息展示，保留编辑、删除版本和原始事件下载；关键词也检索已观察到的历史正文。
+- 评价按邀约和明确的轮次边界关联，支持 Chatwoot `content_attributes.submitted_values.csat_survey_response` 中的评分和文字反馈。后台展示已提交的评分和反馈，不再提供待关联评价栏或未反馈邀约筛选；无法证明归属的记录仍保留，不猜测绑定到最新轮次。
+- 支持 Excel 导出筛选结果、用户完整历史和单轮完整消息，涵盖全部分页。
+- 质检查询关闭或归档库不可用时，不影响原 ICS 健康检查和客服处理；后台仅归档区域显示不可用。
+
+本版没有模型评分、人工复核、Chatwoot 历史 API 补录或附件文件独立下载。已捕获的附件元数据和源链接可以查看，但不能代表文件已经独立归档。工作进程不会向 Chatwoot 发送消息或修改其会话。
+
+## 配置和启用
+
+继续使用现有 `.env`，保留 `POSTGRES_*` 及现有采集配置。新增配置可参考 `.env.example`，其中 `ARCHIVE_QUERY_ENABLED` 默认 `false`。
+
+1. 备份已有归档库，执行现有迁移入口 `quality/deploy/migrate.sh`，应用新增 `002_query`；不要编辑或重新生成已应用的 `001_capture`。
+2. 构建含新代码的 ICS 镜像，启动独立解析工作进程。
+3. 在运行环境设 `ARCHIVE_QUERY_ENABLED=true`，使用现有 `ARCHIVE_READER_USER/PASSWORD`，重建或重启 ICS 以加载配置。
+4. 登录 `/admin`，进入“对话归档”检查任务积压和归档查询。首次解析旧的 queued 事件可能需要等待。
+
+Docker 解析进程：
+
+```sh
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.archive.yml build ics-agent
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.archive.yml --profile quality-query up -d quality-worker
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.archive.yml up -d ics-agent
+```
+
+该进程只接收归档 ingest 凭据，使用自己的连接池、CPU/内存限制及重试状态。ICS 仍只有归档 reader 凭据，归档管理和评分凭据继续被屏蔽。部署现有接收器时继续沿用原 `quality-capture` profile，两者可同时运行。
+
+直接使用本机 cs 环境：
+
+```powershell
+& 'C:\Users\lenovo\Anaconda3\envs\cs\python.exe' -m quality.processing.worker
+```
+
+本机 Python 的 `ARCHIVE_POSTGRES_HOST/PORT` 必须为实际可达地址；Docker 内的 `archive-postgres:5432` 不能原样用于宿主机。不要为此把归档库连接改成 ICS 业务库。
+
+本地使用源码热重载时，`docker-compose.override.yml` 现已包含 `quality/` 挂载。旧容器需要按相同 Compose 文件重新创建一次才能得到新增挂载；只修改文件或重启旧容器不会更新挂载配置。不要仅挂载新版 `ics_agent/` 而让容器继续使用镜像中的旧版 `quality/`。
+
+查询池默认 2 个连接、2 个专用执行线程，有短池等待和查询超时；工作进程默认独立 2 个连接。空闲切轮阈值读取现有 `CHATWOOT_SESSION_IDLE_TIMEOUT_SECONDS`，不另设一套不同的客服轮次时长。
+
+目录复用现有 Chatwoot 客户端、`CHATWOOT_BASE_URL`、`CHATWOOT_ACCOUNT_ID`，以及 `CHATWOOT_CONTACT_API_TOKEN`（优先）或 `CHATWOOT_API_TOKEN` 用户凭据；AgentBot Token 不能替代用户凭据。目录仅关联当前 `ARCHIVE_SOURCE_KEY`，不会把同号坐席或收件箱套到其他来源。每个 ICS 进程使用一个独立目录线程，成功缓存 5 分钟、失败后至少间隔 60 秒再试；每次请求超时 2 秒、响应最多 2 MiB、每类最多 2000 项。目录不可用时保留最近成功结果和已归档选项，不影响聊天捕获、解析或其他查询。
+
+本地四份 Compose 文件包含 `quality/deploy/compose.local.yml` 时，解析进程也挂载当前 `quality/` 和共享代码。解析规则修改后重启工作进程；挂载配置首次增加时需要重新创建该容器。已有事件不会因修改解析代码自动重算，须按下面的重放步骤更新派生索引。
+
+## Excel 导出
+
+列表中的“导出筛选结果（Excel）”先弹出二次确认，再按当前查看模式导出，使用已经点击查询并生效的筛选条件，包含全部分页，不受当前页及 `page`、`page_size` 限制。取消确认不会发起导出请求。弹窗和按钮提示会说明当前导出范围：
+
+| 模式（`mode`） | 导出范围 | 工作表 |
+| --- | --- | --- |
+| `rounds`（默认） | 筛选选中的全部轮次，以及这些轮次的完整已归档消息；时间、关键词、消息角色等条件只用于选中轮次，不再次裁剪轮次内消息 | 导出说明、轮次概览、消息明细 |
+| `customers` | 筛选选中的全部用户，以及这些用户跨会话的完整已归档历史，包含未归轮消息；历史不再次套用列表时间、渠道、关键词等筛选 | 导出说明、用户概览、轮次概览、消息明细 |
+
+`unlinked-ratings` 仅保留为兼容的后台 API 模式，页面已移除入口。
+
+用户详情中的“下载完整历史（Excel）”只按当前用户标识导出其完整历史；轮次详情中的“导出本轮（Excel）”只按当前轮次标识导出完整消息。两个详情导出均需确认，独立于列表模式、筛选和详情分页，工作表分别与 `customers`、`rounds` 模式一致。轮次概览包含已提交的评分和文字反馈。
+
+“消息明细”按逻辑消息导出当前最新观察正文，附带创建事件是否捕获、删除状态和证据引用；它不逐行导出所有编辑或删除观察版本。消息观察版本和原始 JSON 可在后台另行查看或下载，未捕获的早期原文无法由导出恢复。长正文按顺序拆分为多行，Excel 内的“导出说明”记录拼接规则、数据范围、筛选和数量；附件仅包含元数据及原始链接。
+
+导出共用现有管理员鉴权和归档 reader 凭据，按需使用独立的单线程、单连接导出资源，不占用交互查询池或 ICS 业务连接池。每个 ICS 进程同一时间只生成一份导出，忙时返回 `429`。此功能使用已有查询表，不需要新增数据库迁移。
+
+可在现有 `.env` 配置以下参数，重新加载 ICS 后生效：
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `ARCHIVE_EXPORT_MAX_ENTITIES` | `20000` | 选中轮次数和用户数各自的上限；待关联评价模式为评价数上限 |
+| `ARCHIVE_EXPORT_MAX_MESSAGES` | `100000` | 逻辑消息数上限，长正文分段后的工作表行数另受 Excel 限制 |
+| `ARCHIVE_EXPORT_MAX_BYTES` | `134217728`（128 MiB） | 导出索引记录的 JSON 估算预算，不是最终 `.xlsx` 文件大小 |
+| `ARCHIVE_EXPORT_TIMEOUT_SECONDS` | `120` | 导出生成时限，单位为秒 |
+
+超过记录、JSON 预算、生成时限或 Excel 单元格/工作表行数限制时，整次导出明确失败，不静默截断，也不返回成功的部分文件。缩小筛选可减少所选轮次或用户；用户模式一旦选中某个用户，仍会导出其完整历史。
+
+## 重放与统计口径
+
+固定责任需要先应用 `003_assignment_writer`，配置独立随机 `ARCHIVE_ASSIGNMENT_PASSWORD`，再启用 `ARCHIVE_ASSIGNMENT_SYNC_ENABLED=true` 并重新加载 ICS。ICS 在分配成功事务中写入按业务轮唯一的 `chatwoot_assignment_outbox`；独立后台使用源库和归档库各一个连接，每批最多 20 条同步，归档事务提交后才确认源记录。归档不可用时保留待同步记录并退避重试，不调用 Chatwoot 或阻塞客服分配。归档账号 `archive_assignment` 仅可追加事件和任务，不能改原始记录或查询投影。
+
+分配事件以 `ics_assignment_recorded` / `backfill` 独立归档，不伪装成 Chatwoot 聊天消息。通过来源、账号、会话及触发消息精确关联轮次。升级仅能从当前仍活跃、已成功分配且持久记录了同一业务轮标识的 ICS 控制行补录；没有该证明的旧控制行不推断责任。补录的分配时间未知时留空，不能将补录时间冒充分配时间。关闭同步时，新分配事实仍在 ICS 本地持久保存，恢复后继续送达。
+
+后台状态会显示 ICS 责任记录待同步和需核查数量。明确的数据冲突会保留原记录并隔离，以便后续合法记录继续同步；连接中断则退避重试。状态数量最多每 60 秒刷新一次，并提供采样时间。同步异常不禁用聊天历史查询；尚未送达的责任记录可能暂未显示。核查恢复方式见 [分配同步说明](../assignment/README.md)。
+
+处理器从 `ops.event_jobs` 领取数据库租约；快照追加、会话索引重建和任务完成在同一事务提交。进程退出后任务可在租约过期后重新领取。单个会话使用数据库锁，支持多个工作者且不会重复累计消息数。
+
+需要重新计算派生索引时，显式选择来源：
+
+```powershell
+& 'C:\Users\lenovo\Anaconda3\envs\cs\python.exe' -m quality.processing.worker --rebuild --source-key chatwoot-main
+```
+
+可额外传 `--account-id`、`--conversation-id` 限定范围。重放不会更新或删除 `archive.*` 原始证据。失败任务的错误仅保留异常类别，避免聊天内容或数据库凭据进入日志；重放可用于修复规则或配置后重新处理。
+
+首版为保证乱序处理可重复，会在重建一个会话时重放它的已归档事件，并批量完成已读范围内的可处理任务。因此单次处理成本随该会话历史增长；`ARCHIVE_PROCESSOR_MAX_CONVERSATION_EVENTS` 默认限制 20000 个事件，`ARCHIVE_PROCESSOR_MAX_CONVERSATION_BYTES` 默认限制 64 MiB 载荷，超限任务会明确失败，不能静默截断历史。大量长期会话应在后续版本增加增量检查点。
+
+- 用户默认按来源、账号和 contact ID 关联，同名、同手机号不自动合并；未经验证的业务标识不作为合并依据。
+- 轮次由客户消息开始；已解决后的新咨询、距最后客户消息达到空闲阈值的咨询开启新轮。转人工、改派、私密备注、评价与消息编辑不另开轮。
+- 空闲切分不等于 Chatwoot 已解决，也不自动终止人工接待；新的空闲轮可继承人工接管状态。
+- 接待分类按本轮已捕获的事件动态统计：新轮默认“纯 AI 接待”，无需等待 AI 回复或轮次结束；出现明确转人工请求、确认接管或人工公开回复后改为“人工介入”，同轮后续 AI 回复不改回纯 AI。
+- 接待分类仅提供“纯 AI 接待”和“人工介入”，不再使用“进行中 / 尚未定型”作为第三类。轮次的未结束、已解决和空闲切分状态独立保留，6 小时空闲阈值仅用于分轮，不再限制纯 AI 筛选。`classification_finalized` 为兼容字段，仅表示轮次已结束。
+- “人工介入”包含已请求转人工的轮次，不表示人工已接入；转人工结果仍分别记录 requested / completed，实际回复构成、接管后未回复单独展示。仅分配负责人或私密备注不等同于触发转人工。
+- 消息发送时间未知时保留未知，完整历史仍显示未归轮记录。用户完整历史和消息版本均分页展示，不因第一页上限丢弃后续记录。
+- 评价解析兼容顶层及 `content_attributes.submitted_values.csat_survey_response` 结构。评价卡通过邀请消息及关闭时间关联；关闭时间允许最多 1 毫秒的序列化误差，但必须唯一匹配已解决轮次，冲突或歧义继续保留原始记录，不绑定到最新轮。已归档事件重放可恢复此前漏读的评分和反馈，已有 `archive.*` 快照不覆盖。
+- 时间存储带时区；页面输入和显示均采用北京时间。范围的结束时间不包含该时刻。
+- 责任坐席按本轮首次确认的 ICS 成功分配记录固定；后续 Chatwoot 改派、其他坐席回复、私密备注、机器人回复、评价卡及消息编辑都不改变责任。不同轮次分别关联 ICS 分配事件，不从上一轮自动继承。
+- 明确 ICS 分配的依据为 `ics_assignment`；缺少可靠记录为 `assignment_unobserved`，相互矛盾的证据为 `assignment_conflict`，后两者责任坐席留空。即使责任坐席未公开回复，只要本轮 ICS 已成功分配，仍归该坐席。实际发送人、发送时间、内容及编辑历史保持真实。
+- 默认 `agent_scope=responsible` 在轮次内匹配责任坐席；`replied` 查询该轮所有实际回复坐席，`assigned` 查询历史分配（非责任），`current` 查询会话最新分配（非责任），可覆盖该会话的历史轮次。责任、实际回复、历史分配与其他轮次条件必须在同一轮符合。
+- 更新责任规则后需重放已有来源，生成 `responsible_agent_id/name`、`responsible_assigned_at`、`responsibility_event_id`、`responsibility_external_round_id`、`responsibility_trigger_message_id` 和 `responsibility_basis`。真实最后人工回复使用独立的 `last_public_agent_id/name`、`last_public_reply_at`、`last_public_message_id`，不作为责任依据。重放不覆盖 `archive.*` 原始记录。
+- 历史普通 Chatwoot 分配快照不能证明分配来自 ICS；旧评价卡的 `ics_assigned_agent_id` 可能是结束时坐席，也不能冒认为最初分配。缺少可靠证据的已结束历史轮次保持未记录，不能由重放补造。
+- 关键词、消息角色、消息时间及“有附件”必须在同一条消息中匹配；“无附件”指符合这些消息条件的范围内没有附件，不被客户其他会话的附件干扰。
+
+## 数据表和只读接口
+
+新增迁移包含 `ops.customer_index`、`ops.identity_map`、`ops.round_index`、`ops.message_index`、`ops.round_agent_index`、`ops.rating_index` 和只追加的 `archive.rating_snapshots`。原始消息、会话快照和附件继续使用现有表。用户原始 contact 身份、来源和证据引用均保留。
+
+所有 `/admin/api/quality/*` 接口使用现有管理员鉴权；不另建账号系统：
+
+| 路径 | 用途 |
+| --- | --- |
+| `/status` | 独立查询状态、任务统计和最近接收时间 |
+| `/filters` | 已归档来源、账号，Chatwoot 完整坐席/收件箱及历史选项，ICS 业务渠道和目录同步状态 |
+| `/rounds`、`/customers` | 筛选与分页 |
+| `/unlinked-ratings` | 尚无法证明所属轮次的评价分页列表 |
+| `/rounds/{round_id}` | 单轮消息与坐席信息 |
+| `/customers/{customer_id}/history` | 用户完整历史，包括未归轮消息 |
+| `/messages/{message_id}/versions` | 指定来源、账号下的消息观察版本 |
+| `/events/{event_id}` | 指定来源、账号下的原始 JSON 字节下载 |
+| `/export.xlsx?mode=rounds\|customers\|unlinked-ratings` | 按当前模式及已应用筛选导出全部结果，`mode` 默认 `rounds` |
+| `/customers/{customer_id}/export.xlsx` | 单个用户完整历史导出，独立于列表筛选和分页 |
+| `/rounds/{round_id}/export.xlsx` | 单轮完整消息导出，独立于列表筛选和分页 |
+
+查询功能恢复连接和数据库迁移检查在自身后台任务内执行，不阻塞 ICS 启动。关闭功能只需关闭查询开关和停止 `quality-worker`；已有采集器可继续保存原始事件，原文和任务不会因关闭查询而清除。

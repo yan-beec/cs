@@ -1,6 +1,12 @@
 # Local development only. Combine after docker-compose.yml and docker-compose.archive.yml.
 # Paths are relative to the first Compose file (the ICS project root).
 services:
+  quality-worker:
+    volumes:
+      - ./quality:/app/quality:ro
+      - ./ics_agent:/app/ics_agent:ro
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
   quality-receiver:
     volumes:
       - ./quality:/app/quality:ro

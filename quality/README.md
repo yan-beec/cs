@@ -2,7 +2,7 @@
 
 `quality/` 是现有 ICS 项目中的功能模块。后续采集、归档、查询与每日模型质检代码统一在此维护，公共能力继续与 ICS 共享，不建立第二套账号、渠道配置、Chatwoot 客户端或模型调用框架。
 
-当前交付包含数据库迁移、权限、服务器发布集成和原始 Webhook 接收。接收代码位于 `quality/capture/`，配置与启用步骤见[消息接收说明](capture/README.md)。异步解析工作进程、附件复制和后台查询页面为后续步骤。
+当前交付包含数据库迁移、权限、服务器发布集成、原始 Webhook 接收，以及归档后的用户历史、轮次、坐席、评价和消息版本查询。接收代码位于 `quality/capture/`，配置见[消息接收说明](capture/README.md)；新增独立工作进程位于 `quality/processing/`，后台复用 ICS 的 `/admin`。启用和使用步骤见[归档查询首版说明](query/README.md)，解析口径见[处理器说明](processing/README.md)。附件文件复制、历史 API 补录和模型评分为后续步骤。
 
 ## 共享边界
 
@@ -25,6 +25,10 @@
 | `ops.event_jobs` | 已持久化事件的处理、重试和租约状态 |
 | `ops.attachment_jobs` | 附件下载、重试和租约状态 |
 | `ops.conversation_index` | 可重建的会话查询索引，便于后台按渠道、用户、客服和时间查阅 |
+| `ops.customer_index`、`ops.identity_map` | 来源和账号内的客户身份索引，不按同名或手机号自动合并 |
+| `ops.round_index`、`ops.round_agent_index` | 会话内的咨询轮次、接待分类、实际回复坐席和分配记录 |
+| `ops.message_index` | 逻辑消息查询视图，关联不可变原始版本和所属轮次 |
+| `archive.rating_snapshots`、`ops.rating_index` | 不可变评价观察和可重算关联；无法证明归属的评价独立展示 |
 | `ops.backfill_jobs` | 历史及遗漏补录范围、进度和重试 |
 | `ops.schema_migrations` | 仅维护账号可读写的迁移版本与校验值 |
 
@@ -34,13 +38,16 @@
 
 | 账号 | 原始证据 `archive.*` | 当前采集任务与查询索引 | 迁移历史 |
 | --- | --- | --- | --- |
-| `archive_ingest` | 查询、追加 | 查询、新增、更新 | 无权限 |
+| `archive_ingest` | 查询、追加 | 查询、新增、更新；轮次等派生投影允许删除以便事务重建 | 无权限 |
 | `archive_reader` | 只读 | 只读 | 无权限 |
+| `archive_assignment` | 仅查询、追加事件 | 仅查询、新增事件任务 | 无权限 |
 | `archive_quality` | 只读 | 只读 | 无权限 |
 | `archive_owner` | 对象所有者，不可直接登录 | 维护 | 维护 |
 | `archive_admin` | 受控管理账号 | 维护 | 维护 |
 
 运行账号不能修改、删除、清空原始证据表，也不能建表或提权为对象所有者。质检账号不能更改采集队列；未来质检任务表另行授权。最高权限维护账号仍能维护数据库，不将其凭据交给日常应用。
+
+`003_assignment_writer` 为 ICS 固定责任记录增加独立的 `archive_assignment` 账号，不授予消息快照、派生索引或任务更新权限。启用 `ARCHIVE_ASSIGNMENT_SYNC_ENABLED=true` 前配置独立随机 `ARCHIVE_ASSIGNMENT_PASSWORD` 并执行迁移；迁移入口从环境安全设置该账号密码。ICS 分配成功后先在自己的数据库持久保存按轮唯一的快照，再用受限账号异步追加到归档库，归档失败不阻断客服分配。详见[责任口径与配置](query/README.md)。
 
 ## 服务器自动迁移
 
