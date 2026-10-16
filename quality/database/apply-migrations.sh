@@ -54,3 +54,15 @@ ALTER ROLE archive_assignment LOGIN PASSWORD :'assignment_password';
 SQL
         ;;
 esac
+
+# Presence observations use a separate append-only writer, enabled explicitly.
+case "${ARCHIVE_PRESENCE_PASSWORD:-}" in
+    ''|REPLACE_*|change-me*) ;;
+    *)
+        psql -X --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
+            --set ON_ERROR_STOP=1 <<'SQL'
+\getenv presence_password ARCHIVE_PRESENCE_PASSWORD
+ALTER ROLE archive_presence LOGIN PASSWORD :'presence_password';
+SQL
+        ;;
+esac

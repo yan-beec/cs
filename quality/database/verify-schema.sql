@@ -13,6 +13,9 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM ops.schema_migrations WHERE version = '001_capture') THEN
         RAISE EXCEPTION 'FAIL: capture migration is not recorded';
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM ops.schema_migrations WHERE version = '005_presence_retention') THEN
+        RAISE EXCEPTION 'FAIL: presence retention migration is not recorded';
+    END IF;
     FOREACH runtime_role IN ARRAY ARRAY['archive_ingest', 'archive_reader', 'archive_quality'] LOOP
         IF pg_has_role(runtime_role, 'archive_owner', 'MEMBER') THEN
             RAISE EXCEPTION 'FAIL: runtime role can become archive_owner: %', runtime_role;
@@ -37,7 +40,9 @@ BEGIN
         END IF;
     END LOOP;
 
-    FOR target_table IN SELECT tablename FROM pg_tables WHERE schemaname = 'archive' LOOP
+    -- Minute presence observations use a separate writer, never the chat ingest role.
+    FOR target_table IN SELECT tablename FROM pg_tables
+        WHERE schemaname = 'archive' AND tablename <> 'agent_presence_samples' LOOP
         IF NOT has_table_privilege('archive_ingest', 'archive.' || target_table, 'SELECT')
             OR NOT has_table_privilege('archive_ingest', 'archive.' || target_table, 'INSERT') THEN
             RAISE EXCEPTION 'FAIL: ingest cannot append evidence: %', target_table;
@@ -163,7 +168,8 @@ BEGIN
             WHERE source_key = current_setting('quality.verify_source') AND content = 'original' AND snapshot_kind = 'created') THEN
         RAISE EXCEPTION 'FAIL: deletion observation overwrote the original';
     END IF;
-    FOR target_table IN SELECT tablename FROM pg_tables WHERE schemaname = 'archive' LOOP
+    FOR target_table IN SELECT tablename FROM pg_tables
+        WHERE schemaname = 'archive' AND tablename <> 'agent_presence_samples' LOOP
         BEGIN
             EXECUTE format('UPDATE archive.%I SET id = DEFAULT WHERE FALSE', target_table);
             RAISE EXCEPTION 'FAIL: evidence update was allowed: %', target_table;
@@ -256,6 +262,62 @@ BEGIN
         RAISE EXCEPTION 'FAIL: assignment delivery can mutate query projections';
     EXCEPTION WHEN insufficient_privilege THEN NULL;
     END;
+END
+$check$;
+SET LOCAL ROLE archive_presence;
+DO $check$
+DECLARE target_table TEXT;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+        JOIN pg_roles r ON r.oid=p.proowner
+        WHERE n.nspname='ops' AND p.proname='cleanup_presence_history'
+            AND p.oid='ops.cleanup_presence_history(text,bigint)'::regprocedure
+            AND p.prosecdef AND r.rolname='archive_owner'
+            AND 'search_path=pg_catalog, pg_temp'=ANY(p.proconfig)) THEN
+        RAISE EXCEPTION 'FAIL: presence cleanup lacks its fixed owner and safe search path';
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_proc p,
+        LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a
+        WHERE p.oid='ops.cleanup_presence_history(text,bigint)'::regprocedure
+            AND a.grantee=0 AND a.privilege_type='EXECUTE') THEN
+        RAISE EXCEPTION 'FAIL: PUBLIC may execute presence cleanup';
+    END IF;
+    IF NOT has_function_privilege(current_user,'ops.cleanup_presence_history(text,bigint)','EXECUTE')
+        OR has_table_privilege(current_user,'ops.agent_presence_periods','DELETE,TRUNCATE') THEN
+        RAISE EXCEPTION 'FAIL: presence cleanup requires its function without table deletion privileges';
+    END IF;
+    FOREACH target_table IN ARRAY ARRAY['archive_ingest','archive_reader','archive_quality','archive_assignment'] LOOP
+        IF has_function_privilege(target_table,'ops.cleanup_presence_history(text,bigint)','EXECUTE') THEN
+            RAISE EXCEPTION 'FAIL: unrelated runtime role may execute presence cleanup: %', target_table;
+        END IF;
+    END LOOP;
+    IF NOT EXISTS (SELECT 1 FROM ops.cleanup_presence_history(current_setting('quality.verify_source'),1)
+        WHERE deleted_samples=0 AND deleted_periods=0) THEN
+        RAISE EXCEPTION 'FAIL: empty scoped presence cleanup returned unexpected counts';
+    END IF;
+    IF pg_has_role(current_user, 'archive_owner', 'MEMBER')
+       OR has_database_privilege(current_user, current_database(), 'CREATE,TEMP')
+       OR EXISTS (SELECT 1 FROM pg_roles WHERE rolname=current_user AND (rolsuper OR rolcreatedb OR rolcreaterole)) THEN
+        RAISE EXCEPTION 'FAIL: presence writer has administrative privileges';
+    END IF;
+    IF NOT has_table_privilege(current_user, 'archive.agent_presence_samples', 'SELECT')
+       OR NOT has_table_privilege(current_user, 'archive.agent_presence_samples', 'INSERT')
+       OR has_table_privilege(current_user, 'archive.agent_presence_samples', 'UPDATE,DELETE,TRUNCATE,TRIGGER,REFERENCES')
+       OR has_table_privilege('archive_ingest', 'archive.agent_presence_samples', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE')
+       OR NOT has_table_privilege('archive_reader', 'archive.agent_presence_samples', 'SELECT')
+       OR has_table_privilege('archive_reader', 'archive.agent_presence_samples', 'INSERT,UPDATE,DELETE,TRUNCATE') THEN
+        RAISE EXCEPTION 'FAIL: presence observations have incorrect writer/reader permissions';
+    END IF;
+    FOREACH target_table IN ARRAY ARRAY['events','message_snapshots','conversation_snapshots','rating_snapshots'] LOOP
+        IF has_table_privilege(current_user, 'archive.' || target_table, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE') THEN
+            RAISE EXCEPTION 'FAIL: presence writer can access chat evidence: %', target_table;
+        END IF;
+    END LOOP;
+    FOREACH target_table IN ARRAY ARRAY['event_jobs','round_index','schema_migrations','_future_permissions_probe'] LOOP
+        IF has_table_privilege(current_user, 'ops.' || target_table, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE') THEN
+            RAISE EXCEPTION 'FAIL: presence writer can access unrelated operations: %', target_table;
+        END IF;
+    END LOOP;
 END
 $check$;
 ROLLBACK;

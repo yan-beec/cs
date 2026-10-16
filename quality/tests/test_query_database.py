@@ -94,6 +94,133 @@ class QueryDatabaseTest(unittest.TestCase):
         return self.admin.execute(sql.SQL("SELECT * FROM {} WHERE source_key=%s ORDER BY 1").format(
             sql.Identifier(*table.split("."))), (self.source,)).fetchall()
 
+    def overview_round(self, name, *, customer="42", source=None, account=1, reception="human",
+                       status="active", rating_status="not_invited", rating=None, public_replies=0,
+                       basis=None, responsible=None, agents=()):
+        """Insert disposable derived rows to exercise aggregate edge cases."""
+        source = source or self.source
+        self.overview_sequence = getattr(self, "overview_sequence", 0) + 1
+        customer_id = f"overview-customer:{source}:{account}:{customer}"
+        round_id = f"overview-round:{self.source}:{name}"
+        data = {} if public_replies is None else {"counts": {"agent": public_replies}}
+        if basis is not None:
+            data["responsibility_basis"] = basis
+        if responsible is not None:
+            data.update(responsible_agent_id=responsible, responsible_agent_name=f"Agent {responsible}")
+        self.admin.execute("""INSERT INTO ops.customer_index
+            (customer_id,source_key,account_id,contact_id,display_name)
+            VALUES(%s,%s,%s,%s,%s) ON CONFLICT(customer_id) DO NOTHING""",
+            (customer_id, source, account, customer, "Overview " + customer))
+        self.admin.execute("""INSERT INTO ops.round_index
+            (round_id,source_key,account_id,conversation_id,customer_id,round_no,started_at,last_message_at,
+             reception_type,reply_composition,status,rating_status,rating,data)
+            VALUES(%s,%s,%s,%s,%s,1,%s,%s,%s,'none',%s,%s,%s,%s)""",
+            (round_id, source, account, 10000+self.overview_sequence, customer_id, START, START,
+             reception, status, rating_status, rating, Jsonb(data)))
+        for agent_id, replied, assigned, noted in agents:
+            self.admin.execute("""INSERT INTO ops.round_agent_index
+                (round_id,agent_id,agent_name,replied,was_assigned,noted,reply_count)
+                VALUES(%s,%s,%s,%s,%s,%s,%s)""",
+                (round_id, agent_id, f"Agent {agent_id}", replied, assigned, noted, int(replied)))
+        return round_id
+
+    def test_overview_totals_ratings_and_agent_attribution_count_each_round_once(self):
+        self.overview_round("rated-low", status="resolved", rating_status="rated", rating=2, public_replies=2,
+            basis="ics_assignment", responsible="8",
+            agents=(("8", True, True, False), ("9", True, False, False), ("10", False, True, False)))
+        self.overview_round("assigned-no-reply", basis="ics_assignment", responsible="8",
+            agents=(("11", False, False, True),))
+        self.overview_round("ai-rated", customer="99", reception="ai_only", status="resolved", rating_status="rated", rating=5)
+        self.overview_round("conflict-pending", customer="99", status="idle_boundary", rating_status="pending", rating=1,
+            basis="assignment_conflict", responsible="9")
+        self.overview_round("legacy", customer="99", public_replies=1, basis="last_public_agent_reply", responsible="9",
+            agents=(("10", True, False, False),))
+        self.overview_round("unknown-rated", customer="99", reception="unknown", rating_status="rated", rating=4)
+        self.overview_round("missing-counts", customer="99", public_replies=None)
+        result = self.reader.overview(ArchiveFilters(source_key=self.source, account_id=1))
+        expected = {"total_rounds": 7, "total_customers": 2, "ai_only_rounds": 1, "human_rounds": 5,
+            "active_rounds": 4, "resolved_rounds": 2, "rated_rounds": 3, "low_rating_rounds": 1,
+            "human_without_public_reply_rounds": 2, "responsibility_unrecorded_rounds": 3,
+            "participating_agent_count": 3, "agents_truncated": False}
+        for key, value in expected.items():
+            self.assertEqual(result[key], value, key)
+        self.assertAlmostEqual(result["average_rating"], 11/3)
+        agents = {row["agent_id"]: row for row in result["participating_agents"]}
+        self.assertEqual(set(agents), {"8", "9", "10"})
+        self.assertEqual([agents["8"][key] for key in ("responsible_rounds", "replied_rounds", "low_rating_rounds")], [2, 1, 1])
+        for agent_id in ("9", "10"):
+            self.assertEqual([agents[agent_id][key] for key in ("responsible_rounds", "replied_rounds", "low_rating_rounds")], [0, 1, 0])
+        self.assertTrue(all(row["source_key"] == self.source and row["account_id"] == 1 for row in agents.values()))
+        from datetime import datetime
+        self.assertIsNotNone(datetime.fromisoformat(result["generated_at"]).tzinfo)
+        empty = self.reader.overview(ArchiveFilters(source_key=self.source + "-absent"))
+        self.assertEqual(empty["total_rounds"], 0)
+        self.assertEqual(empty["total_customers"], 0)
+        self.assertEqual(empty["participating_agent_count"], 0)
+        self.assertEqual(empty["participating_agents"], [])
+        self.assertIsNone(empty["average_rating"])
+        self.assertFalse(empty["agents_truncated"])
+
+    def test_overview_reuses_round_filters_without_expanding_matching_customer_history(self):
+        other_customer = event(5, 4, conversation_id=22, content="needle 100%_literal")
+        other_customer["payload"]["sender"]["id"] = 99
+        other_customer["payload"]["conversation"]["meta"]["sender"]["id"] = 99
+        self.receive(event(1, content="needle 100%_literal", attachments=[{"id": 90, "file_name": "proof.png"}]),
+            event(2, 1, event_type="message_updated", message_id=1, content="edited away",
+                  created_at=START.isoformat(), attachments=[{"id": 90, "file_name": "proof.png"}],
+                  updated_at=(START+timedelta(minutes=1)).isoformat()),
+            agent_reply(6, 1, agent_id=7),
+            event(3, 2, event_type="conversation_status_changed", status="resolved"),
+            event(4, 3, content="unrelated next round"), other_customer,
+            event(7, 5, message_id=500, sender="agent_bot", direction="outgoing", content_type="input_csat",
+                  content_attributes={"ics_closed_at": (START+timedelta(minutes=2)).isoformat()},
+                  csat_survey_response={"message_id": 500, "rating": 3}))
+        self.receive_assignment(minute=1)
+        self.drain()
+        base = {"source_key": self.source, "account_id": 1}
+        all_rounds = self.reader.overview(ArchiveFilters(**base))
+        self.assertEqual((all_rounds["total_rounds"], all_rounds["total_customers"]), (3, 2))
+        filters = ArchiveFilters(**base, customer_query="42", keyword="100%_literal", reception_type="human",
+            status="resolved", rating_status="rated", rating=3, inbox_id=3, channel_key="xingliao",
+            agent_id="8", round_no=1, conversation_id=12, message_scope="contact", has_attachment=True,
+            time_field="message_at", start=START, end=START+timedelta(minutes=3))
+        result = self.reader.overview(filters)
+        self.assertEqual(result["total_rounds"], 1)
+        self.assertEqual(result["total_customers"], 1)
+        self.assertEqual(result["rated_rounds"], 1)
+        self.assertEqual(result["low_rating_rounds"], 1)
+        self.assertEqual(result["average_rating"], 3)
+        self.assertEqual({row["agent_id"] for row in result["participating_agents"]}, {"7", "8"})
+        self.assertEqual(self.reader.list_rounds(filters, page_size=1)["total"], result["total_rounds"])
+        # The same customer has another round that does not contain the keyword.
+        self.assertEqual(self.reader.overview(ArchiveFilters(**base, customer_query="42"))["total_rounds"], 2)
+        self.assertEqual(self.reader.overview(ArchiveFilters(**base, agent_id="7", agent_scope="replied"))["total_rounds"], 1)
+        self.assertEqual(self.reader.overview(ArchiveFilters(**base, keyword="100ZZliteral"))["total_rounds"], 0)
+        self.assertEqual(self.reader.overview(ArchiveFilters(**base, has_attachment=False))["total_rounds"], 2)
+
+    def test_overview_caps_agent_list_and_keeps_full_count_with_source_account_isolation(self):
+        marker = "overview-scope-" + uuid.uuid4().hex
+        self.overview_round("many", customer=marker, public_replies=205, basis="ics_assignment", responsible="1",
+            agents=tuple((str(index), True, False, False) for index in range(1, 206)))
+        self.overview_round("other-source", customer=marker, source=self.source + "-other", public_replies=1,
+            basis="ics_assignment", responsible="1", agents=(("1", True, False, False),))
+        self.overview_round("other-account", customer=marker, account=2, public_replies=1,
+            basis="ics_assignment", responsible="1", agents=(("1", True, False, False),))
+        scoped = self.reader.overview(ArchiveFilters(source_key=self.source, account_id=1))
+        self.assertEqual(scoped["total_rounds"], 1)
+        self.assertEqual(scoped["participating_agent_count"], 205)
+        self.assertEqual(len(scoped["participating_agents"]), 200)
+        self.assertTrue(scoped["agents_truncated"])
+        combined = self.reader.overview(ArchiveFilters(customer_query=marker))
+        self.assertEqual(combined["total_rounds"], 3)
+        self.assertEqual(combined["total_customers"], 3)
+        self.assertEqual(combined["participating_agent_count"], 207)
+        first_ids = [row for row in combined["participating_agents"] if row["agent_id"] == "1"]
+        self.assertEqual(len(first_ids), 3)
+        self.assertEqual({(row["source_key"], row["account_id"]) for row in first_ids},
+            {(self.source, 1), (self.source, 2), (self.source + "-other", 1)})
+        self.assertTrue(all(row["responsible_rounds"] == 1 and row["replied_rounds"] == 1 for row in first_ids))
+
     def test_atomic_processing_materializes_round_messages_and_durable_attachment_work(self):
         self.receive(event(1, content="original", attachments=[{"id": 91, "file_name": "test.png", "data_url": "https://example.invalid/file"}]),
             event(2, 1, sender="agent_bot", direction="outgoing"), event(3, 2, sender="user", direction="outgoing"))

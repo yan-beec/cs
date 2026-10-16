@@ -19,7 +19,7 @@ HARNESS = r"""
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const nodes = new Map();
-const defaults = {qualityAgentScope: 'responsible', qualityTimeField: 'started_at', qualityMessageScope: 'all'};
+const defaults = {qualityAgentScope: 'responsible', qualityTimeField: 'started_at', qualityMessageScope: 'all', presenceCheckTime: '09:00'};
 const decode = value => value.replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 class Element {
   constructor(id) {
@@ -28,7 +28,7 @@ class Element {
     const classes = new Set();
     this.classList = {add: name => classes.add(name), remove: name => classes.delete(name), contains: name => classes.has(name), toggle(name, value) {value ? classes.add(name) : classes.delete(name);}};
   }
-  set innerHTML(value) {this._html = value; if (['qualitySource', 'qualityAgent', 'qualityInbox', 'qualityChannel'].includes(this.id)) this.value = this.options[0]?.value || '';}
+  set innerHTML(value) {this._html = value; if (['qualitySource', 'qualityAgent', 'qualityInbox', 'qualityChannel', 'presenceAgent'].includes(this.id)) this.value = this.options[0]?.value || '';}
   get innerHTML() {return this._html;}
   get options() {return [...this._html.matchAll(/<option value="([^"]*)"/g)].map(match => ({value: decode(match[1])}));}
   addEventListener(name, handler) {this.handlers[name] = handler;}
@@ -36,7 +36,7 @@ class Element {
   removeAttribute(name) {delete this.attributes[name];}
   querySelectorAll() {return [];}
   scrollIntoView() {}
-  reset() {for (const [id, node] of nodes) if (id.startsWith('quality')) node.value = defaults[id] || '';}
+  reset() {for (const [id, node] of nodes) if (Object.hasOwn(fields,id) || ['qualitySource','qualityInbox','qualityAgent'].includes(id)) node.value = defaults[id] || '';}
 }
 const node = id => {if (!nodes.has(id)) nodes.set(id, new Element(id)); return nodes.get(id);};
 const fields = {
@@ -51,34 +51,492 @@ class BrowserFormData {
   [Symbol.iterator]() {return this.values[Symbol.iterator]();}
 }
 const requests = [], downloads = [], confirmations = [], confirmationAnswers = [];
+const overviewRequests = [], presenceRequests = [], dailyRequests = [], timelineRequests = [], timers = new Map(), documentEvents = {};
+let nextTimer = 1;
+let browserNow = Date.parse('2026-10-16T08:00:00Z');
+class BrowserDate extends Date {
+ constructor(...args) {super(...(args.length ? args : [browserNow]));}
+ static now() {return browserNow;}
+}
 class BrowserURL extends URL {
   static createObjectURL() {return 'blob:archive-preview';}
   static revokeObjectURL() {}
 }
 const context = vm.createContext({
- document: {getElementById: node, querySelectorAll: () => [], title: '', body: {appendChild() {}},
+ document: {getElementById: node, querySelectorAll: () => [], title: '', hidden:false, addEventListener(name, handler) {documentEvents[name] = handler;}, body: {appendChild() {}},
    createElement() {return {href:'',download:'',click() {downloads.push({url:this.href,filename:this.download});},remove() {}};}},
  window: {location: {origin: 'http://localhost:3001', hash: '#quality'}, addEventListener() {},
    confirm(message) {confirmations.push(message); return confirmationAnswers.length ? confirmationAnswers.shift() : true;}},
  localStorage: {getItem() {return null;}, setItem() {}, removeItem() {}},
- history: {replaceState() {}}, URL: BrowserURL, URLSearchParams, Headers, AbortController, DOMException, Intl, Date,
- FormData: BrowserFormData, setTimeout() {}, clearTimeout() {}, setInterval() {}, clearInterval() {},
- fetch: (url, options) => new Promise((resolve, reject) => requests.push({url, options, resolve, reject})),
+ history: {replaceState() {}}, URL: BrowserURL, URLSearchParams, Headers, AbortController, DOMException, Intl, Date: BrowserDate,
+ FormData: BrowserFormData, setTimeout() {}, clearTimeout() {},
+ setInterval(callback, milliseconds) {const id=nextTimer++; timers.set(id,{callback,milliseconds}); return id;}, clearInterval(id) {timers.delete(id);},
+ fetch: (url, options) => new Promise((resolve, reject) => {
+   const path = new URL(url,'http://localhost').pathname;
+   const queue = path.endsWith('/presence/timeline') ? timelineRequests : path.endsWith('/presence/daily') ? dailyRequests : path.endsWith('/presence') ? presenceRequests : path.endsWith('/overview') ? overviewRequests : requests;
+   queue.push({url, options, resolve, reject});
+ }),
  console
 });
-const respond = (index, payload, status = 200, headers = {}) => requests[index].resolve({status, ok: status >= 200 && status < 300, headers:new Headers(headers), json: async () => payload, blob: async () => ({payload})});
+const respondTo = (queue, index, payload, status = 200, headers = {}) => queue[index].resolve({status, ok: status >= 200 && status < 300, headers:new Headers(headers), json: async () => payload, blob: async () => ({payload})});
+const respond = (index, payload, status = 200, headers = {}) => respondTo(requests,index,payload,status,headers);
 const tick = () => new Promise(resolve => setImmediate(resolve));
+const timelinePayload = (overrides = {}) => {
+ const segments = overrides.segments || [{status:'online',start_minute:0,end_minute:1440}];
+ const status_minutes = {online:0,busy:0,offline:0,unknown:0,missing:0,not_monitored:0,future:0};
+ for (const segment of segments) if (Object.hasOwn(status_minutes,segment.status)) status_minutes[segment.status] += segment.end_minute-segment.start_minute;
+ return {status:'ready',day:'2026-10-16',timezone:'Asia/Shanghai',source_key:'cw',account_id:1,
+  agent:{agent_id:1,agent_name:'Agent',agent_name_source:'chatwoot'},through_at:'2026-10-16T01:15:59Z',
+  segments,status_minutes,granularity_minutes:1,sample_count:status_minutes.online+status_minutes.busy+status_minutes.offline+status_minutes.unknown,...overrides};
+};
 """
 
 EXPORTS = """
-globalThis.ui = {state, qualityState, collectQualityFilters, populateQualityFilters, qualityTime,
- qualitySafeLink, qualityAttachments, renderQualityTimeline, qualitySnapshotLabel, loadQualityList,
+globalThis.ui = {state, qualityState, presenceState, showCurrentPage, collectQualityFilters, populateQualityFilters, qualityTime,
+ qualitySafeLink, qualityAttachments, renderQualityTimeline, qualitySnapshotLabel, loadQualityList, qualityAgentLabel,
  openQualityDetail, loadQualityDetail, openQualityVersions, loadQualityVersions, stopQuality, logout,
  qualityRequest, loadQuality, downloadQualityEvent, changeQualityMode, closeQualityDetail, applyQualityFilters,
- exportQuality, cancelQualityExport, updateQualityExportButtons, qualityExportFilename};
+ exportQuality, cancelQualityExport, updateQualityExportButtons, qualityExportFilename,
+ loadQualityOverview, loadQualityPresence, loadQualityPresenceDaily, startQualityPresence, stopQualityPresence, qualityBeijingDay, qualityMinute, presenceRequest, mergePresenceRoster, loadPresenceTimeline, renderPresenceTimeline, renderPresenceIntervals, locatePresenceMinute, presenceAgentValue, updatePresenceDateRange, ensurePresenceDay, renderQualityPresenceDaily};
 """
 
 CASES = {
+    "overview_uses_all_filtered_rounds_and_does_not_reload_on_pagination_or_history": r"""
+ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+node('qualityKeyword').value = 'refund'; node('qualityCustomer').value = 'customer';
+node('qualitySource').value = JSON.stringify({source_key:'cw',account_id:'1'});
+node('qualityAgent').value = JSON.stringify({source_key:'cw',account_id:'1',agent_id:'1'});
+node('qualityStart').value = '2026-10-15T00:00';
+ui.qualityState.filters.agents = [{source_key:'cw',account_id:1,agent_id:1,agent_name:'beec',agent_name_source:'chatwoot'}];
+ui.applyQualityFilters();
+assert.equal(overviewRequests.length,1); assert.equal(requests.length,1); assert.equal(presenceRequests.length,0);
+const overviewQuery = new URL(overviewRequests[0].url).searchParams, listQuery = new URL(requests[0].url).searchParams;
+for (const [key,value] of ui.qualityState.applied) assert.equal(overviewQuery.get(key),value,key);
+assert.equal(overviewQuery.has('page'),false); assert.equal(overviewQuery.has('page_size'),false);
+assert.equal(listQuery.get('page'),'1');
+respond(0,{items:[{round_id:'one',customer_name:'LIST READY'}],total:250,page:1}); await tick();
+assert.equal(node('qualityList').innerHTML.includes('LIST READY'),true);
+assert.equal(ui.qualityState.listLoading,false); assert.equal(ui.qualityState.overviewLoading,true);
+respondTo(overviewRequests,0,{total_rounds:250,total_customers:100,ai_only_rounds:150,human_rounds:100,
+ active_rounds:80,resolved_rounds:170,rated_rounds:200,low_rating_rounds:20,average_rating:4.2,
+ human_without_public_reply_rounds:8,responsibility_unrecorded_rounds:7,participating_agent_count:3,agents_truncated:true,
+ generated_at:'2026-10-16T00:13:27Z',participating_agents:[{source_key:'cw',account_id:1,agent_id:1,agent_name:'分配坐席1',responsible_rounds:80,replied_rounds:70,low_rating_rounds:4}]}); await tick();
+const cards = node('qualityOverviewCards').innerHTML;
+assert.equal((cards.match(/class="quality-stat"/g)||[]).length,8);
+assert.equal(cards.includes('>250</strong>'),true); assert.equal(cards.includes('>100</strong>'),true);
+assert.equal(cards.includes('60.0%'),true); assert.equal(cards.includes('40.0%'),true);
+assert.equal(cards.includes('均分 4.20 分'),true); assert.equal(cards.includes('未观察到真人公开回复'),true);
+assert.equal(cards.includes('未评价'),false); assert.equal(cards.includes('超时'),false);
+assert.equal(node('qualityOverviewStatus').textContent.includes('不限当前页'),true);
+assert.equal(node('qualityOverviewNotice').textContent.includes('7 轮未记录 ICS 分配'),true);
+assert.equal(node('qualityOverviewNotice').textContent.includes('仅显示前 1 位'),true);
+assert.equal(node('qualityOverviewAgents').innerHTML.includes('>beec<'),true);
+assert.equal(node('qualityOverviewAgents').innerHTML.includes('<td>80</td><td>70</td><td>4</td>'),true);
+node('qualityNext').handlers.click(); assert.equal(overviewRequests.length,1);
+respond(1,{items:[],total:250,page:2}); await tick();
+ui.changeQualityMode('customers'); assert.equal(overviewRequests.length,1);
+respond(2,{items:[],total:100,page:1}); await tick();
+const history = ui.openQualityDetail('customer','c1'); respond(3,{customer:{display_name:'Customer'},messages:[],total:1000,page:1}); await history;
+assert.equal(overviewRequests.length,1); assert.equal(ui.qualityState.overview.total_rounds,250);
+""",
+    "overview_rejects_old_results_and_failure_keeps_the_list_available": r"""
+ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+ui.qualityState.applied = new URLSearchParams({keyword:'old'}); const older = ui.loadQualityOverview();
+ui.qualityState.applied = new URLSearchParams({keyword:'new'}); const newer = ui.loadQualityOverview();
+assert.equal(overviewRequests[0].options.signal.aborted,true);
+respondTo(overviewRequests,1,{total_rounds:0,total_customers:0,average_rating:null,participating_agents:[]}); await newer;
+assert.equal(node('qualityOverviewCards').innerHTML.includes('暂无评分'),true);
+assert.equal(node('qualityOverviewCards').innerHTML.includes('NaN'),false);
+respondTo(overviewRequests,0,{total_rounds:999,participating_agents:[]}); await older;
+assert.equal(ui.qualityState.overview.total_rounds,0); assert.equal(node('qualityOverviewCards').innerHTML.includes('999'),false);
+node('qualityKeyword').value = 'failed overview'; ui.applyQualityFilters();
+respond(0,{items:[{customer_name:'STILL QUERYABLE'}],total:1,page:1}); await tick();
+respondTo(overviewRequests,2,{detail:'summary unavailable'},503); await tick();
+assert.equal(node('qualityOverviewStatus').textContent.includes('概况暂不可用'),true);
+assert.equal(node('qualityList').innerHTML.includes('STILL QUERYABLE'),true);
+assert.equal(ui.qualityState.ready,true); assert.equal(ui.qualityState.overviewLoading,false);
+""",
+    "presence_and_daily_use_one_timer_pause_when_hidden_and_reject_old_responses": r"""
+ui.state.token = 'session'; ui.state.view = 'presence';
+ui.qualityState.applied = new URLSearchParams({keyword:'history',agent_id:'9',start:'2020-01-01'});
+ui.startQualityPresence(); ui.startQualityPresence();
+assert.equal(timers.size,1); assert.equal([...timers.values()][0].milliseconds,60000);
+assert.equal(node('qualityPresenceDay').value,ui.qualityBeijingDay());
+assert.equal(presenceRequests.length,1); assert.equal(dailyRequests.length,1);
+assert.equal(new URL(presenceRequests[0].url).search,'');
+const dailyQuery = new URL(dailyRequests[0].url).searchParams;
+assert.deepEqual([...dailyQuery.keys()],['day']);
+[...timers.values()][0].callback();
+assert.equal(presenceRequests.length,1); assert.equal(dailyRequests.length,1,'pending requests cannot overlap');
+respondTo(presenceRequests,0,{status:'ready',source_key:'cw',account_id:1,sampled_at:'2026-10-16T00:13:27Z',agents:[
+ {agent_id:1,agent_name:'<beec>',availability_status:'online',agent_name_source:'chatwoot'},
+ {source_key:'cw',account_id:1,agent_id:2,agent_name:'QQ',availability_status:'busy'},
+ {source_key:'cw',account_id:1,agent_id:3,agent_name:'Third',availability_status:'offline'},
+ {source_key:'cw',account_id:1,agent_id:4,agent_name:'Fourth',availability_status:'unexpected'}]});
+respondTo(dailyRequests,0,{status:'ready',day:node('qualityPresenceDay').value,agents:[]}); await tick();
+const seats = node('qualityPresenceAgents').innerHTML;
+for (const label of ['在线','忙碌','离线','未知']) assert.equal(seats.includes(`>${label}</span>`),true,label);
+assert.equal(seats.includes('&lt;beec&gt;'),true); assert.equal(seats.includes('<beec>'),false);
+assert.equal(seats.includes('Chatwoot ID 1 · cw / 账号 1'),true);
+assert.equal(node('qualityPresenceStatus').textContent.includes('08:13'),true);
+assert.equal(node('qualityPresenceStatus').textContent.includes('08:13:27'),false,'sampling time is shown to the minute');
+const selectedDay = node('qualityPresenceDay').value;
+ui.stopQuality(true);
+assert.equal(node('qualityPresenceDay').value,selectedDay,'archive reset must preserve the monitoring day');
+assert.equal(timers.size,1,'archive lifecycle must not stop monitoring');
+assert.equal(presenceRequests.length,1); assert.equal(dailyRequests.length,1);
+[...timers.values()][0].callback(); assert.equal(presenceRequests.length,2); assert.equal(dailyRequests.length,2);
+context.document.hidden = true; documentEvents.visibilitychange();
+assert.equal(timers.size,0); assert.equal(presenceRequests[1].options.signal.aborted,true); assert.equal(dailyRequests[1].options.signal.aborted,true);
+context.document.hidden = false; documentEvents.visibilitychange();
+assert.equal(timers.size,1); assert.equal(presenceRequests.length,3); assert.equal(dailyRequests.length,3);
+respondTo(presenceRequests,1,{status:'ready',agents:[{agent_name:'LATE PRIVATE',availability_status:'offline'}]});
+respondTo(dailyRequests,1,{status:'ready',agents:[{agent_name:'LATE DAILY'}]}); await tick();
+assert.equal(ui.presenceState.currentLoading,true); assert.equal(ui.presenceState.dailyLoading,true);
+respondTo(presenceRequests,2,{status:'ready',agents:[{source_key:'cw',account_id:1,agent_id:1,agent_name:'CURRENT',availability_status:'online'}]});
+respondTo(dailyRequests,2,{status:'ready',agents:[]}); await tick();
+assert.equal(node('qualityPresenceAgents').innerHTML.includes('CURRENT'),true);
+assert.equal(node('qualityPresenceAgents').innerHTML.includes('LATE'),false);
+ui.logout(false); assert.equal(timers.size,0);
+assert.equal(node('qualityPresenceAgents').innerHTML.includes('CURRENT'),false);
+documentEvents.visibilitychange(); assert.equal(timers.size,0); assert.equal(presenceRequests.length,3);
+""",
+    "presence_stale_and_failed_samples_never_become_offline": r"""
+ui.state.token = 'session'; ui.state.view = 'presence';
+const agent = {source_key:'cw',account_id:1,agent_id:1,agent_name:'beec',availability_status:'online'};
+let pending = ui.loadQualityPresence(); respondTo(presenceRequests,0,{status:'ready',sampled_at:'2026-10-16T00:00:00Z',agents:[agent],collector:{enabled:false,status:'disabled'}}); await pending;
+assert.equal(node('qualityPresenceCollectorStatus').textContent.includes('采集未启用'),true);
+pending = ui.loadQualityPresence(); respondTo(presenceRequests,1,{status:'stale',sampled_at:'2026-10-15T00:00:00Z',agents:[agent]}); await pending;
+assert.equal(node('qualityPresenceTag').textContent,'旧采样 · 非实时');
+assert.equal(node('qualityPresenceAgents').innerHTML.includes('在线 · 旧采样'),true);
+assert.equal(node('qualityPresenceStatus').textContent.includes('不能视为实时状态'),true);
+pending = ui.loadQualityPresence(); presenceRequests[2].reject(new Error('network unavailable')); await pending;
+assert.equal(node('qualityPresenceTag').textContent,'状态未知');
+assert.equal(node('qualityPresenceAgents').innerHTML.includes('>未知</span>'),true);
+assert.equal(node('qualityPresenceAgents').innerHTML.includes('>离线</span>'),false);
+assert.equal(node('qualityPresenceAgents').innerHTML.includes('>在线</span>'),false);
+assert.equal(node('qualityPresenceStatus').textContent.includes('未将获取失败视为离线'),true);
+assert.equal(node('qualityPresenceCollectorStatus').textContent.includes('历史采集状态未知'),true);
+pending = ui.loadQualityPresence(); respondTo(presenceRequests,3,{status:'unconfigured',agents:[]}); await pending;
+assert.equal(node('qualityPresenceTag').textContent,'状态未知'); assert.equal(node('qualityPresenceStatus').textContent.includes('请配置'),true);
+""",
+    "daily_presence_dates_are_independent_and_missing_minutes_are_not_offline": r"""
+ui.state.token = 'session'; ui.state.view = 'presence';
+node('qualityPresenceDay').value = '2026-10-15'; const older = ui.loadQualityPresenceDaily();
+node('qualityPresenceDay').value = '2026-10-16'; const newer = node('qualityPresenceDay').handlers.change();
+assert.equal(dailyRequests[0].options.signal.aborted,true);
+assert.equal(new URL(dailyRequests[1].url).searchParams.get('day'),'2026-10-16');
+respondTo(dailyRequests,1,{day:'2026-10-16',timezone:'Asia/Shanghai',source_key:'cw',account_id:1,status:'ready',through_at:'2026-10-16T00:45:59Z',monitoring_started_at:'2026-10-16T00:00:00Z',agent_count:201,agents_truncated:true,agents:[
+ {agent_id:1,agent_name:'<beec>',agent_name_source:'chatwoot',online_minutes:20,busy_minutes:10,offline_minutes:5,unknown_minutes:3,sampled_minutes:38,expected_minutes:60,missing_minutes:22,last_sampled_at:'2026-10-16T00:44:59Z'}]}); await newer;
+const table = node('qualityPresenceDaily').innerHTML;
+assert.equal(table.includes('&lt;beec&gt;'),true); assert.equal(table.includes('<td>20</td><td>10</td><td>5</td><td>3</td>'),true);
+assert.equal(table.includes('38 / 60 分钟 · 63.3%'),true); assert.equal(table.includes('缺口 22 分钟，不计为离线'),true);
+assert.equal(table.includes('08:44'),true); assert.equal(table.includes('08:44:59'),false);
+assert.equal(node('qualityPresenceDailyStatus').textContent.includes('采集启用于'),true);
+assert.equal(node('qualityPresenceDailyStatus').textContent.includes('统计截至'),true);
+assert.equal(node('qualityPresenceDailyNotice').textContent.includes('仅显示前 1 位坐席（共 201 位）'),true);
+assert.equal(node('qualityPresenceDailyNotice').classList.contains('hidden'),false);
+respondTo(dailyRequests,0,{day:'2026-10-15',status:'ready',agents:[{agent_name:'WRONG DAY'}]}); await older;
+assert.equal(node('qualityPresenceDaily').innerHTML.includes('WRONG DAY'),false);
+assert.equal(node('qualityPresenceDailyStatus').textContent.includes('2026-10-16'),true);
+let pending = ui.loadQualityPresenceDaily(); await ui.loadQualityPresenceDaily(); assert.equal(dailyRequests.length,3);
+respondTo(dailyRequests,2,{status:'unavailable',agents:[]}); await pending;
+assert.equal(node('qualityPresenceDailyStatus').textContent.includes('暂不可用'),true);
+assert.equal(node('qualityPresenceDailyNotice').classList.contains('hidden'),true);
+assert.equal(node('qualityPresenceDaily').innerHTML.includes('<td>5</td>'),false);
+pending = ui.loadQualityPresenceDaily(); respondTo(dailyRequests,3,{status:'ready',agents:[],monitoring_started_at:null}); await pending;
+assert.equal(node('qualityPresenceDaily').innerHTML.includes('不能据此认定坐席离线'),true);
+""",
+    "current_presence_does_not_claim_history_is_saved_when_collector_is_disabled_or_failed": r"""
+ui.state.token = 'session'; ui.state.view = 'presence'; node('qualityPresenceDay').value = '2026-10-16';
+const payload = {status:'ready',source_key:'cw',account_id:1,sampled_at:'2026-10-16T00:15:59Z',agents:[{agent_id:1,agent_name:'坐席1',agent_name_source:'chatwoot',availability_status:'online'}]};
+let current = ui.loadQualityPresence();
+respondTo(presenceRequests,0,{...payload,collector:{enabled:true,status:'unavailable',last_saved_at:null,pending_batches:1,dropped_batches:0}}); await current;
+assert.equal(node('qualityPresenceAgents').innerHTML.includes('坐席1'),true,'explicit Chatwoot names remain valid');
+assert.equal(node('qualityPresenceAgents').innerHTML.includes('>在线</span>'),true);
+assert.equal(node('qualityPresenceCollectorStatus').textContent.includes('历史采集暂不可用'),true);
+assert.equal(node('qualityPresenceCollectorStatus').textContent.includes('当前状态不代表历史已保存'),true);
+current = ui.loadQualityPresence(); respondTo(presenceRequests,1,{...payload,collector:{enabled:true,status:'ready',last_saved_at:'2026-10-16T00:13:27Z',pending_batches:1,dropped_batches:2}}); await current;
+assert.equal(node('qualityPresenceCollectorStatus').textContent.includes('最近保存于'),true);
+assert.equal(node('qualityPresenceCollectorStatus').textContent.includes('08:13'),true);
+assert.equal(node('qualityPresenceCollectorStatus').textContent.includes('等待保存'),true);
+assert.equal(node('qualityPresenceCollectorStatus').textContent.includes('缺口不计为离线'),true);
+current = ui.loadQualityPresence(); respondTo(presenceRequests,2,{...payload,collector:{enabled:false,status:'configuration_error'}}); await current;
+assert.equal(node('qualityPresenceCollectorStatus').textContent.includes('暂不可用'),true);
+assert.equal(node('qualityPresenceCollectorStatus').textContent.includes('未启用'),false);
+for (const [index,status] of ['disabled','not_started'].entries()) {
+ const daily = ui.loadQualityPresenceDaily(); respondTo(dailyRequests,index,{status,agents:[]}); await daily;
+ assert.equal(node('qualityPresenceDaily').innerHTML.includes('<table>'),false);
+ assert.equal(node('qualityPresenceDailyStatus').textContent.includes(status === 'disabled' ? '未启用' : '尚未产生样本'),true);
+}
+""",
+    "independent_page_lifecycles_cancel_only_their_own_requests": r"""
+ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+const overview = ui.loadQualityOverview();
+ui.stopQualityPresence();
+assert.equal(overviewRequests[0].options.signal.aborted,false);
+ui.stopQuality(); ui.state.view = 'presence'; ui.startQualityPresence();
+assert.equal(timers.size,1);
+const presenceGeneration = ui.presenceState.generation;
+ui.stopQuality(true);
+assert.equal(timers.size,1); assert.equal(ui.presenceState.generation,presenceGeneration);
+assert.equal(presenceRequests[0].options.signal.aborted,false); assert.equal(dailyRequests[0].options.signal.aborted,false);
+ui.stopQualityPresence(true); ui.state.view = 'channel';
+assert.equal(timers.size,0); assert.equal(overviewRequests[0].options.signal.aborted,true);
+assert.equal(presenceRequests[0].options.signal.aborted,true); assert.equal(dailyRequests[0].options.signal.aborted,true);
+respondTo(overviewRequests,0,{total_rounds:999,participating_agents:[{agent_name:'PRIVATE'}]});
+respondTo(presenceRequests,0,{status:'ready',agents:[{agent_name:'PRIVATE'}]});
+respondTo(dailyRequests,0,{status:'ready',agents:[{agent_name:'PRIVATE'}]}); await overview; await tick();
+for (const id of ['qualityOverviewCards','qualityOverviewAgents','qualityPresenceAgents','qualityPresenceDaily']) assert.equal(node(id).innerHTML.includes('PRIVATE'),false,id);
+assert.equal(ui.presenceState.controllers.size,0); assert.equal(ui.qualityState.controllers.size,0);
+documentEvents.visibilitychange(); assert.equal(timers.size,0);
+""",
+    "archive_route_never_loads_presence_and_presence_works_without_archive_readiness": r"""
+ui.state.token = 'session'; context.window.location.hash = '#quality'; ui.showCurrentPage();
+assert.equal(requests.length,1); assert.equal(new URL(requests[0].url).pathname,'/admin/api/quality/status');
+assert.equal(presenceRequests.length,0); assert.equal(dailyRequests.length,0); assert.equal(timelineRequests.length,0); assert.equal(timers.size,0);
+respond(0,{enabled:false,ready:false}); await tick();
+assert.equal(ui.qualityState.ready,false);
+context.window.location.hash = '#presence'; ui.showCurrentPage();
+assert.equal(ui.state.view,'presence'); assert.equal(ui.state.route,'#presence');
+assert.equal(node('pageTitle').textContent,'客服状态监管');
+assert.equal(node('qualityPage').classList.contains('hidden'),true); assert.equal(node('presencePage').classList.contains('hidden'),false);
+assert.equal(timers.size,1); assert.equal(presenceRequests.length,1); assert.equal(dailyRequests.length,1);
+respondTo(presenceRequests,0,{status:'ready',source_key:'cw',account_id:1,agents:[{agent_id:1,agent_name:'Agent',availability_status:'online'}]}); await tick();
+assert.equal(timelineRequests.length,1);
+const generation = ui.presenceState.generation;
+context.window.location.hash = '#quality'; ui.showCurrentPage();
+assert.equal(timers.size,0); assert.equal(ui.presenceState.generation>generation,true);
+assert.equal(dailyRequests[0].options.signal.aborted,true); assert.equal(timelineRequests[0].options.signal.aborted,true);
+respondTo(timelineRequests,0,timelinePayload({agent:{agent_id:1,agent_name:'PRIVATE LATE'}}));
+respondTo(dailyRequests,0,{status:'ready',agents:[{agent_id:1,agent_name:'PRIVATE LATE'}]}); await tick();
+assert.equal(node('presenceTimelineStatus').textContent.includes('PRIVATE'),false); assert.equal(node('qualityPresenceDaily').innerHTML.includes('PRIVATE'),false);
+assert.equal(presenceRequests.length,1); assert.equal(dailyRequests.length,1);
+""",
+    "presence_roster_merges_current_and_historical_agents_by_full_scope": r"""
+ui.state.token = 'session'; ui.state.view = 'presence'; node('qualityPresenceDay').value = '2026-10-16';
+ui.qualityState.filters.agents = [{source_key:'cw',account_id:1,agent_id:1,agent_name:'ARCHIVE NAME'}];
+ui.presenceState.dailyRoster = [
+ {source_key:'cw',account_id:1,agent_id:1,agent_name:'Old name'},
+ {source_key:'cw',account_id:1,agent_id:2,agent_name:'<retired>',agent_name_source:'chatwoot'},
+ {source_key:'cw-other',account_id:2,agent_id:1,agent_name:'Other account'}];
+ui.presenceState.currentRoster = [
+ {source_key:'cw',account_id:1,agent_id:1,agent_name:'<live>',agent_name_source:'chatwoot'},
+ {source_key:'cw',account_id:1,agent_id:3,agent_name:'Current only'}];
+ui.mergePresenceRoster();
+assert.equal(ui.presenceState.roster.length,4); assert.equal(node('presenceAgent').options.length,4);
+const options = node('presenceAgent').innerHTML;
+assert.equal(options.includes('&lt;live&gt;'),true); assert.equal(options.includes('&lt;retired&gt;'),true);
+assert.equal(options.includes('<live>'),false); assert.equal(options.includes('ARCHIVE NAME'),false); assert.equal(options.includes('Old name'),false);
+assert.equal(options.includes('Other account'),true); assert.equal(timelineRequests.length,1,'only selected agent is requested');
+assert.deepEqual([...new URL(timelineRequests[0].url).searchParams.keys()],['day','agent_id']);
+const historical = ui.presenceState.roster.find(agent=>agent.source_key==='cw'&&agent.agent_id===2);
+node('presenceAgent').value = ui.presenceAgentValue(historical);
+const selected = node('presenceAgent').handlers.change();
+assert.equal(timelineRequests.length,2); assert.equal(timelineRequests[0].options.signal.aborted,true);
+assert.equal(new URL(timelineRequests[1].url).searchParams.get('agent_id'),'2');
+ui.mergePresenceRoster(); assert.equal(timelineRequests.length,2); assert.equal(node('presenceAgent').value,ui.presenceAgentValue(historical));
+respondTo(timelineRequests,0,timelinePayload({agent:{agent_id:1,agent_name:'OLD AGENT'}})); await tick();
+assert.equal(ui.presenceState.timelineLoading,true); assert.equal(node('presenceTimelineStatus').textContent.includes('OLD AGENT'),false);
+respondTo(timelineRequests,1,timelinePayload({agent:{agent_id:2,agent_name:'<retired>',agent_name_source:'chatwoot'}})); await selected;
+assert.equal(node('presenceTimelineStatus').textContent.includes('<retired>'),true); assert.equal(ui.presenceState.timeline.agent.agent_id,2);
+""",
+    "presence_timeline_shows_full_day_and_locates_end_exclusive_minute_boundaries": r"""
+ui.state.token = 'session'; ui.state.view = 'presence'; node('qualityPresenceDay').value = '2026-10-16';
+const statuses = ['online','busy','offline','unknown','missing','not_monitored','future'];
+const segments = statuses.map((status,index)=>({status,start_minute:index*60,end_minute:index===6?1440:(index+1)*60}));
+ui.renderPresenceTimeline(timelinePayload({segments,agent:{agent_id:1,agent_name:'<script>NAME</script>',agent_name_source:'chatwoot'}}));
+const bar = node('presenceTimelineBar').innerHTML;
+assert.equal((bar.match(/class="presence-segment /g)||[]).length,7);
+for (const status of statuses) assert.equal(bar.includes(`presence-${status}`),true,status);
+assert.equal(bar.includes('<script>'),false); assert.equal(bar.includes('24:00'),true);
+assert.equal((node('presenceHourTicks').innerHTML.match(/<span /g)||[]).length,25);
+assert.equal(node('presenceHourTicks').innerHTML.includes('>00</span>'),true); assert.equal(node('presenceHourTicks').innerHTML.includes('>24</span>'),true);
+for (const [time,label,range] of [['00:59','在线','00:00–01:00'],['01:00','忙碌','01:00–02:00'],['04:59','缺采样','04:00–05:00'],['05:00','未监管','05:00–06:00'],['23:59','未结束 / 未来','06:00–24:00']]) {
+ node('presenceCheckTime').value=time; node('presenceLocate').handlers.click();
+ assert.equal(node('presencePoint').textContent.includes(`${time} · ${label}`),true);
+ assert.equal(node('presencePoint').textContent.includes(range),true);
+}
+assert.equal(node('presencePoint').textContent.includes('不计为缺采样'),true);
+ui.locatePresenceMinute(240); assert.equal(node('presencePoint').textContent.includes('不计为离线'),true);
+ui.locatePresenceMinute(180); assert.equal(node('presencePoint').textContent.includes('已有采样'),true);
+node('presenceCheckTime').value='24:00'; node('presenceCheckTime').handlers.change();
+assert.equal(node('presencePoint').textContent.includes('00:00 至 23:59'),true);
+node('presenceIntervals').handlers.click({target:{closest(){return {dataset:{presenceMinute:'60'}};}}});
+assert.equal(node('presenceCheckTime').value,'01:00'); assert.equal(ui.presenceState.selectedMinute,60);
+""",
+    "presence_interval_pagination_is_bounded_and_point_location_selects_the_correct_page": r"""
+ui.state.token = 'session'; ui.state.view = 'presence'; node('qualityPresenceDay').value='2026-10-16';
+const segments = Array.from({length:1440},(_,minute)=>({status:minute%2?'busy':'online',start_minute:minute,end_minute:minute+1}));
+ui.renderPresenceTimeline(timelinePayload({segments}));
+assert.equal((node('presenceTimelineBar').innerHTML.match(/data-presence-minute=/g)||[]).length,1440);
+assert.equal((node('presenceIntervals').innerHTML.match(/data-presence-minute=/g)||[]).length,50);
+assert.equal(node('presencePageInfo').textContent.includes('1 / 29 页'),true);
+node('presenceNext').handlers.click(); assert.equal(ui.presenceState.page,2);
+assert.equal(node('presenceIntervals').innerHTML.includes('data-presence-minute="50"'),true);
+node('presenceStatusFilter').value='busy'; node('presenceStatusFilter').handlers.change();
+assert.equal(node('presencePageInfo').textContent.includes('720 个区间'),true); assert.equal(ui.presenceState.page,1);
+assert.equal(node('presenceIntervals').innerHTML.includes('data-presence-minute="0"'),false);
+ui.locatePresenceMinute(1439);
+assert.equal(node('presenceStatusFilter').value,''); assert.equal(ui.presenceState.page,29);
+assert.equal((node('presenceIntervals').innerHTML.match(/data-presence-minute=/g)||[]).length,40);
+assert.equal(node('presenceIntervals').innerHTML.includes('data-presence-minute="1439"'),true);
+assert.equal(node('presenceIntervals').innerHTML.includes('class="presence-selected"'),true);
+assert.equal(node('presenceNext').disabled,true); node('presenceNext').handlers.click(); assert.equal(ui.presenceState.page,29);
+node('presenceStatusFilter').value='missing'; node('presenceStatusFilter').handlers.change();
+assert.equal(node('presenceIntervals').innerHTML.includes('没有匹配区间'),true); assert.equal(node('presenceNext').disabled,true);
+assert.equal(node('presencePrev').disabled,true);
+""",
+    "presence_timeline_rejects_stale_day_scope_and_logout_results": r"""
+ui.state.token = 'session'; ui.state.view='presence'; node('qualityPresenceDay').value='2026-10-15';
+ui.presenceState.currentRoster=[{source_key:'cw',account_id:1,agent_id:1,agent_name:'Agent'}]; ui.mergePresenceRoster();
+assert.equal(timelineRequests.length,1);
+node('qualityPresenceDay').value='2026-10-16'; node('qualityPresenceDay').handlers.change();
+assert.equal(timelineRequests.length,2); assert.equal(timelineRequests[0].options.signal.aborted,true);
+assert.equal(new URL(timelineRequests[1].url).searchParams.get('day'),'2026-10-16');
+respondTo(timelineRequests,0,timelinePayload({day:'2026-10-15',agent:{agent_id:1,agent_name:'OLD DAY'}})); await tick();
+assert.equal(ui.presenceState.timelineLoading,true); assert.equal(node('presenceTimelineStatus').textContent.includes('OLD DAY'),false);
+respondTo(timelineRequests,1,timelinePayload({source_key:'OTHER SOURCE',agent:{agent_id:1,agent_name:'WRONG SCOPE'}})); await tick();
+assert.equal(ui.presenceState.timeline,null); assert.equal(node('presenceTimelineStatus').textContent.includes('暂不可用'),true);
+const latest=ui.loadPresenceTimeline(); respondTo(timelineRequests,2,timelinePayload()); await latest;
+assert.equal(ui.presenceState.timeline.day,'2026-10-16');
+const loggedOut=ui.loadPresenceTimeline(); ui.logout(false);
+assert.equal(timelineRequests[3].options.signal.aborted,true); assert.equal(node('presenceAgent').value,'');
+respondTo(timelineRequests,3,timelinePayload({agent:{agent_id:1,agent_name:'PRIVATE LOGIN'}})); await loggedOut;
+assert.equal(ui.presenceState.timeline,null); assert.equal(node('presenceTimelineStatus').textContent.includes('PRIVATE'),false);
+assert.equal(node('presenceTimelineBar').innerHTML,''); assert.equal(node('qualityPresenceDay').value,'');
+""",
+    "presence_daily_and_timeline_failures_do_not_block_other_panels": r"""
+ui.state.token='session'; ui.state.view='presence'; ui.startQualityPresence();
+respondTo(presenceRequests,0,{status:'ready',source_key:'cw',account_id:1,agents:[{agent_id:1,agent_name:'Current',availability_status:'online'}]}); await tick();
+respondTo(dailyRequests,0,{detail:'daily unavailable'},503); await tick();
+const day=node('qualityPresenceDay').value;
+respondTo(timelineRequests,0,timelinePayload({day})); await tick();
+assert.equal(node('qualityPresenceDailyStatus').textContent.includes('暂不可用'),true);
+assert.equal(node('qualityPresenceAgents').innerHTML.includes('Current'),true); assert.equal(ui.presenceState.timeline.day,day);
+[...timers.values()][0].callback();
+assert.equal(presenceRequests.length,2); assert.equal(dailyRequests.length,2); assert.equal(timelineRequests.length,2);
+respondTo(timelineRequests,1,{detail:'timeline unavailable'},503);
+respondTo(dailyRequests,1,{status:'ready',day,agents:[]});
+presenceRequests[1].reject(new Error('network unavailable')); await tick();
+assert.equal(node('qualityPresenceTag').textContent,'状态未知'); assert.equal(node('qualityPresenceDaily').innerHTML.includes('该日暂无采样记录'),true);
+assert.equal(node('presenceTimelineStatus').textContent.includes('暂不可用'),true); assert.equal(ui.presenceState.timeline,null);
+assert.equal(timers.size,1); assert.equal(ui.qualityState.ready,false);
+""",
+    "presence_hidden_pauses_selected_timeline_and_rejects_old_results": r"""
+ui.state.token='session'; ui.state.view='presence'; node('qualityPresenceDay').value='2026-10-16';
+ui.presenceState.currentRoster=[{source_key:'cw',account_id:1,agent_id:1,agent_name:'Agent'}]; ui.mergePresenceRoster(); ui.startQualityPresence();
+assert.equal(timelineRequests.length,1,'one timeline request while pending');
+context.document.hidden=true; documentEvents.visibilitychange();
+assert.equal(timers.size,0); assert.equal(timelineRequests[0].options.signal.aborted,true);
+context.document.hidden=false; documentEvents.visibilitychange();
+assert.equal(timers.size,1); assert.equal(timelineRequests.length,2);
+respondTo(timelineRequests,0,timelinePayload({agent:{agent_id:1,agent_name:'OLD HIDDEN'}})); await tick();
+assert.equal(ui.presenceState.timelineLoading,true); assert.equal(node('presenceTimelineStatus').textContent.includes('OLD'),false);
+respondTo(timelineRequests,1,timelinePayload()); await tick();
+assert.equal(ui.presenceState.timelineLoading,false); assert.equal(ui.presenceState.timeline.agent.agent_name,'Agent');
+""",
+    "presence_unavailable_and_malformed_timelines_clear_previous_private_intervals": r"""
+ui.state.token='session'; ui.state.view='presence'; node('qualityPresenceDay').value='2026-10-16';
+for (const [status,phrase] of [['disabled','未启用'],['not_started','尚未产生样本'],['not_found','请选择现有或历史客服'],['unavailable','暂不可用']]) {
+ ui.renderPresenceTimeline(timelinePayload()); assert.equal(ui.presenceState.segments.length,1);
+ ui.renderPresenceTimeline({status});
+ assert.equal(node('presenceTimelineStatus').textContent.includes(phrase),true,status);
+ assert.equal(ui.presenceState.segments.length,0); assert.equal(node('presenceTimelineBar').innerHTML,''); assert.equal(node('presenceIntervals').innerHTML.includes('<table>'),false);
+}
+for (const segments of [
+ [{status:'online',start_minute:1,end_minute:1440}],
+ [{status:'online',start_minute:0,end_minute:20},{status:'offline',start_minute:19,end_minute:1440}],
+ Array.from({length:1441},(_,minute)=>({status:'online',start_minute:minute,end_minute:minute+1}))
+]) {ui.renderPresenceTimeline(timelinePayload({segments})); assert.equal(ui.presenceState.segments.length,0);}
+ui.renderPresenceTimeline(timelinePayload({segments:[{status:'<img onerror=evil>',start_minute:0,end_minute:1440}]}));
+assert.equal(node('presenceTimelineBar').innerHTML.includes('<img'),false);
+assert.equal(node('presenceTimelineBar').innerHTML.includes('presence-unknown'),true);
+""",
+    "presence_retention_uses_45_beijing_calendar_days_and_clears_expired_midnight_history": r"""
+for (const [instant,oldest] of [['2027-01-01T00:00:00Z','2026-11-18'],['2028-03-01T00:00:00Z','2028-01-17']]) {
+ browserNow=Date.parse(instant); ui.updatePresenceDateRange(); assert.equal(node('qualityPresenceDay').min,oldest);
+}
+browserNow=Date.parse('2026-10-16T15:59:00Z');
+ui.state.token='session'; ui.state.view='presence'; node('qualityPresenceDay').value='2026-09-02'; ui.startQualityPresence();
+assert.equal(node('qualityPresenceDay').min,'2026-09-02'); assert.equal(node('qualityPresenceDay').max,'2026-10-16');
+assert.equal(node('presenceRetentionNote').textContent.includes('45 个自然日'),true); assert.equal(node('presenceRetentionNote').textContent.includes('04:00'),true);
+assert.equal(dailyRequests.length,1,'the oldest available day is included');
+respondTo(presenceRequests,0,{status:'ready',source_key:'cw',account_id:1,agents:[{agent_id:1,agent_name:'CURRENT STATUS',availability_status:'online'}]});
+respondTo(dailyRequests,0,{status:'ready',day:'2026-09-02',source_key:'cw',account_id:1,retention_days:45,oldest_available_day:'2026-09-02',cleanup_hour:4,agents:[{agent_id:2,agent_name:'OLD HISTORICAL'}]}); await tick();
+respondTo(timelineRequests,0,timelinePayload({day:'2026-09-02'})); await tick(); ui.locatePresenceMinute(615);
+assert.equal(ui.presenceState.selectedMinute,615); assert.equal(node('presenceAgent').innerHTML.includes('OLD HISTORICAL'),true);
+[...timers.values()][0].callback();
+assert.equal(dailyRequests.length,2); assert.equal(timelineRequests.length,2);
+browserNow=Date.parse('2026-10-16T16:00:00Z'); [...timers.values()][0].callback();
+assert.equal(node('qualityPresenceDay').min,'2026-09-03'); assert.equal(node('qualityPresenceDay').max,'2026-10-17');
+assert.equal(dailyRequests[1].options.signal.aborted,true); assert.equal(timelineRequests[1].options.signal.aborted,true);
+assert.equal(dailyRequests.length,2); assert.equal(timelineRequests.length,2,'expired days make no new history requests');
+assert.equal(ui.presenceState.dailyRoster.length,0); assert.equal(ui.presenceState.roster.length,0); assert.equal(node('presenceAgent').value,'');
+assert.equal(ui.presenceState.timeline,null); assert.equal(ui.presenceState.selectedMinute,null); assert.equal(node('presenceTimelineBar').innerHTML,'');
+for (const id of ['qualityPresenceDailyStatus','presenceTimelineStatus','presencePoint']) assert.equal(node(id).textContent.includes('记录已超出45天保留期'),true,id);
+assert.equal(node('qualityPresenceAgents').innerHTML.includes('CURRENT STATUS'),true,'current status remains available');
+respondTo(dailyRequests,1,{status:'ready',agents:[{agent_id:2,agent_name:'LATE HISTORICAL'}]});
+respondTo(timelineRequests,1,timelinePayload({day:'2026-09-02',agent:{agent_id:1,agent_name:'LATE TIMELINE'}})); await tick();
+assert.equal(ui.presenceState.timeline,null); assert.equal(node('presenceAgent').innerHTML.includes('LATE'),false);
+node('presenceLocate').handlers.click(); assert.equal(node('presencePoint').textContent.includes('记录已超出45天保留期'),true);
+""",
+    "presence_expired_api_responses_clear_both_history_panels_and_never_become_missing_or_offline": r"""
+ui.state.token='session'; ui.state.view='presence';
+for (const kind of ['daily','timeline']) {
+ ui.stopQualityPresence(true,true); node('qualityPresenceDay').value='2026-09-02';
+ ui.presenceState.currentRoster=[{source_key:'cw',account_id:1,agent_id:1,agent_name:'Agent'}]; ui.mergePresenceRoster();
+ const timelineIndex=timelineRequests.length-1, dailyIndex=dailyRequests.length;
+ const daily=ui.loadQualityPresenceDaily();
+ const payload={status:'expired',day:'2026-09-02',retention_days:45,oldest_available_day:'2026-09-03',cleanup_hour:4,agents:[{agent_id:2,agent_name:'MUST NOT SHOW',offline_minutes:1440,missing_minutes:1440}]};
+ if (kind==='daily') {respondTo(dailyRequests,dailyIndex,payload); await daily;}
+ else {respondTo(timelineRequests,timelineIndex,payload); await tick();}
+ assert.equal(node('qualityPresenceDay').min,'2026-09-03');
+ assert.equal(ui.presenceState.timeline,null); assert.equal(ui.presenceState.daily,null); assert.equal(ui.presenceState.dailyRoster.length,0);
+ assert.equal(node('presenceAgent').value,''); assert.equal(node('presenceTimelineBar').innerHTML,'');
+ for (const id of ['qualityPresenceDailyStatus','presenceTimelineStatus','presencePoint']) {
+  assert.equal(node(id).textContent.includes('记录已超出45天保留期'),true,kind+id);
+  assert.equal(node(id).textContent.includes('离线'),false); assert.equal(node(id).textContent.includes('缺采样'),false);
+ }
+ assert.equal(node('qualityPresenceDaily').innerHTML.includes('MUST NOT SHOW'),false);
+ if (kind==='daily') {assert.equal(timelineRequests[timelineIndex].options.signal.aborted,true); respondTo(timelineRequests,timelineIndex,timelinePayload({day:'2026-09-02'}));}
+ else {assert.equal(dailyRequests[dailyIndex].options.signal.aborted,true); respondTo(dailyRequests,dailyIndex,{status:'ready',agents:[{agent_id:2,agent_name:'MUST NOT SHOW'}]}); await daily;}
+ await tick(); assert.equal(ui.presenceState.timeline,null); assert.equal(ui.presenceState.roster.length,0);
+}
+""",
+    "presence_day_changes_remove_old_historical_agents_and_point_before_new_responses": r"""
+ui.state.token='session'; ui.state.view='presence'; node('qualityPresenceDay').value='2026-10-16';
+ui.presenceState.currentRoster=[{source_key:'cw',account_id:1,agent_id:1,agent_name:'Current'}];
+ui.presenceState.dailyRoster=[{source_key:'cw',account_id:1,agent_id:2,agent_name:'OLD DAY AGENT'}]; ui.mergePresenceRoster();
+respondTo(timelineRequests,0,timelinePayload({agent:{agent_id:2,agent_name:'OLD DAY AGENT'}})); await tick(); ui.locatePresenceMinute(615);
+const oldDaily=ui.loadQualityPresenceDaily(); const oldTimeline=ui.loadPresenceTimeline();
+node('qualityPresenceDay').value='2026-10-15'; const newDaily=node('qualityPresenceDay').handlers.change();
+assert.equal(dailyRequests[0].options.signal.aborted,true); assert.equal(timelineRequests[1].options.signal.aborted,true);
+assert.equal(ui.presenceState.dailyRoster.length,0); assert.equal(node('presenceAgent').innerHTML.includes('OLD DAY AGENT'),false);
+assert.equal(ui.presenceState.timeline,null); assert.equal(ui.presenceState.selectedMinute,null); assert.equal(node('presencePoint').textContent.includes('10:15'),false);
+assert.equal(new URL(timelineRequests[2].url).searchParams.get('agent_id'),'1');
+assert.equal(new URL(timelineRequests[2].url).searchParams.get('day'),'2026-10-15');
+respondTo(dailyRequests,0,{status:'ready',source_key:'cw',account_id:1,agents:[{agent_id:2,agent_name:'LATE OLD DAY'}]});
+respondTo(timelineRequests,1,timelinePayload({agent:{agent_id:2,agent_name:'LATE OLD DAY'}})); await oldDaily; await oldTimeline;
+assert.equal(node('presenceAgent').innerHTML.includes('LATE'),false); assert.equal(ui.presenceState.timeline,null);
+respondTo(timelineRequests,2,timelinePayload({day:'2026-10-15'}));
+respondTo(dailyRequests,1,{status:'ready',day:'2026-10-15',source_key:'cw',account_id:1,agents:[{agent_id:3,agent_name:'NEW DAY HISTORY'}]}); await newDaily; await tick();
+assert.equal(node('presenceAgent').innerHTML.includes('NEW DAY HISTORY'),true); assert.equal(ui.presenceState.timeline.day,'2026-10-15');
+assert.equal(node('presenceTimelineStatus').textContent.includes('OLD DAY'),false);
+""",
+    "presence_out_of_range_input_and_resume_cannot_request_or_relabel_expired_history": r"""
+ui.state.token='session'; ui.state.view='presence'; node('qualityPresenceDay').value='2026-09-01'; ui.startQualityPresence();
+assert.equal(presenceRequests.length,1); assert.equal(dailyRequests.length,0); assert.equal(timelineRequests.length,0);
+assert.equal(node('qualityPresenceDailyStatus').textContent.includes('记录已超出45天保留期'),true);
+node('presenceCheckTime').value='10:15'; node('presenceLocate').handlers.click();
+assert.equal(node('presencePoint').textContent.includes('记录已超出45天保留期'),true);
+context.document.hidden=true; documentEvents.visibilitychange(); context.document.hidden=false; documentEvents.visibilitychange();
+assert.equal(dailyRequests.length,0); assert.equal(timelineRequests.length,0); assert.equal(timers.size,1);
+node('qualityPresenceDay').value='2026-09-02'; node('qualityPresenceDay').handlers.change();
+assert.equal(dailyRequests.length,1,'returning to a retained date restores querying');
+respondTo(dailyRequests,0,{status:'ready',day:'2026-09-02',source_key:'cw',account_id:1,agents:[{agent_id:7,agent_name:'Retained'}]}); await tick();
+assert.equal(timelineRequests.length,1); assert.equal(node('presenceAgent').innerHTML.includes('Retained'),true);
+""",
     "filters_scope_and_beijing_time": r"""
 const params = ui.collectQualityFilters();
 assert.equal(params.has('channel_key'), false, 'archive must default to all channels');
@@ -303,7 +761,7 @@ const html = node('qualityList').innerHTML;
 assert.equal(html.includes('<th>本轮责任坐席</th>'), true);
 const rows = [...html.matchAll(/<tbody>(.*?)<\/tbody>/gs)][0][1];
 const responsibleCells = [...rows.matchAll(/<tr>(.*?)<\/tr>/gs)].map(row => [...row[1].matchAll(/<td>(.*?)<\/td>/gs)][3][1]);
-assert.deepEqual(responsibleCells, ['&lt;Original A&gt;','坐席 3','未记录 ICS 分配','待确认','待确认','待确认','&lt;Original A&gt;']);
+assert.deepEqual(responsibleCells, ['&lt;Original A&gt;','Chatwoot 坐席 ID 3 · 名称未同步','未记录 ICS 分配','待确认','待确认','待确认','&lt;Original A&gt;']);
 for (const forbidden of ['Actual B','Private note author','Stale identity','Conflicting identity','Untrusted identity','Old reply owner']) assert.equal(html.includes(forbidden), false);
 assert.equal(html.includes('<Original A>'), false);
 for (const [index, item] of items.entries()) {
@@ -335,6 +793,92 @@ for (const [index, item] of items.entries()) {
  assert.equal(meta.includes('Stale identity'), false); assert.equal(meta.includes('Untrusted identity'), false);
  assert.equal(meta.includes('Conflicting identity'), false); assert.equal(meta.includes('Old reply owner'), false);
  assert.equal(meta.includes('old-evidence'), false); assert.equal(meta.includes('<Original A>'), false);
+}
+""",
+    "directory_agent_names_use_exact_scope_and_preserve_original_message_evidence": r"""
+ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+ui.qualityState.filters.agents = [
+ {source_key:'cw',account_id:1,agent_id:1,agent_name:'beec',agent_name_source:'chatwoot'},
+ {source_key:'cw',account_id:1,agent_id:2,agent_name:'QQ',agent_name_source:'chatwoot'},
+ {source_key:'cw',account_id:2,agent_id:1,agent_name:'<Other account>',agent_name_source:'chatwoot'},
+ {source_key:'other-cw',account_id:1,agent_id:1,agent_name:'Other source',agent_name_source:'chatwoot'},
+ {source_key:'cw',account_id:1,agent_id:3,agent_name:'#3',agent_name_source:'unobserved'},
+ {source_key:'cw',account_id:1,agent_id:4,agent_name:'  ',agent_name_source:'chatwoot'},
+ {source_key:'cw',account_id:1,agent_id:5,agent_name:'坐席5',agent_name_source:'chatwoot'}
+];
+const base = {source_key:'cw',account_id:1,responsibility_basis:'ics_assignment',responsible_agent_id:'1',responsible_agent_name:'分配坐席1'};
+const items = [
+ {...base,round_id:'original',current_assignee_id:'2',current_assignee_name:'分配坐席2',last_public_agent_id:'2',last_public_agent_name:'Archived QQ',last_public_reply_at:'2026-10-16T00:02:00Z',last_public_message_id:'702',agents:[{agent_id:'1',agent_name:'分配坐席1',was_assigned:true},{agent_id:'2',agent_name:'Archived QQ',was_assigned:true,replied:true,reply_count:1}]},
+ {...base,round_id:'other-account',account_id:'2'},
+ {...base,round_id:'other-source',source_key:'other-cw'},
+ {...base,round_id:'archived-name',source_key:'deleted-cw',responsible_agent_name:'<Archived A>'},
+ {...base,round_id:'unknown',responsible_agent_id:'3',responsible_agent_name:'分配坐席3'},
+ {...base,round_id:'empty-live-name',responsible_agent_id:'4',responsible_agent_name:'<Historical name>'},
+ {...base,round_id:'real-placeholder-name',responsible_agent_id:'5',responsible_agent_name:'Old name'},
+ {...base,round_id:'conflict',responsibility_basis:'assignment_conflict'},
+ {...base,round_id:'id-not-remapped',responsible_agent_id:'01',responsible_agent_name:null}
+];
+const unchanged = JSON.stringify(items);
+const list = ui.loadQualityList(); respond(0,{items,total:items.length,page:1}); await list;
+const cells = [...node('qualityList').innerHTML.matchAll(/<tbody>(.*?)<\/tbody>/gs)][0][1];
+const names = [...cells.matchAll(/<tr>(.*?)<\/tr>/gs)].map(row => [...row[1].matchAll(/<td>(.*?)<\/td>/gs)][3][1]);
+assert.deepEqual(names,['beec','&lt;Other account&gt;','Other source','&lt;Archived A&gt;','Chatwoot 坐席 ID 3 · 名称未同步','&lt;Historical name&gt;','坐席5','待确认','Chatwoot 坐席 ID 01 · 名称未同步']);
+assert.equal(node('qualityList').innerHTML.includes('分配坐席1'),false);
+const message = {message_id:'702',source_key:'cw',account_id:1,sender_id:'2',sender_role:'agent',sender_name:'<Archived QQ>',content:'原始内容 <内容> & unchanged',round_id:'original'};
+const originalMessage = JSON.stringify(message);
+const detail = ui.openQualityDetail('round','original');
+respond(1,{round:items[0],messages:[message],total:1,page:1}); await detail;
+const metadata = node('qualityDetailMeta').innerHTML;
+assert.equal(metadata.includes('<span>本轮责任坐席：beec</span>'),true);
+assert.equal(metadata.includes('<span>轮内最后分配（非责任）：QQ</span>'),true);
+assert.equal(metadata.includes('实际最后人工回复人（非责任依据）：QQ'),true);
+assert.equal(metadata.includes('beec（历史分配（非责任））'),true);
+assert.equal(metadata.includes('QQ（公开回复 1 条，历史分配（非责任））'),true);
+assert.equal(metadata.includes('责任依据：本轮 ICS 原始分配'),true);
+assert.equal(node('qualityTimeline').innerHTML.includes('<strong>&lt;Archived QQ&gt;</strong>'),true);
+assert.equal(node('qualityTimeline').innerHTML.includes('原始内容 &lt;内容&gt; &amp; unchanged'),true);
+assert.equal(node('qualityTimeline').innerHTML.includes('<strong>QQ</strong>'),false);
+assert.equal(JSON.stringify(items),unchanged);
+assert.equal(JSON.stringify(ui.qualityState.messages[0]),originalMessage);
+const versions = ui.openQualityVersions(message);
+respond(2,{items:[{snapshot_id:1,event_id:1,sender_id:'2',sender_role:'agent',sender_name:'<Version original>',content:'原始版本 <正文>'}],total:1,page:1}); await versions;
+assert.equal(node('qualityVersionList').innerHTML.includes('<strong>&lt;Version original&gt;</strong>'),true);
+assert.equal(node('qualityVersionList').innerHTML.includes('原始版本 &lt;正文&gt;'),true);
+assert.equal(node('qualityVersionList').innerHTML.includes('<strong>QQ</strong>'),false);
+""",
+    "agent_name_placeholders_do_not_impersonate_real_names": r"""
+const scope = {source_key:'cw',account_id:1};
+const fallback = 'Chatwoot 坐席 ID 1 · 名称未同步';
+for (const placeholder of ['', ' ', '1','#1','坐席 1','分配坐席1','分配坐席 1','Chatwoot 坐席 ID 1','Chatwoot 坐席 ID 1 · 名称未同步']) {
+ assert.equal(ui.qualityAgentLabel(scope,'1',placeholder),fallback,placeholder);
+ ui.qualityState.filters.agents = [{...scope,agent_id:1,agent_name:placeholder}];
+ assert.equal(ui.qualityAgentLabel(scope,'1','Archived real name'),'Archived real name',placeholder);
+ ui.qualityState.filters.agents = [];
+}
+assert.equal(ui.qualityAgentLabel(scope,'1','坐席小王'),'坐席小王');
+ui.qualityState.filters.agents = [{...scope,agent_id:1,agent_name:'坐席1',agent_name_source:'chatwoot'}];
+assert.equal(ui.qualityAgentLabel(scope,'1','Old name'),'坐席1','an explicit upstream name is evidence even if it resembles an old placeholder');
+ui.qualityState.filters.agents = [{...scope,agent_id:1,agent_name:'#1',agent_name_source:'unobserved'}];
+assert.equal(ui.qualityAgentLabel(scope,'1',null),fallback);
+""",
+    "agent_selector_and_export_confirmation_use_real_names_without_changing_ids": r"""
+ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+ui.qualityState.filters.agents = [
+ {source_key:'cw',account_id:1,agent_id:1,agent_name:'beec',agent_name_source:'chatwoot'},
+ {source_key:'cw',account_id:1,agent_id:7,agent_name:'分配坐席7'}
+];
+ui.populateQualityFilters();
+assert.equal(node('qualityAgent').innerHTML.includes('>beec · cw / 账号 1'),true);
+assert.equal(node('qualityAgent').innerHTML.includes('Chatwoot 坐席 ID 7 · 名称未同步'),true);
+assert.equal(node('qualityAgent').innerHTML.includes('分配坐席7'),false);
+for (const [index,agentId] of ['1','7'].entries()) {
+ ui.qualityState.applied = new URLSearchParams({source_key:'cw',account_id:'1',agent_id:agentId,agent_scope:'responsible'});
+ const pending = ui.exportQuality('list');
+ const query = new URL(requests[index].url,'http://localhost').searchParams;
+ assert.equal(query.get('source_key'),'cw'); assert.equal(query.get('account_id'),'1'); assert.equal(query.get('agent_id'),agentId);
+ assert.equal(confirmations[index].includes(`坐席：${agentId === '1' ? 'beec' : 'Chatwoot 坐席 ID 7 · 名称未同步'}`),true);
+ assert.equal(confirmations[index].includes('本轮责任坐席（ICS分配）'),true);
+ respond(index,'xlsx'); await pending;
 }
 """,
     "responsibility_remains_original_a_when_b_replies_and_chatwoot_reassigns": r"""
@@ -696,7 +1240,7 @@ def test_page_has_all_referenced_elements_and_unique_ids() -> None:
     parser = IdParser()
     parser.feed(html)
     assert len(parser.ids) == len(set(parser.ids))
-    references = set(re.findall(r'\$\("(quality[^"]+)"\)', html))
+    references = set(re.findall(r'\$\("((?:quality|presence)[^"]+)"\)', html))
     assert references <= set(parser.ids), references - set(parser.ids)
 
 

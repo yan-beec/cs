@@ -18,6 +18,12 @@ from quality.query.repository import ArchiveFilters
 from quality.query.runtime import ArchiveUnavailable, ExportBusy, QueryRuntime
 
 
+@pytest.fixture(autouse=True)
+def isolated_directory(monkeypatch):
+    directory = Mock(enrich=AsyncMock(side_effect=lambda options: options), close=AsyncMock())
+    monkeypatch.setattr("quality.query.directory.ChatwootDirectory", lambda *args: directory)
+
+
 @pytest.fixture
 def download_client(monkeypatch):
     runtime = Mock()
@@ -183,6 +189,36 @@ def test_disabled_archive_does_not_allocate_export_resources():
                 await runtime.export("rounds", ArchiveFilters())
             assert runtime.export_executor is None
             repository.assert_not_called()
+    asyncio.run(check())
+
+
+def test_cancelling_name_lookup_releases_export_capacity_without_starting_database_work():
+    async def check():
+        runtime = QueryRuntime()
+        runtime.ready = True
+        runtime.settings = QuerySettings(_env_file=None, reader_password="test-reader")
+        started = asyncio.Event()
+        async def lookup(options):
+            started.set()
+            await asyncio.Event().wait()
+        runtime.directory = Mock(enrich=AsyncMock(side_effect=lookup), close=AsyncMock())
+        task = asyncio.create_task(runtime.export("rounds", ArchiveFilters()))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=1)
+            with pytest.raises(ExportBusy):
+                await runtime.export("rounds", ArchiveFilters())
+            runtime.directory.enrich.assert_awaited_once()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert runtime.export_slot._value == 1
+            assert runtime.export_repository is None
+            assert not runtime.export_cancellations
+            assert runtime.ready is True
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await runtime.close()
     asyncio.run(check())
 
 

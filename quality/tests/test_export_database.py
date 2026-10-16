@@ -139,6 +139,25 @@ class ExportDatabaseTest(unittest.TestCase):
         self.assertEqual(len(sheet_rows(history, "用户概览")), 1)
         self.assertEqual(len(sheet_rows(history, "轮次概览")), 2)
 
+    def test_live_directory_names_enrich_export_summary_without_rewriting_message_history(self):
+        self.receive(event(1),
+            event(2, 1, event_type="conversation_updated", assignee={"id": 8, "name": "分配坐席8"}),
+            agent_reply(3, 2, agent_id=9, agent_name="Original responder name"))
+        self.receive_assignment()
+        self.drain()
+        original_events, original_snapshots = self.rows("archive.events"), self.rows("archive.message_snapshots")
+        names = {(self.source, "1", "8"): "Real assigned agent", (self.source, "1", "9"): "Current responder name",
+            (self.source, "2", "8"): "Other account agent", ("other", "1", "8"): "Other instance agent"}
+        workbook = self.export_workbook(agent_names=names)
+        summary = sheet_rows(workbook, "轮次概览")[0]
+        self.assertEqual((summary["责任坐席ID"], summary["责任坐席名称"]), ("8", "Real assigned agent"))
+        self.assertEqual(summary["轮内最后分配坐席名称（非责任）"], "Real assigned agent")
+        self.assertEqual(summary["最后实际人工回复人名称（非责任）"], "Current responder name")
+        actual = next(row for row in sheet_rows(workbook, "消息明细") if row["消息ID"] == "3")
+        self.assertEqual((actual["发送人ID"], actual["发送人名称"], actual["正文分段"]), ("9", "Original responder name", "message 3"))
+        self.assertEqual(self.rows("archive.events"), original_events)
+        self.assertEqual(self.rows("archive.message_snapshots"), original_snapshots)
+
     def test_live_reception_export_moves_the_same_round_from_ai_to_human_on_request(self):
         self.receive(event(1))
         self.drain()

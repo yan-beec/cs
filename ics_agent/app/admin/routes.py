@@ -22,6 +22,7 @@ from .files import (
     knowledge_file_preview,
     list_files,
     safe_child_path,
+    save_faq_upload,
     save_upload,
 )
 from ics_agent.app.core.context import settings, webhook_repository
@@ -387,17 +388,9 @@ async def admin_upload_faq_file(
     channel_key: str = Depends(channel_query),
     _: AdminPrincipal = Depends(require_admin),
 ) -> JSONResponse:
-    """原子替换配置的 FAQ 工作簿。"""
-    destination = faq_file_path(channel_key=channel_key)
-    filename = Path(file.filename or "").name
-    if Path(filename).suffix.lower() != ".xlsx":
-        await file.close()
-        raise HTTPException(
-            status_code=400,
-            detail="请上传 .xlsx 格式的 FAQ 工作簿。",
-        )
+    """校验上传的 Excel，并以渠道固定文件名原子替换 FAQ 工作簿。"""
     try:
-        result = await asyncio.to_thread(save_upload, file, destination)
+        result = await asyncio.to_thread(save_faq_upload, file, channel_key=channel_key)
     except (AdminFileOperationError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

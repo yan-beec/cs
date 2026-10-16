@@ -11,4 +11,9 @@ PGPASSWORD="$ARCHIVE_READER_PASSWORD" psql -X --host 127.0.0.1 --username archiv
     --dbname "$POSTGRES_DB" --set ON_ERROR_STOP=1 --command 'SELECT current_user, current_database();'
 PGPASSWORD="$ARCHIVE_QUALITY_PASSWORD" psql -X --host 127.0.0.1 --username archive_quality \
     --dbname "$POSTGRES_DB" --set ON_ERROR_STOP=1 --command 'SELECT current_user, current_database();'
+case "${ARCHIVE_PRESENCE_PASSWORD:-}" in
+    ''|REPLACE_*|change-me*) ;;
+    *) PGPASSWORD="$ARCHIVE_PRESENCE_PASSWORD" psql -X --host 127.0.0.1 --username archive_presence \
+        --dbname "$POSTGRES_DB" --set ON_ERROR_STOP=1 --command 'SELECT current_user, current_database();' ;;
+esac
 printf '%s\n' 'PASS: capture schema, append-only evidence, task permissions and account authentication.'

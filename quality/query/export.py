@@ -14,6 +14,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 from .config import QuerySettings
+from .agents import enrich_round_agents
 from .repository import ArchiveFilters, QueryRepository, _flatten, customer_conditions, round_conditions
 
 
@@ -65,7 +66,7 @@ class ExportRepository(QueryRepository):
         raise ValueError("Unsupported archive export mode")
 
     def create_export(self, mode: str, filters: ArchiveFilters, *, customer_id=None, round_id=None,
-                      cancelled: threading.Event | None = None) -> ExportFile:
+                      cancelled: threading.Event | None = None, agent_names: dict | None = None) -> ExportFile:
         # Import only when exporting; optional workbook code cannot break startup.
         from .excel import ExcelLimitExceeded, build_workbook
 
@@ -126,6 +127,7 @@ class ExportRepository(QueryRepository):
                         batch = [_flatten(row) for row in batch]
                         if agents:
                             self._agents(connection, batch)
+                            batch = [enrich_round_agents(row, agent_names or {}) for row in batch]
                         for row in batch:
                             check()
                             yield row

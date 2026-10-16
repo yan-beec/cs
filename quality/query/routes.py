@@ -1,7 +1,7 @@
 """Administrator-only archive browsing, isolated from customer service routes."""
 
 import asyncio
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -84,6 +84,28 @@ async def quality_status():
 @router.get("/filters")
 async def filter_options():
     return await _call("filter_options")
+
+
+@router.get("/overview")
+async def overview(filters: ArchiveFilters = Depends(archive_filters)):
+    return await _call("overview", filters)
+
+
+@router.get("/presence")
+async def presence():
+    return await get_query_runtime().presence()
+
+
+@router.get("/presence/daily")
+async def presence_daily(day: date | None = None):
+    return await get_query_runtime().presence_daily(day)
+
+
+@router.get("/presence/timeline")
+async def presence_timeline(
+    agent_id: int = Query(..., ge=1, le=2**63 - 1), day: date | None = None,
+):
+    return await get_query_runtime().presence_timeline(day, agent_id)
 
 
 @router.get("/rounds")

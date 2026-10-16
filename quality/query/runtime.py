@@ -9,6 +9,7 @@ import logging
 import threading
 
 from .config import QuerySettings
+from .agents import agent_name_index, archived_agent_name, enrich_round_agents
 from .repository import QueryRepository
 from .export import ExportCancelled, ExportFile, ExportNotFound, ExportRepository, ExportTooLarge
 
@@ -124,21 +125,69 @@ class QueryRuntime:
             logger.warning("Archive query failed: %s", type(error).__name__)
             raise ArchiveUnavailable() from None
         if method == "filter_options":
-            try:
-                if self.directory is None:
-                    from ics_agent.app.core.config import get_settings
-                    from .directory import ChatwootDirectory
-
-                    self.directory = ChatwootDirectory(self.settings.source_key, get_settings())
-                return await self.directory.enrich(result)
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:
-                # An unavailable remote directory must never disable archive queries.
-                logger.warning("Archive directory unavailable: %s", type(error).__name__)
-                return {**result, "directory": {"status": "unavailable"},
-                        "directory_warning": "Chatwoot 目录暂不可用，筛选暂使用已归档的坐席和收件箱。"}
+            return await self._directory_options(result)
+        if method in {"list_rounds", "round_detail"} and result and ("items" in result or "round" in result):
+            options = await self._directory_options({})
+            names = agent_name_index(options.get("agents", []))
+            if method == "list_rounds":
+                result = {**result, "items": [enrich_round_agents(row, names) for row in result.get("items", [])]}
+            else:
+                result = {**result, "round": enrich_round_agents(result["round"], names)}
+        if method == "overview":
+            options = await self._directory_options({})
+            names = agent_name_index(options.get("agents", []))
+            agents = []
+            for row in result.get("participating_agents", []):
+                key = tuple(str(row.get(field)) for field in ("source_key", "account_id", "agent_id"))
+                name = names.get(key)
+                agents.append({**row, "agent_name": name or archived_agent_name(row.get("agent_name"), row.get("agent_id")),
+                               "agent_name_source": "chatwoot" if name else "archive"})
+            result = {**result, "participating_agents": agents}
         return result
+
+    def get_directory(self):
+        if self.directory is None:
+            from ics_agent.app.core.config import get_settings
+            from .directory import ChatwootDirectory
+
+            source_key = self.settings.source_key if self.settings is not None else QuerySettings().source_key
+            self.directory = ChatwootDirectory(source_key, get_settings())
+        return self.directory
+
+    async def directory_presence(self, *, force_refresh=False):
+        try:
+            return await self.get_directory().presence(force_refresh=force_refresh)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.warning("Archive presence directory unavailable: %s", type(error).__name__)
+            return {"status": "unavailable", "sampled_at": None, "agents": []}
+
+    async def presence(self):
+        from quality.presence.runtime import get_presence_runtime
+
+        return {**await self.directory_presence(), "collector": get_presence_runtime().state()}
+
+    async def presence_daily(self, day=None):
+        from quality.presence.runtime import get_presence_runtime
+
+        return await get_presence_runtime().daily(day)
+
+    async def presence_timeline(self, day, agent_id):
+        from quality.presence.runtime import get_presence_runtime
+
+        return await get_presence_runtime().timeline(day, agent_id)
+
+    async def _directory_options(self, options):
+        try:
+            return await self.get_directory().enrich(options)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            # Directory failure affects names, never archive query readiness.
+            logger.warning("Archive directory unavailable: %s", type(error).__name__)
+            return {**options, "directory": {"status": "unavailable"},
+                    "directory_warning": "Chatwoot 目录暂不可用，筛选暂使用已归档的坐席和收件箱。"}
 
     async def export(self, mode, filters, **scope) -> ExportFile:
         if not self.ready or self.settings is None:
@@ -152,6 +201,12 @@ class QueryRuntime:
             await asyncio.wait_for(self.export_slot.acquire(), timeout=0.2)
         except asyncio.TimeoutError:
             raise ExportBusy() from None
+        try:
+            options = await self._directory_options({}) if mode != "unlinked-ratings" else {}
+            agent_names = agent_name_index(options.get("agents", []))
+        except BaseException:
+            self.export_slot.release()
+            raise
         cancelled = threading.Event()
         self.export_cancellations.add(cancelled)
 
@@ -164,7 +219,7 @@ class QueryRuntime:
                     repository.close()
                     raise
                 self.export_repository = repository
-            return self.export_repository.create_export(mode, filters, cancelled=cancelled, **scope)
+            return self.export_repository.create_export(mode, filters, cancelled=cancelled, agent_names=agent_names, **scope)
 
         future = asyncio.get_running_loop().run_in_executor(self.export_executor, work)
         slot = self.export_slot

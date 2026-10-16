@@ -36,6 +36,7 @@ from reminder.backend.repository import get_repository as get_reminder_repositor
 from quality.query.routes import router as quality_query_router
 from quality.query.runtime import get_query_runtime
 from quality.assignment.runtime import start_assignment_sync, stop_assignment_sync
+from quality.presence.runtime import get_presence_runtime
 from .chatwoot.schema_recovery import ConversationControlSchemaRecovery
 
 logger = logging.getLogger(__name__)
@@ -147,6 +148,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         )
 
     await get_query_runtime().start()
+    try:
+        await get_presence_runtime().start(get_query_runtime())
+    except Exception as exc:
+        logger.warning("Archive presence startup unavailable: %s", type(exc).__name__)
     await start_assignment_sync()
     if control_schema_failed:
         await control_schema_recovery.start(settings)
@@ -157,6 +162,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await stop_chatwoot_webhook_workers()
         await control_schema_recovery.close()
         await stop_assignment_sync()
+        try:
+            await get_presence_runtime().close()
+        except Exception as exc:
+            logger.warning("Archive presence shutdown unavailable: %s", type(exc).__name__)
         await get_query_runtime().close()
         await memory_manager.shutdown()
         log_event(logger, logging.INFO, "app.lifecycle.stopped")

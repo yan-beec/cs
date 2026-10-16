@@ -7,13 +7,14 @@ import tempfile
 from datetime import datetime
 from mimetypes import guess_type
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Callable
 
 from fastapi import UploadFile
 from openpyxl import load_workbook
 
 from ics_agent.app.core.config import PROJECT_ROOT, Settings, get_settings
 from ics_agent.faq.config import get_faq_settings
+from ics_agent.faq.sync import FAQExcelReader
 from ics_agent.rag.config import get_rag_settings
 
 
@@ -106,6 +107,7 @@ def _copy_upload_to_path(
     destination: Path,
     *,
     max_bytes: int,
+    validate: Callable[[Path], None] | None = None,
 ) -> int:
     destination.parent.mkdir(parents=True, exist_ok=True)
     total = 0
@@ -114,7 +116,7 @@ def _copy_upload_to_path(
         with tempfile.NamedTemporaryFile(
             mode="wb",
             prefix=f".{destination.name}.",
-            suffix=".upload",
+            suffix=destination.suffix if validate is not None else ".upload",
             dir=destination.parent,
             delete=False,
         ) as temporary_file:
@@ -131,6 +133,8 @@ def _copy_upload_to_path(
                 temporary_file.write(chunk)
             temporary_file.flush()
             os.fsync(temporary_file.fileno())
+        if validate is not None:
+            validate(temporary_path)
         os.replace(temporary_path, destination)
         temporary_path = None
         return total
@@ -150,6 +154,47 @@ def save_upload(
         upload.file,
         destination,
         max_bytes=runtime_settings.admin_file_max_size_mb * 1024 * 1024,
+    )
+    return file_item(destination.parent, destination)
+
+
+def _validate_faq_workbook(path: Path) -> None:
+    """复用更新逻辑校验临时工作簿，校验失败时保留原文件。"""
+    try:
+        FAQExcelReader().read(path)
+    except ValueError as exc:
+        raise AdminFileOperationError(
+            "FAQ Excel 内容不符合更新要求。请检查首个工作表包含 "
+            "question、answer、need_human、enabled 四列，问答不能为空、问题不能重复，"
+            "且 need_human、enabled 必须为 0 或 1。原 FAQ 文件未修改。"
+        ) from exc
+    except Exception as exc:
+        # openpyxl 对缺少 Excel 工作簿部件的 Office ZIP 也会抛出 OSError。
+        if isinstance(exc, OSError) and str(exc) != "File contains no valid workbook part":
+            raise
+        raise AdminFileOperationError(
+            "文件不是有效的 Excel（.xlsx）工作簿或文件已损坏。原 FAQ 文件未修改。"
+        ) from exc
+
+
+def save_faq_upload(
+    upload: UploadFile,
+    *,
+    channel_key: str | None = None,
+    settings: Settings | None = None,
+) -> dict[str, object]:
+    """校验 Excel 后，以 FAQ 更新实际读取的固定文件名原子保存。"""
+    if Path(upload.filename or "").suffix.lower() != ".xlsx":
+        raise AdminFileOperationError(
+            "请上传 Excel（.xlsx）文件；旧版 .xls 文件请先另存为 .xlsx。"
+        )
+    destination = faq_file_path(channel_key=channel_key)
+    runtime_settings = settings or get_settings()
+    _copy_upload_to_path(
+        upload.file,
+        destination,
+        max_bytes=runtime_settings.admin_file_max_size_mb * 1024 * 1024,
+        validate=_validate_faq_workbook,
     )
     return file_item(destination.parent, destination)
 

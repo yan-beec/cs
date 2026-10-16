@@ -723,6 +723,48 @@
 
     /* ============ 对话归档 ============ */
     .quality-stack { display: grid; gap: 16px; }
+    .quality-overview-grid { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 6px; }
+    .quality-overview-panel > .panel-header { padding: 10px 16px 6px; }
+    .quality-overview-panel > .panel-body { padding: 6px 16px 10px; }
+    .quality-overview-panel .panel-heading h3 { font-size: 13px; }
+    .quality-overview-panel .panel-heading p, .quality-overview-panel .hint { font-size: 10.5px; }
+    .quality-stat { padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); min-width: 0; }
+    .quality-stat-label { color: var(--muted); font-size: 10.5px; overflow-wrap: anywhere; }
+    .quality-stat-value { display: block; margin: 2px 0 0; color: var(--ink); font-size: 16px; font-weight: 800; font-variant-numeric: tabular-nums; }
+    .quality-stat .hint { display: block; line-height: 1.35; }
+    .quality-overview-agents { margin-top: 6px; }
+    .quality-overview-agents summary { cursor: pointer; color: var(--ink-soft); font-size: 12px; font-weight: 700; margin-bottom: 10px; }
+    .quality-presence-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+    .quality-presence-seat { padding: 11px 13px; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+    .quality-presence-seat > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; overflow-wrap: anywhere; }
+    .quality-presence-daily { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+    .quality-presence-day { max-width: 180px; }
+    .presence-controls { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; }
+    .presence-agent-field { flex: 1; min-width: 220px; max-width: 520px; }
+    .presence-time-field { width: 145px; }
+    .presence-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 14px 0 10px; color: var(--ink-soft); font-size: 12px; }
+    .presence-legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; background: var(--presence-color); }
+    .presence-online { --presence-color: #1b8754; }
+    .presence-busy { --presence-color: #c07812; }
+    .presence-offline { --presence-color: #718096; }
+    .presence-unknown { --presence-color: #8c65ba; }
+    .presence-missing { --presence-color: #cb4d4d; }
+    .presence-not_monitored { --presence-color: #bcc3ce; }
+    .presence-future { --presence-color: #e9edf3; }
+    .presence-hours { overflow-x: auto; padding: 6px 1px 12px; }
+    .presence-hours-inner { min-width: 650px; }
+    .presence-bar { position: relative; height: 30px; border: 1px solid var(--line-strong); border-radius: 5px; overflow: hidden; background: var(--surface-soft); }
+    .presence-segment { position: absolute; top: 0; height: 100%; min-width: 0; padding: 0; border: 0; border-radius: 0; background: var(--presence-color); cursor: pointer; }
+    .presence-segment:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; z-index: 1; }
+    .presence-hour-ticks { position: relative; height: 24px; font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .presence-hour-ticks span { position: absolute; top: 7px; transform: translateX(-50%); }
+    .presence-hour-ticks span:first-child { transform: none; }
+    .presence-hour-ticks span:last-child { transform: translateX(-100%); }
+    .presence-hour-ticks span::before { content: ""; position: absolute; top: -7px; left: 50%; width: 1px; height: 4px; background: var(--line-strong); }
+    .presence-point { padding: 10px 12px; margin: 12px 0; background: var(--surface-soft); border-radius: var(--radius-sm); font-size: 13px; line-height: 1.6; }
+    .presence-table table { min-width: 580px; }
+    .presence-selected { background: var(--blue-soft); }
+    .quality-data-warning { color: var(--amber); }
     .quality-stack > .panel > .panel-header { flex-wrap: wrap; }
     .quality-status { margin: 0; color: var(--muted); font-size: 13px; }
     .quality-filters { margin: 0; padding: 0; border: 0; min-width: 0; }
@@ -742,6 +784,8 @@
     .quality-tabs button[aria-pressed="true"] { color: var(--blue-dark); border-color: var(--blue-line); background: var(--blue-soft); }
     .quality-table { max-height: 560px; }
     .quality-table table { min-width: 940px; }
+    #qualityPresenceDaily table { min-width: 800px; }
+    #presencePage th, #presencePage td { padding: 11px 12px; }
     .quality-rating-feedback { max-width: 320px; white-space: pre-wrap; overflow-wrap: anywhere; }
     .quality-secondary { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; font-weight: 400; overflow-wrap: anywhere; }
     .quality-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
@@ -758,8 +802,9 @@
     .quality-versions { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line); }
     .quality-versions h4 { margin-bottom: 4px; }
     .quality-empty { padding: 28px 18px; text-align: center; color: var(--muted); font-size: 13px; }
+    @media (max-width: 1400px) { .quality-overview-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
     @media (max-width: 1100px) { .quality-filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-    @media (max-width: 560px) { .quality-filter-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 560px) { .quality-filter-grid { grid-template-columns: 1fr; } .quality-overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
     @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
     .content > section:not(.hidden) { animation: rise .28s ease both; }
@@ -849,6 +894,10 @@
             <button id="qualityNav" class="nav-item" type="button">
               <span class="nav-icon" aria-hidden="true">档</span>
               <span>对话归档<small>用户历史 · 接待轮次 · 服务评价</small></span>
+            </button>
+            <button id="presenceNav" class="nav-item" type="button">
+              <span class="nav-icon" aria-hidden="true">勤</span>
+              <span>客服状态监管<small>当前状态 · 每日时长 · 分钟核对</small></span>
             </button>
             <button id="logsNav" class="nav-item" type="button">
               <span class="nav-icon" aria-hidden="true">志</span>
@@ -976,7 +1025,7 @@
                   <input id="faqFile" type="file" accept=".xlsx" aria-label="选择 FAQ Excel 文件">
                   <button id="faqUpload" class="button secondary" type="button">上传并覆盖</button>
                 </div>
-                <p class="hint">只能上传 Excel 文件，需包含 question、answer、need_human、enabled 四列；上传后以固定文件名覆盖当前文件。</p>
+                <p class="hint">仅支持 Excel（.xlsx），文件名不限，校验通过后自动保存为“最新问答对.xlsx”；需包含 question、answer、need_human、enabled 四列。校验失败会保留原文件。</p>
               </div>
               <div class="panel-footer">
                 <p class="hint">更新操作会全量替换 FAQ 数据并刷新匹配器。</p>
@@ -1029,6 +1078,10 @@
                   </fieldset>
                 </form>
               </section>
+              <section class="panel quality-overview-panel" aria-label="筛选概况">
+                <div class="panel-header"><div class="panel-heading"><h3>筛选概况</h3><p id="qualityOverviewStatus" role="status">按已应用筛选统计全部匹配轮次，不限当前页；用户完整历史不会扩大概况范围。</p></div></div>
+                <div class="panel-body"><div id="qualityOverviewCards" class="quality-overview-grid"><div class="hint">归档查询就绪后显示概况。</div></div><p id="qualityOverviewNotice" class="hint"></p><details class="quality-overview-agents"><summary id="qualityOverviewAgentSummary">参与坐席</summary><div id="qualityOverviewAgents" class="table-wrap quality-table"><div class="quality-empty">等待读取概况。</div></div></details></div>
+              </section>
               <section class="panel" aria-label="归档查询结果">
                 <div class="panel-header"><div class="panel-heading"><h3 id="qualityListTitle">接待轮次</h3><p id="qualityListSummary" role="status">等待读取归档</p></div><div class="toolbar-actions"><div class="quality-tabs" role="group" aria-label="归档查看方式"><button id="qualityRoundsTab" class="button secondary" type="button" aria-pressed="true" disabled>按轮次</button><button id="qualityCustomersTab" class="button secondary" type="button" aria-pressed="false" disabled>按用户</button></div><button id="qualityExportList" class="button secondary" type="button" title="导出所选轮次完整消息，包含所有分页" disabled>导出筛选结果（Excel）</button></div></div>
                 <div class="panel-body"><div id="qualityList" class="table-wrap quality-table"><div class="quality-empty">请选择筛选条件后查询对话。</div></div></div>
@@ -1040,6 +1093,32 @@
                   <section id="qualityVersions" class="quality-versions hidden" aria-label="消息版本"><div class="quality-message-header"><div><h4 id="qualityVersionsTitle">消息观察版本</h4><p class="hint">保留创建、编辑和删除时已收到的内容；缺少最初事件时不会将后续观察标为原文。</p></div><button id="qualityCloseVersions" class="button tertiary" type="button">收起版本</button></div><div id="qualityVersionList" class="quality-timeline"></div><div class="quality-form-actions"><span id="qualityVersionsPageInfo" class="hint">第 1 页</span><div class="toolbar-actions"><button id="qualityVersionsPrev" class="button tertiary" type="button" disabled>上一页版本</button><button id="qualityVersionsNext" class="button tertiary" type="button" disabled>下一页版本</button></div></div></section>
                 </div>
                 <div class="panel-footer quality-pagination"><span id="qualityDetailPageInfo" class="hint">第 1 页</span><div class="toolbar-actions"><button id="qualityDetailPrev" class="button tertiary" type="button" disabled>上一页消息</button><button id="qualityDetailNext" class="button tertiary" type="button" disabled>下一页消息</button></div></div>
+              </section>
+            </div>
+          </section>
+
+          <section id="presencePage" class="hidden" aria-label="客服状态监管">
+            <div class="workspace-heading"><div><span class="eyebrow">Agent Availability</span><h3>客服状态监管</h3><p>当前配置 Chatwoot 实例的客服状态与每日记录，所有时间均为北京时间（UTC+8）。</p></div><span class="tag">每分钟刷新</span></div>
+            <div class="quality-stack">
+              <section class="panel" aria-label="当前客服状态">
+                <div class="panel-header"><div class="panel-heading"><h3>当前客服状态</h3><p id="qualityPresenceStatus" class="hint" role="status">等待读取当前状态。</p><p id="qualityPresenceCollectorStatus" class="hint" role="status">等待确认历史采集状态。</p></div><span id="qualityPresenceTag" class="tag amber">状态未知</span></div>
+                <div class="panel-body"><div id="qualityPresenceAgents" class="quality-presence-grid"><div class="hint">正在获取坐席名单。</div></div></div>
+              </section>
+              <section class="panel" aria-label="每日状态时长">
+                <div class="panel-header"><div class="panel-heading"><h3>每日状态时长</h3><p>历史从启用后累计；后台持续采集，不依赖本页面。缺采样不计为离线。</p></div><label class="quality-field quality-presence-day">日期（北京时间）<input id="qualityPresenceDay" type="date" aria-label="客服每日统计日期"></label></div>
+                <div class="panel-body"><p id="presenceRetentionNote" class="hint">状态历史保留 45 个自然日（当天及前 44 天），北京时间每天 04:00 清理过期记录。</p><p id="qualityPresenceDailyStatus" class="hint" role="status">等待读取每日统计。</p><p id="qualityPresenceDailyNotice" class="hint quality-data-warning hidden" role="status"></p><div id="qualityPresenceDaily" class="table-wrap quality-table"><div class="quality-empty">选择日期查看各客服在线、忙碌、离线和未知分钟。</div></div></div>
+              </section>
+              <section class="panel" aria-label="全天分钟核对">
+                <div class="panel-header"><div class="panel-heading"><h3>全天分钟核对</h3><p>状态按每分钟观测记录，时间段用于核对，不代表秒级上下线时间。</p><p id="presenceTimelineStatus" class="hint" role="status">选择客服查看当天 00:00–24:00。</p></div></div>
+                <div class="panel-body">
+                  <div class="presence-controls"><label class="quality-field presence-agent-field">客服（当前与当日历史名单）<select id="presenceAgent"><option value="">等待客服名单</option></select></label><label class="quality-field presence-time-field">核对时间点<input id="presenceCheckTime" type="time" step="60" value="09:00"></label><button id="presenceLocate" class="button secondary" type="button">定位时间点</button></div>
+                  <div class="presence-legend" aria-label="状态图例"><span class="presence-online">在线</span><span class="presence-busy">忙碌</span><span class="presence-offline">离线</span><span class="presence-unknown">未知（已采样）</span><span class="presence-missing">缺采样</span><span class="presence-not_monitored">未监管</span><span class="presence-future">未结束 / 未来</span></div>
+                  <div class="presence-hours"><div class="presence-hours-inner"><div id="presenceTimelineBar" class="presence-bar" aria-label="全天状态时间条"></div><div id="presenceHourTicks" class="presence-hour-ticks" aria-hidden="true"></div></div></div>
+                  <div id="presencePoint" class="presence-point" role="status">选择客服后核对具体分钟。</div>
+                  <div class="quality-form-actions"><label class="quality-field quality-presence-day">区间状态<select id="presenceStatusFilter"><option value="">全部状态</option><option value="online">在线</option><option value="busy">忙碌</option><option value="offline">离线</option><option value="unknown">未知（已采样）</option><option value="missing">缺采样</option><option value="not_monitored">未监管</option><option value="future">未结束 / 未来</option></select></label><span id="presenceTimelineSummary" class="hint"></span></div>
+                  <div id="presenceIntervals" class="table-wrap presence-table"><div class="quality-empty">选择客服查看分钟区间。</div></div>
+                </div>
+                <div class="panel-footer quality-pagination"><span id="presencePageInfo" class="hint">第 1 页</span><div class="toolbar-actions"><button id="presencePrev" class="button tertiary" type="button" disabled>上一页区间</button><button id="presenceNext" class="button tertiary" type="button" disabled>下一页区间</button></div></div>
               </section>
             </div>
           </section>
@@ -1106,7 +1185,7 @@
     const $ = (id) => document.getElementById(id);
     const currentChannelName = () => state.channels.find((channel) => channel.key === state.channelKey)?.name || state.channelKey;
     const setNavigationBusy = () => {
-      document.querySelectorAll("#channelNav button, #logsNav, #qualityNav").forEach((button) => {
+      document.querySelectorAll("#channelNav button, #logsNav, #qualityNav, #presenceNav").forEach((button) => {
         button.disabled = state.pendingMutations > 0;
       });
     };
@@ -1173,7 +1252,36 @@
       generation: 0, controllers: new Map(), ready: false, mode: "rounds", page: 1, pageSize: 30,
       total: 0, items: [], filters: { sources: [], channels: [], agents: [], inboxes: [] }, applied: new URLSearchParams(),
       detail: null, versions: null, messages: [], listVersion: 0, detailVersion: 0, versionsVersion: 0,
-      listLoading: false, detailLoading: false, exportJob: null, exportEpoch: 0
+      listLoading: false, detailLoading: false, exportJob: null, exportEpoch: 0,
+      overview: null, overviewVersion: 0, overviewLoading: false
+    };
+    const presenceState = {
+      generation: 0, controllers: new Map(), timer: null,
+      current: null, currentVersion: 0, currentLoading: false, currentRoster: [],
+      daily: null, dailyVersion: 0, dailyLoading: false, dailyRequestedDay: "", dailyRoster: [],
+      roster: [], timeline: null, segments: [], timelineVersion: 0, timelineLoading: false,
+      timelineRequestedKey: "", timelineKey: "", page: 1, pageSize: 50, selectedMinute: null,
+      rangeDay: "", oldestAvailableDay: "", expiredDay: ""
+    };
+    const isPresenceCurrent = (generation, token) => state.view === "presence" && !!token && state.token === token && presenceState.generation === generation;
+    const cancelPresenceRequest = (slot) => {
+      presenceState.controllers.get(slot)?.abort();
+      presenceState.controllers.delete(slot);
+    };
+    const presenceRequest = async (slot, path) => {
+      cancelPresenceRequest(slot);
+      const controller = new AbortController(), generation = presenceState.generation, token = state.token;
+      presenceState.controllers.set(slot, controller);
+      try {
+        const result = await api(`/admin/api/quality${path}`, { signal: controller.signal });
+        if (controller.signal.aborted || !isPresenceCurrent(generation, token) || presenceState.controllers.get(slot) !== controller) throw new DOMException("监管请求已取消", "AbortError");
+        return result;
+      } catch (error) {
+        if (controller.signal.aborted || !isPresenceCurrent(generation, token)) throw new DOMException("监管请求已取消", "AbortError");
+        throw error;
+      } finally {
+        if (presenceState.controllers.get(slot) === controller) presenceState.controllers.delete(slot);
+      }
     };
     const qualityAbort = () => new DOMException("归档请求已取消", "AbortError");
     const isQualityCurrent = (generation, token) => state.view === "quality" && !!token && state.token === token && qualityState.generation === generation;
@@ -1214,10 +1322,22 @@
       if (["human", "human_involved"].includes(value)) return "人工介入";
       return value === "ai_only" ? "纯 AI 接待" : "待确认";
     };
+    const qualityUsableAgentName = (value, agentId) => {
+      const name = typeof value === "string" ? value.trim() : "";
+      const id = String(agentId ?? ""), compact = name.replace(/\s+/g, "");
+      const placeholders = [id, `#${id}`, `坐席${id}`, `分配坐席${id}`, `Chatwoot坐席ID${id}`, `Chatwoot坐席ID${id}·名称未同步`];
+      return name && !placeholders.includes(compact) ? name : "";
+    };
+    const qualityAgentLabel = (scope, agentId, archivedName) => {
+      const id = String(agentId ?? "");
+      const directory = (qualityState.filters.agents || []).find((agent) => String(agent.source_key) === String(scope.source_key) && String(agent.account_id) === String(scope.account_id) && String(agent.agent_id) === id);
+      const liveName = directory?.agent_name_source === "chatwoot" ? [directory.agent_name, directory.name].find((name) => typeof name === "string" && name.trim())?.trim() : "";
+      return liveName || qualityUsableAgentName(directory?.agent_name, id) || qualityUsableAgentName(directory?.name, id) || qualityUsableAgentName(archivedName, id) || (id ? `Chatwoot 坐席 ID ${id} · 名称未同步` : "Chatwoot 坐席名称未同步");
+    };
     const qualityResponsibleAgentLabel = (item) => {
       if (item.responsibility_basis === "assignment_unobserved") return "未记录 ICS 分配";
       if (item.responsibility_basis !== "ics_assignment" || item.responsible_agent_id === null || item.responsible_agent_id === undefined || item.responsible_agent_id === "") return "待确认";
-      return item.responsible_agent_name || `坐席 ${item.responsible_agent_id}`;
+      return qualityAgentLabel(item, item.responsible_agent_id, item.responsible_agent_name);
     };
     const qualityRatingLabel = (item) => item.rating_status === "rated" && item.rating !== null && item.rating !== undefined ? `${item.rating} 分` : "—";
     const qualityRatingFeedback = (item) => item.rating_status === "rated" && typeof item.rating_feedback === "string" ? item.rating_feedback.trim() : "";
@@ -1233,6 +1353,346 @@
         const url = new URL(String(value || ""));
         return ["http:", "https:"].includes(url.protocol) ? url.href : "";
       } catch (_) { return ""; }
+    };
+    const qualityMinute = (value) => {
+      const parsed = value ? new Date(value) : null;
+      return parsed && Number.isFinite(parsed.getTime()) ? new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(parsed) : "时间未知";
+    };
+    const qualityBeijingDay = () => {
+      const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+      const part = (name) => parts.find((item) => item.type === name).value;
+      return `${part("year")}-${part("month")}-${part("day")}`;
+    };
+    const qualityCount = (value) => Number.isFinite(Number(value)) && Number(value) >= 0 ? Math.trunc(Number(value)) : 0;
+    const renderQualityOverview = (result) => {
+      const total = qualityCount(result.total_rounds), rated = qualityCount(result.rated_rounds);
+      const share = (value) => total ? `${(qualityCount(value) * 100 / total).toFixed(1)}%` : "0.0%";
+      const average = result.average_rating === null || result.average_rating === undefined || !Number.isFinite(Number(result.average_rating)) ? "暂无评分" : `均分 ${Number(result.average_rating).toFixed(2)} 分`;
+      const cards = [
+        ["接待轮次", total, "全部匹配轮次，不限当前页"], ["用户数", qualityCount(result.total_customers), "匹配轮次中的用户"],
+        ["纯 AI 接待", qualityCount(result.ai_only_rounds), `占全部轮次 ${share(result.ai_only_rounds)}`], ["人工介入", qualityCount(result.human_rounds), `占全部轮次 ${share(result.human_rounds)}`],
+        ["已评价", rated, average], ["低于 4 分", qualityCount(result.low_rating_rounds), "已评价轮次中的低分记录"],
+        ["人工未见公开回复", qualityCount(result.human_without_public_reply_rounds), "仅表示未观察到真人公开回复"],
+        ["未结束 / 已解决", `${qualityCount(result.active_rounds)} / ${qualityCount(result.resolved_rounds)}`, "按当前归档轮次状态统计"]
+      ];
+      $("qualityOverviewCards").innerHTML = cards.map(([label, value, hint]) => `<div class="quality-stat"><span class="quality-stat-label">${escapeHtml(label)}</span><strong class="quality-stat-value">${escapeHtml(value)}</strong><span class="hint">${escapeHtml(hint)}</span></div>`).join("");
+      $("qualityOverviewStatus").textContent = `已应用筛选 · 全部匹配轮次 · 不限当前页 · 用户完整历史不扩大此范围${result.generated_at ? ` · 统计于 ${qualityMinute(result.generated_at)}` : ""}`;
+      const agents = Array.isArray(result.participating_agents) ? result.participating_agents : [];
+      const missing = qualityCount(result.responsibility_unrecorded_rounds);
+      $("qualityOverviewNotice").textContent = `${missing ? `有 ${missing} 轮未记录 ICS 分配，责任坐席暂不可确认。` : ""}${result.agents_truncated ? `参与坐席名单仅显示前 ${agents.length} 位，请缩小筛选范围查看。` : ""}${agents.length ? "坐席低分轮次按本轮 ICS 责任归属统计，不按参与归属。" : ""}`;
+      $("qualityOverviewAgentSummary").textContent = `参与坐席（${qualityCount(result.participating_agent_count)} 位）`;
+      $("qualityOverviewAgents").innerHTML = agents.length ? `<table><thead><tr><th>坐席</th><th>来源 / 账号</th><th>负责轮次</th><th>实际回复轮次</th><th>责任低分轮次（低于 4 分）</th></tr></thead><tbody>${agents.map((agent) => `<tr><td>${escapeHtml(qualityAgentLabel(agent, agent.agent_id, agent.agent_name))}<span class="quality-secondary">Chatwoot ID ${escapeHtml(agent.agent_id)}</span></td><td>${escapeHtml(agent.source_key)} / ${escapeHtml(agent.account_id)}</td><td>${qualityCount(agent.responsible_rounds)}</td><td>${qualityCount(agent.replied_rounds)}</td><td>${qualityCount(agent.low_rating_rounds)}</td></tr>`).join("")}</tbody></table>` : '<div class="quality-empty">筛选范围内暂无已识别的参与坐席。</div>';
+    };
+    const loadQualityOverview = async () => {
+      if (!qualityState.ready || state.view !== "quality" || !state.token) return;
+      const version = ++qualityState.overviewVersion, generation = qualityState.generation, token = state.token;
+      const params = new URLSearchParams(qualityState.applied);
+      params.delete("page"); params.delete("page_size");
+      const applied = qualityState.applied.toString();
+      qualityState.overviewLoading = true;
+      qualityState.overview = null;
+      $("qualityOverviewStatus").textContent = "正在统计已应用筛选的全部匹配轮次...";
+      $("qualityOverviewCards").innerHTML = '<div class="hint">正在读取概况...</div>';
+      $("qualityOverviewNotice").textContent = "";
+      $("qualityOverviewAgentSummary").textContent = "参与坐席";
+      $("qualityOverviewAgents").innerHTML = '<div class="quality-empty">正在读取参与坐席...</div>';
+      try {
+        const result = await qualityRequest("overview", `/overview?${params}`);
+        if (!isQualityCurrent(generation, token) || version !== qualityState.overviewVersion || applied !== qualityState.applied.toString()) return;
+        qualityState.overview = result;
+        renderQualityOverview(result);
+      } catch (error) {
+        if (error.name === "AbortError" || !isQualityCurrent(generation, token) || version !== qualityState.overviewVersion) return;
+        $("qualityOverviewStatus").textContent = "概况暂不可用，可继续查询归档列表。";
+        $("qualityOverviewCards").innerHTML = '<div class="hint">本次概况未完成，请重新查询或刷新。</div>';
+        $("qualityOverviewAgents").innerHTML = '<div class="quality-empty">参与坐席概况暂不可用。</div>';
+      } finally {
+        if (isQualityCurrent(generation, token) && version === qualityState.overviewVersion) qualityState.overviewLoading = false;
+      }
+    };
+    const presenceAgentValue = (agent) => JSON.stringify({ source_key: String(agent.source_key), account_id: String(agent.account_id), agent_id: String(agent.agent_id) });
+    const presenceAgentName = (agent) => {
+      const name = agent.agent_name_source === "chatwoot" && typeof agent.agent_name === "string" ? agent.agent_name.trim() : qualityUsableAgentName(agent.agent_name, agent.agent_id);
+      return name || `Chatwoot 坐席 ID ${agent.agent_id} · 名称未同步`;
+    };
+    const presenceRosterRows = (result) => (Array.isArray(result.agents) ? result.agents : []).map((row) => ({ source_key: result.source_key, account_id: result.account_id, ...row })).filter((row) => row.source_key && row.account_id !== undefined && /^[1-9]\d*$/.test(String(row.agent_id)));
+    const mergePresenceRoster = () => {
+      if (!ensurePresenceDay()) return;
+      const previous = $("presenceAgent").value, roster = new Map();
+      for (const agent of [...presenceState.dailyRoster, ...presenceState.currentRoster]) roster.set(presenceAgentValue(agent), agent);
+      presenceState.roster = [...roster.values()];
+      $("presenceAgent").innerHTML = presenceState.roster.length ? presenceState.roster.map((agent) => `<option value="${escapeHtml(presenceAgentValue(agent))}">${escapeHtml(presenceAgentName(agent))} · ID ${escapeHtml(agent.agent_id)} · ${escapeHtml(agent.source_key)} / 账号 ${escapeHtml(agent.account_id)}</option>`).join("") : '<option value="">暂无可选客服</option>';
+      if (roster.has(previous)) $("presenceAgent").value = previous;
+      if (previous !== $("presenceAgent").value || !presenceState.timelineKey) loadPresenceTimeline();
+    };
+    const qualityPresenceVisible = () => state.view === "presence" && !!state.token && document.hidden !== true;
+    const updatePresenceDateRange = (result = {}) => {
+      const today = qualityBeijingDay(), oldest = new Date(`${today}T00:00:00Z`);
+      oldest.setUTCDate(oldest.getUTCDate() - 44);
+      const localOldest = oldest.toISOString().slice(0, 10);
+      if (presenceState.rangeDay !== today) {
+        presenceState.rangeDay = today;
+        presenceState.oldestAvailableDay = localOldest;
+      }
+      const reported = result.oldest_available_day;
+      if (typeof reported === "string" && /^\d{4}-\d{2}-\d{2}$/.test(reported) && reported > presenceState.oldestAvailableDay) presenceState.oldestAvailableDay = reported;
+      $("qualityPresenceDay").min = presenceState.oldestAvailableDay;
+      $("qualityPresenceDay").max = today;
+      $("presenceRetentionNote").textContent = `状态历史保留 45 个自然日（当天及前 44 天），北京时间每天 04:00 清理过期记录。可查询日期：${presenceState.oldestAvailableDay} 至 ${today}。`;
+    };
+    const clearPresenceHistory = (message, expired = false) => {
+      cancelPresenceRequest("presenceDaily"); cancelPresenceRequest("timeline");
+      presenceState.dailyVersion++; presenceState.timelineVersion++;
+      presenceState.dailyLoading = presenceState.timelineLoading = false;
+      presenceState.daily = null; presenceState.dailyRoster = []; presenceState.roster = [];
+      if (expired) presenceState.expiredDay = $("qualityPresenceDay").value;
+      $("presenceAgent").innerHTML = '<option value="">请选择可查询日期</option>';
+      $("qualityPresenceDailyStatus").textContent = message;
+      $("qualityPresenceDailyNotice").textContent = "";
+      $("qualityPresenceDailyNotice").classList.add("hidden");
+      $("qualityPresenceDaily").innerHTML = `<div class="quality-empty">${escapeHtml(message)}</div>`;
+      clearPresenceTimeline(message);
+    };
+    const ensurePresenceDay = (result = {}) => {
+      updatePresenceDateRange(result);
+      const day = $("qualityPresenceDay").value;
+      if (result.status === "expired" || day && (day < $("qualityPresenceDay").min || day === presenceState.expiredDay)) {
+        clearPresenceHistory("记录已超出45天保留期，请选择可查询日期。", true);
+        return false;
+      }
+      if (!day || day > $("qualityPresenceDay").max) {
+        clearPresenceHistory("请选择保留期内的北京时间日期。");
+        return false;
+      }
+      return true;
+    };
+    const renderQualityPresence = (result) => {
+      const fresh = result.status === "ready", stale = result.status === "stale";
+      $("qualityPresenceTag").textContent = fresh ? "当前采样" : stale ? "旧采样 · 非实时" : "状态未知";
+      $("qualityPresenceTag").className = `tag ${fresh ? "green" : "amber"}`;
+      const scope = result.source_key && result.account_id !== null && result.account_id !== undefined ? `${result.source_key} / 账号 ${result.account_id} · ` : "";
+      const sampled = result.sampled_at ? `${fresh ? "采样于" : "上次采样"} ${qualityMinute(result.sampled_at)}（北京时间）` : "尚无有效采样时间";
+      $("qualityPresenceStatus").textContent = `${scope}${sampled}。${stale ? "当前展示旧采样，不能视为实时状态。" : fresh ? "" : "当前状态未知，未将获取失败视为离线。"}${result.status === "unconfigured" ? "请配置 Chatwoot 实例。" : ""}`;
+      const collector = result.collector;
+      $("qualityPresenceCollectorStatus").textContent = !collector ? "历史采集状态未知；当前状态不代表历史已保存。" : collector.status === "disabled" ? "后台历史采集未启用；当前状态可查看，历史暂不累计。" : !collector.enabled || collector.status !== "ready" ? "后台历史采集暂不可用，当前状态不代表历史已保存；缺口不计为离线。" : `${collector.last_saved_at ? `后台历史采集运行中，最近保存于 ${qualityMinute(collector.last_saved_at)}（北京时间）。` : "后台历史采集已启用，尚未确认保存样本。"}${qualityCount(collector.pending_batches) ? "部分状态样本等待保存。" : ""}${qualityCount(collector.dropped_batches) ? "部分状态采样未保存，缺口不计为离线。" : ""}`;
+      const agents = Array.isArray(result.agents) ? result.agents : [];
+      $("qualityPresenceAgents").innerHTML = agents.length ? agents.map((row) => {
+        const agent = { source_key: result.source_key, account_id: result.account_id, ...row };
+        const status = fresh || stale ? agent.availability_status : "unknown";
+        const label = { online: "在线", busy: "忙碌", offline: "离线", unknown: "未知" }[status] || "未知";
+        const color = status === "online" ? "green" : status === "busy" ? "amber" : "";
+        const upstreamName = agent.agent_name_source === "chatwoot" && typeof agent.agent_name === "string" ? agent.agent_name.trim() : qualityUsableAgentName(agent.agent_name, agent.agent_id);
+        const name = upstreamName || presenceAgentName(agent);
+        return `<article class="quality-presence-seat"><div><strong>${escapeHtml(name)}</strong>${qualityTag(`${label}${stale ? " · 旧采样" : ""}`, color)}</div><span class="quality-secondary">Chatwoot ID ${escapeHtml(agent.agent_id)} · ${escapeHtml(agent.source_key)} / 账号 ${escapeHtml(agent.account_id)}</span></article>`;
+      }).join("") : '<div class="hint">暂未获取坐席名单，当前状态未知。</div>';
+    };
+    const loadQualityPresence = async () => {
+      if (!qualityPresenceVisible() || presenceState.currentLoading) return;
+      const version = ++presenceState.currentVersion, generation = presenceState.generation, token = state.token;
+      presenceState.currentLoading = true;
+      try {
+        const result = await presenceRequest("presence", "/presence");
+        if (!isPresenceCurrent(generation, token) || version !== presenceState.currentVersion || !qualityPresenceVisible()) return;
+        presenceState.current = result;
+        renderQualityPresence(result);
+        presenceState.currentRoster = presenceRosterRows(result);
+        mergePresenceRoster();
+      } catch (error) {
+        if (error.name === "AbortError" || !isPresenceCurrent(generation, token) || version !== presenceState.currentVersion) return;
+        presenceState.current = { ...(presenceState.current || {}), status: "unavailable", collector: null };
+        renderQualityPresence(presenceState.current);
+      } finally {
+        if (isPresenceCurrent(generation, token) && version === presenceState.currentVersion) presenceState.currentLoading = false;
+      }
+    };
+    const renderQualityPresenceDaily = (result, day) => {
+      if (!ensurePresenceDay(result)) return;
+      $("qualityPresenceDailyNotice").textContent = "";
+      $("qualityPresenceDailyNotice").classList.add("hidden");
+      if (result.status !== "ready") {
+        $("qualityPresenceDailyStatus").textContent = result.status === "disabled" ? "后台历史采集未启用，暂无每日统计；当前状态可单独查看。" : result.status === "not_started" ? "后台历史采集尚未产生样本；历史仅从启用后累计。" : "每日统计暂不可用；采集失败或停机缺口不计为离线。";
+        $("qualityPresenceDaily").innerHTML = '<div class="quality-empty">暂无可读取的每日状态统计。</div>';
+        return;
+      }
+      const agents = Array.isArray(result.agents) ? result.agents : [];
+      if (result.agents_truncated) {
+        $("qualityPresenceDailyNotice").textContent = `名单已达展示上限，仅显示前 ${agents.length} 位坐席（共 ${qualityCount(result.agent_count)} 位）。未展示的坐席仍保留在历史采样中。`;
+        $("qualityPresenceDailyNotice").classList.remove("hidden");
+      }
+      const through = result.through_at || result.generated_at;
+      $("qualityPresenceDailyStatus").textContent = `${day} · 北京时间 · 每分钟采样统计${through ? ` · 统计截至 ${qualityMinute(through)}` : ""}。${result.monitoring_started_at ? `采集启用于 ${qualityMinute(result.monitoring_started_at)}。` : "历史仅从启用采集后累计。"}`;
+      $("qualityPresenceDaily").innerHTML = agents.length ? `<table><thead><tr><th>坐席</th><th>在线分钟</th><th>忙碌分钟</th><th>离线分钟</th><th>未知分钟</th><th>有效采样 / 覆盖情况</th><th>最近采样（北京时间）</th></tr></thead><tbody>${agents.map((row) => {
+        const agent = { source_key: result.source_key, account_id: result.account_id, ...row };
+        const sampled = qualityCount(agent.sampled_minutes), expected = qualityCount(agent.expected_minutes), missing = qualityCount(agent.missing_minutes);
+        const coverage = expected ? `${(sampled * 100 / expected).toFixed(1)}%` : "—";
+        const name = agent.agent_name_source === "chatwoot" && typeof agent.agent_name === "string" && agent.agent_name.trim() || presenceAgentName(agent);
+        return `<tr><td>${escapeHtml(name)}<span class="quality-secondary">Chatwoot ID ${escapeHtml(agent.agent_id)} · ${escapeHtml(agent.source_key)} / ${escapeHtml(agent.account_id)}</span></td><td>${qualityCount(agent.online_minutes)}</td><td>${qualityCount(agent.busy_minutes)}</td><td>${qualityCount(agent.offline_minutes)}</td><td>${qualityCount(agent.unknown_minutes)}</td><td>${sampled} / ${expected} 分钟 · ${coverage}<span class="quality-secondary">缺口 ${missing} 分钟，不计为离线</span></td><td>${escapeHtml(qualityMinute(agent.last_sampled_at || agent.last_sample_at))}</td></tr>`;
+      }).join("")}</tbody></table>` : '<div class="quality-empty">该日暂无采样记录，不能据此认定坐席离线。</div>';
+    };
+    const loadQualityPresenceDaily = async () => {
+      if (!qualityPresenceVisible() || !ensurePresenceDay()) return;
+      const day = $("qualityPresenceDay").value;
+      if (!day || presenceState.dailyLoading && presenceState.dailyRequestedDay === day) return;
+      const version = ++presenceState.dailyVersion, generation = presenceState.generation, token = state.token;
+      presenceState.dailyLoading = true;
+      presenceState.dailyRequestedDay = day;
+      $("qualityPresenceDailyStatus").textContent = `正在读取 ${day} 的每日采样统计...`;
+      $("qualityPresenceDailyNotice").textContent = "";
+      $("qualityPresenceDailyNotice").classList.add("hidden");
+      $("qualityPresenceDaily").innerHTML = '<div class="quality-empty">正在读取每日统计...</div>';
+      try {
+        const result = await presenceRequest("presenceDaily", `/presence/daily?${new URLSearchParams({ day })}`);
+        if (!isPresenceCurrent(generation, token) || version !== presenceState.dailyVersion || day !== $("qualityPresenceDay").value || !qualityPresenceVisible()) return;
+        if (!ensurePresenceDay(result)) return;
+        renderQualityPresenceDaily(result, day);
+        presenceState.daily = result;
+        presenceState.dailyRoster = presenceRosterRows(result);
+        mergePresenceRoster();
+      } catch (error) {
+        if (error.name === "AbortError" || !isPresenceCurrent(generation, token) || version !== presenceState.dailyVersion || day !== $("qualityPresenceDay").value) return;
+        renderQualityPresenceDaily({ status: "unavailable" }, day);
+      } finally {
+        if (isPresenceCurrent(generation, token) && version === presenceState.dailyVersion) presenceState.dailyLoading = false;
+      }
+    };
+    const presenceStatusLabels = { online: "在线", busy: "忙碌", offline: "离线", unknown: "未知（已采样）", missing: "缺采样", not_monitored: "未监管", future: "未结束 / 未来" };
+    const presenceClock = (minute) => `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
+    const presenceSelectionKey = () => `${$("qualityPresenceDay").value}|${$("presenceAgent").value}`;
+    const clearPresenceTimeline = (message = "选择客服查看当天 00:00–24:00。") => {
+      presenceState.timeline = null; presenceState.segments = []; presenceState.timelineKey = "";
+      presenceState.page = 1; presenceState.selectedMinute = null;
+      $("presenceTimelineStatus").textContent = message;
+      $("presenceTimelineBar").innerHTML = "";
+      $("presenceTimelineSummary").textContent = "";
+      $("presencePoint").textContent = message;
+      $("presenceIntervals").innerHTML = '<div class="quality-empty">暂无可读取的分钟区间。</div>';
+      $("presencePageInfo").textContent = "第 1 页";
+      $("presencePrev").disabled = $("presenceNext").disabled = true;
+    };
+    const presenceFilteredSegments = () => presenceState.segments.filter((segment) => !$("presenceStatusFilter").value || segment.status === $("presenceStatusFilter").value);
+    const renderPresencePoint = () => {
+      const minute = presenceState.selectedMinute;
+      const segment = presenceState.segments.find((item) => minute !== null && minute >= item.start_minute && minute < item.end_minute);
+      if (!segment) { $("presencePoint").textContent = "输入时间点，核对该分钟状态。"; return; }
+      const meaning = { missing: "该分钟应有记录但缺采样，不计为离线。", not_monitored: "该分钟尚未启用监管或客服不在监管名单，不计为缺采样。", future: "该分钟尚未结束或尚未到达，不计为缺采样。", unknown: "该分钟已有采样，但上游状态未知。" }[segment.status] || "";
+      $("presencePoint").textContent = `${$("qualityPresenceDay").value} ${presenceClock(minute)} · ${presenceStatusLabels[segment.status]} · 所在区间 ${presenceClock(segment.start_minute)}–${presenceClock(segment.end_minute)}（结束分钟不含）· ${segment.end_minute - segment.start_minute} 分钟。${meaning}`;
+    };
+    const renderPresenceIntervals = () => {
+      const segments = presenceFilteredSegments(), pages = Math.max(1, Math.ceil(segments.length / presenceState.pageSize));
+      presenceState.page = Math.max(1, Math.min(pages, presenceState.page));
+      const start = (presenceState.page - 1) * presenceState.pageSize, rows = segments.slice(start, start + presenceState.pageSize);
+      $("presenceIntervals").innerHTML = rows.length ? `<table><thead><tr><th>开始（含）</th><th>结束（不含）</th><th>状态</th><th>持续分钟</th><th>核对</th></tr></thead><tbody>${rows.map((segment) => `<tr${presenceState.selectedMinute !== null && presenceState.selectedMinute >= segment.start_minute && presenceState.selectedMinute < segment.end_minute ? ' class="presence-selected"' : ""}><td>${presenceClock(segment.start_minute)}</td><td>${presenceClock(segment.end_minute)}</td><td>${escapeHtml(presenceStatusLabels[segment.status])}</td><td>${segment.end_minute - segment.start_minute}</td><td><button class="button tertiary" type="button" data-presence-minute="${segment.start_minute}">核对开始分钟</button></td></tr>`).join("")}</tbody></table>` : '<div class="quality-empty">该状态没有匹配区间。</div>';
+      $("presencePageInfo").textContent = `第 ${presenceState.page} / ${pages} 页 · ${segments.length} 个区间 · 每页 ${presenceState.pageSize} 个`;
+      $("presencePrev").disabled = presenceState.page <= 1;
+      $("presenceNext").disabled = presenceState.page >= pages;
+    };
+    const locatePresenceMinute = (value) => {
+      if (!ensurePresenceDay()) return;
+      const time = $("presenceCheckTime").value;
+      const parsed = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(time);
+      const minute = value === undefined ? parsed ? Number(parsed[1]) * 60 + Number(parsed[2]) : NaN : Number(value);
+      if (!Number.isInteger(minute) || minute < 0 || minute >= 1440) { $("presencePoint").textContent = "请输入 00:00 至 23:59 的时间点。"; return; }
+      if (!presenceState.segments.length) { $("presencePoint").textContent = "请先选择客服并等待读取当天区间。"; return; }
+      presenceState.selectedMinute = minute;
+      $("presenceCheckTime").value = presenceClock(minute);
+      $("presenceStatusFilter").value = "";
+      const index = presenceState.segments.findIndex((segment) => minute >= segment.start_minute && minute < segment.end_minute);
+      presenceState.page = Math.floor(Math.max(0, index) / presenceState.pageSize) + 1;
+      renderPresencePoint(); renderPresenceIntervals();
+    };
+    const renderPresenceTimeline = (result) => {
+      if (!ensurePresenceDay(result)) return;
+      if (result.status !== "ready") {
+        clearPresenceTimeline({ disabled: "后台历史采集未启用，暂无分钟区间。", not_started: "后台历史采集尚未产生样本，暂无分钟区间。", not_found: "该客服无监管记录，请选择现有或历史客服。" }[result.status] || "分钟区间暂不可用，请稍后刷新。");
+        return;
+      }
+      const segments = Array.isArray(result.segments) && result.segments.length <= 1440 ? result.segments : [];
+      let cursor = 0;
+      const valid = segments.length && segments.every((segment) => {
+        if (!Number.isInteger(segment.start_minute) || !Number.isInteger(segment.end_minute) || segment.start_minute !== cursor || segment.end_minute <= cursor || segment.end_minute > 1440) return false;
+        cursor = segment.end_minute; return true;
+      }) && cursor === 1440;
+      if (!valid) { clearPresenceTimeline("分钟区间暂不可用，请稍后刷新。"); return; }
+      presenceState.timeline = result;
+      presenceState.segments = segments.map((segment) => ({ start_minute: segment.start_minute, end_minute: segment.end_minute, status: Object.hasOwn(presenceStatusLabels, segment.status) ? segment.status : "unknown" }));
+      const agent = { source_key: result.source_key, account_id: result.account_id, ...result.agent };
+      $("presenceTimelineStatus").textContent = `${result.day} · ${presenceAgentName(agent)} · ${result.source_key} / 账号 ${result.account_id} · 北京时间 00:00–24:00${result.through_at ? ` · 记录截至 ${qualityMinute(result.through_at)}` : ""}`;
+      $("presenceTimelineBar").innerHTML = presenceState.segments.map((segment) => `<button type="button" class="presence-segment presence-${segment.status}" style="left:${segment.start_minute * 100 / 1440}%;width:${(segment.end_minute - segment.start_minute) * 100 / 1440}%" data-presence-minute="${segment.start_minute}" title="${presenceClock(segment.start_minute)}–${presenceClock(segment.end_minute)} ${escapeHtml(presenceStatusLabels[segment.status])}" aria-label="${presenceClock(segment.start_minute)}–${presenceClock(segment.end_minute)} ${escapeHtml(presenceStatusLabels[segment.status])}"></button>`).join("");
+      $("presenceHourTicks").innerHTML = Array.from({ length: 25 }, (_, hour) => `<span style="left:${hour * 100 / 24}%">${String(hour).padStart(2, "0")}</span>`).join("");
+      const counts = result.status_minutes || {};
+      $("presenceTimelineSummary").textContent = Object.entries(presenceStatusLabels).map(([status, label]) => `${label} ${qualityCount(counts[status])} 分钟`).join(" · ");
+      renderPresencePoint(); renderPresenceIntervals();
+    };
+    const loadPresenceTimeline = async () => {
+      if (!qualityPresenceVisible() || !ensurePresenceDay()) return;
+      const day = $("qualityPresenceDay").value, selected = presenceState.roster.find((agent) => presenceAgentValue(agent) === $("presenceAgent").value);
+      const key = presenceSelectionKey();
+      if (!day || !selected) {
+        cancelPresenceRequest("timeline"); presenceState.timelineVersion++; presenceState.timelineLoading = false;
+        clearPresenceTimeline(); return;
+      }
+      if (presenceState.timelineLoading && presenceState.timelineRequestedKey === key) return;
+      const changed = presenceState.timelineKey !== key;
+      const version = ++presenceState.timelineVersion, generation = presenceState.generation, token = state.token;
+      if (changed) clearPresenceTimeline("正在读取所选客服的全天分钟区间...");
+      presenceState.timelineLoading = true; presenceState.timelineRequestedKey = key;
+      $("presenceTimelineStatus").textContent = `正在读取 ${day} · ${presenceAgentName(selected)} 的全天分钟区间...`;
+      try {
+        const result = await presenceRequest("timeline", `/presence/timeline?${new URLSearchParams({ day, agent_id: String(selected.agent_id) })}`);
+        if (!isPresenceCurrent(generation, token) || version !== presenceState.timelineVersion || key !== presenceSelectionKey() || !qualityPresenceVisible()) return;
+        if (result.status === "ready" && (result.day !== day || String(result.source_key) !== String(selected.source_key) || String(result.account_id) !== String(selected.account_id) || String(result.agent?.agent_id) !== String(selected.agent_id))) throw new Error("客服或日期不匹配");
+        renderPresenceTimeline(result);
+        if (presenceState.timeline) {
+          presenceState.timelineKey = key;
+          if (changed) locatePresenceMinute();
+        }
+      } catch (error) {
+        if (error.name === "AbortError" || !isPresenceCurrent(generation, token) || version !== presenceState.timelineVersion || key !== presenceSelectionKey()) return;
+        renderPresenceTimeline({ status: "unavailable" });
+      } finally {
+        if (isPresenceCurrent(generation, token) && version === presenceState.timelineVersion) presenceState.timelineLoading = false;
+      }
+    };
+    const stopQualityPresence = (clear = false, reset = false) => {
+      if (presenceState.timer !== null) clearInterval(presenceState.timer);
+      presenceState.timer = null;
+      presenceState.generation++;
+      for (const controller of presenceState.controllers.values()) controller.abort();
+      presenceState.controllers.clear();
+      presenceState.currentVersion++; presenceState.dailyVersion++; presenceState.timelineVersion++;
+      presenceState.currentLoading = presenceState.dailyLoading = presenceState.timelineLoading = false;
+      if (clear) {
+        presenceState.current = presenceState.daily = null;
+        presenceState.roster = []; presenceState.currentRoster = []; presenceState.dailyRoster = [];
+        $("qualityPresenceStatus").textContent = "等待读取当前状态。";
+        $("qualityPresenceCollectorStatus").textContent = "等待确认历史采集状态。";
+        $("qualityPresenceTag").textContent = "状态未知";
+        $("qualityPresenceTag").className = "tag amber";
+        $("qualityPresenceAgents").innerHTML = '<div class="hint">正在获取坐席名单。</div>';
+        $("qualityPresenceDailyStatus").textContent = "等待读取每日统计。";
+        $("qualityPresenceDailyNotice").textContent = "";
+        $("qualityPresenceDailyNotice").classList.add("hidden");
+        $("qualityPresenceDaily").innerHTML = '<div class="quality-empty">选择日期查看每日统计。</div>';
+        $("presenceAgent").innerHTML = '<option value="">等待客服名单</option>';
+        clearPresenceTimeline();
+      }
+      if (reset) {
+        $("qualityPresenceDay").value = ""; $("presenceCheckTime").value = "09:00"; $("presenceStatusFilter").value = "";
+        presenceState.rangeDay = presenceState.oldestAvailableDay = presenceState.expiredDay = "";
+      }
+    };
+    const startQualityPresence = () => {
+      if (!qualityPresenceVisible() || presenceState.timer !== null) return;
+      const today = qualityBeijingDay();
+      if (!$("qualityPresenceDay").value) $("qualityPresenceDay").value = today;
+      updatePresenceDateRange();
+      if (!$("presenceCheckTime").value) $("presenceCheckTime").value = "09:00";
+      const refresh = () => {
+        if (!qualityPresenceVisible()) { stopQualityPresence(); return; }
+        loadQualityPresence(); loadQualityPresenceDaily(); loadPresenceTimeline();
+      };
+      presenceState.timer = setInterval(refresh, 60000);
+      refresh();
     };
     const updateQualityExportButtons = () => {
       const available = qualityState.ready && state.view === "quality" && !!state.token;
@@ -1277,7 +1737,7 @@
         if (key === "status") display = qualityStatusLabel(value);
         if (key === "rating") display = `${value} 分`;
         if (key === "inbox_id") display = qualityInboxName({ source_key: params.get("source_key"), account_id: params.get("account_id"), inbox_id: value });
-        if (key === "agent_id") display = qualityState.filters.agents.find((agent) => String(agent.source_key) === params.get("source_key") && String(agent.account_id) === params.get("account_id") && String(agent.agent_id) === value)?.agent_name || value;
+        if (key === "agent_id") display = qualityAgentLabel({ source_key: params.get("source_key"), account_id: params.get("account_id") }, value);
         summary.push(`${labels[key]}：${display}`);
       }
       return summary.length ? summary.join("\n") : "全部归档（未限定筛选条件）";
@@ -1378,6 +1838,9 @@
       qualityState.items = [];
       qualityState.total = 0;
       qualityState.listVersion++;
+      qualityState.overviewVersion++;
+      qualityState.overview = null;
+      qualityState.overviewLoading = false;
       closeQualityDetail();
       $("qualityFilters").disabled = true;
       $("qualityRoundsTab").disabled = true;
@@ -1392,6 +1855,11 @@
       $("qualityStatusTag").textContent = "等待读取";
       $("qualityStatusTag").className = "tag amber";
       $("qualityPageInfo").textContent = "第 1 页";
+      $("qualityOverviewStatus").textContent = "按已应用筛选统计全部匹配轮次，不限当前页；用户完整历史不会扩大概况范围。";
+      $("qualityOverviewCards").innerHTML = '<div class="hint">归档查询就绪后显示概况。</div>';
+      $("qualityOverviewNotice").textContent = "";
+      $("qualityOverviewAgentSummary").textContent = "参与坐席";
+      $("qualityOverviewAgents").innerHTML = '<div class="quality-empty">等待读取概况。</div>';
       if (reset) {
         qualityState.filters = { sources: [], channels: [], agents: [], inboxes: [] };
         qualityState.applied = new URLSearchParams();
@@ -1424,7 +1892,7 @@
       const previous = $("qualityAgent").value;
       const source = parseQualityScope($("qualitySource").value);
       const agents = (qualityState.filters.agents || []).filter((item) => !source || qualityScopesMatch(item, source));
-      $("qualityAgent").innerHTML = '<option value="">全部坐席</option>' + agents.map((item) => `<option value="${escapeHtml(scopedQualityValue(item))}">${escapeHtml(item.agent_name || `坐席 ${item.agent_id}`)} · ${escapeHtml(item.source_key)} / 账号 ${escapeHtml(item.account_id)}</option>`).join("");
+      $("qualityAgent").innerHTML = '<option value="">全部坐席</option>' + agents.map((item) => `<option value="${escapeHtml(scopedQualityValue(item))}">${escapeHtml(qualityAgentLabel(item, item.agent_id, item.agent_name))} · ${escapeHtml(item.source_key)} / 账号 ${escapeHtml(item.account_id)}</option>`).join("");
       if ([...$("qualityAgent").options].some((item) => item.value === previous)) $("qualityAgent").value = previous;
     };
     const populateQualityFilters = () => {
@@ -1505,7 +1973,9 @@
         $("qualityStatus").textContent = `${status.last_received_at ? `最近收到 ${qualityTime(status.last_received_at)}。` : ""}${pendingJobs ? `有 ${pendingJobs} 条事件等待整理，部分对话可能暂不可见。` : ""}${Number(status.jobs?.failed || 0) ? "存在整理失败记录。" : ""}${assignmentNotice}只读查看已采集内容；附件尚未独立保存。`;
         qualityState.applied = collectQualityFilters();
         qualityState.page = 1;
-        await loadQualityList();
+        const list = loadQualityList();
+        loadQualityOverview();
+        await list;
       } catch (error) {
         if (error.name === "AbortError" || !isQualityCurrent(generation, token)) return;
         $("qualityStatusTag").textContent = "读取失败";
@@ -1619,8 +2089,13 @@
         if (item.responsibility_basis === "ics_assignment") {
           fields.push(["ICS 原始分配时间", qualityTime(item.responsible_assigned_at)], ["分配事件 ID", item.responsibility_event_id ?? "待确认"], ["ICS 轮次标识", item.responsibility_external_round_id ?? "待确认"], ["触发消息 ID", item.responsibility_trigger_message_id ?? "待确认"]);
         }
+        if (item.current_assignee_id !== null && item.current_assignee_id !== undefined && item.current_assignee_id !== "") {
+          const assigned = (item.agents || []).find((agent) => String(agent.agent_id) === String(item.current_assignee_id));
+          const assignedName = qualityUsableAgentName(item.current_assignee_name, item.current_assignee_id) || assigned?.agent_name;
+          fields.push(["轮内最后分配（非责任）", qualityAgentLabel(item, item.current_assignee_id, assignedName)]);
+        }
         if (item.last_public_agent_id !== null && item.last_public_agent_id !== undefined || item.last_public_agent_name || item.last_public_reply_at || item.last_public_message_id !== null && item.last_public_message_id !== undefined) {
-          const lastAgent = item.last_public_agent_name || (item.last_public_agent_id !== null && item.last_public_agent_id !== undefined ? `坐席 ${item.last_public_agent_id}` : "待确认");
+          const lastAgent = qualityAgentLabel(item, item.last_public_agent_id, item.last_public_agent_name);
           fields.push(["实际最后人工回复人（非责任依据）", lastAgent], ["实际最后人工回复时间", qualityTime(item.last_public_reply_at)], ["实际最后人工回复消息 ID", item.last_public_message_id ?? "待确认"]);
         }
         if (qualityRatingLabel(item) !== "—") fields.push(["服务评价", qualityRatingLabel(item)]);
@@ -1636,7 +2111,7 @@
           if (agent.replied) participation.push(`公开回复 ${agent.reply_count ?? 0} 条`);
           if (agent.was_assigned) participation.push("历史分配（非责任）");
           if (agent.noted) participation.push("有内部备注");
-          return `${agent.agent_name || `坐席 ${agent.agent_id}`}${participation.length ? `（${participation.join("，")}）` : ""}`;
+          return `${qualityAgentLabel(item, agent.agent_id, agent.agent_name)}${participation.length ? `（${participation.join("，")}）` : ""}`;
         }).join("、")]);
         const handoff = item.handoff_result || item.handoff_status;
         const handoffLabels = { requested: "已申请", assigned: "已分配", completed: "已确认接管", replied: "真人已回复", failed: "转接失败", no_agent: "暂无可接待坐席", pending: "等待处理", not_requested: "未申请", none: "未申请" };
@@ -1787,6 +2262,7 @@
         qualityState.applied = collectQualityFilters();
         qualityState.page = 1;
         loadQualityList();
+        loadQualityOverview();
       } catch (error) { $("qualityListSummary").textContent = error.message; }
     };
     const navigateTo = (route) => {
@@ -1819,7 +2295,7 @@
       const hash = window.location.hash;
       const match = /^#channel\/([a-z][a-z0-9_]*)$/.exec(hash);
       const channel = state.channels.find((item) => item.key === match?.[1]);
-      const view = hash === "#logs" ? "logs" : hash === "#quality" ? "quality" : "channel";
+      const view = hash === "#logs" ? "logs" : hash === "#quality" ? "quality" : hash === "#presence" ? "presence" : "channel";
       const key = channel?.key || "xingliao";
       state.view = view;
       if (view === "channel") state.channelKey = key;
@@ -1828,11 +2304,13 @@
       state.contentVersion++;
       stopLogs();
       stopQuality();
+      stopQualityPresence(true);
       closePreview();
       $("channelPage").classList.toggle("hidden", view !== "channel");
       $("logsPage").classList.toggle("hidden", view !== "logs");
       $("qualityPage").classList.toggle("hidden", view !== "quality");
-      document.querySelectorAll("#channelNav button, #logsNav, #qualityNav").forEach((button) => {
+      $("presencePage").classList.toggle("hidden", view !== "presence");
+      document.querySelectorAll("#channelNav button, #logsNav, #qualityNav, #presenceNav").forEach((button) => {
         const active = view === "channel" ? button.dataset.channelKey === key : button.id === `${view}Nav`;
         button.classList.toggle("active", active);
         if (active) button.setAttribute("aria-current", "page");
@@ -1848,6 +2326,11 @@
         $("pageContext").textContent = "全部渠道 · 原始对话与服务评价";
         document.title = "对话归档 - 零新智能客服";
         loadQuality();
+      } else if (view === "presence") {
+        $("pageTitle").textContent = "客服状态监管";
+        $("pageContext").textContent = "当前状态 · 每日时长 · 分钟核对";
+        document.title = "客服状态监管 - 零新智能客服";
+        startQualityPresence();
       } else {
         $("pageTitle").textContent = `${currentChannelName()} · 内容管理`;
         $("pageContext").textContent = "知识库与 FAQ 问答对";
@@ -1878,6 +2361,7 @@
       localStorage.removeItem("ics_admin_username");
       stopLogs();
       stopQuality(true);
+      stopQualityPresence(true, true);
       state.contentVersion++;
       state.logGeneration++;
       state.logId = 0;
@@ -2109,15 +2593,26 @@
         await loadKnowledgeFiles();
       } catch (error) { showToast(error.message, true); }
     };
+    const validateFaqFile = () => {
+      const input = $("faqFile");
+      const file = input.files[0];
+      if (file && !/\.xlsx$/i.test(file.name)) {
+        input.value = "";
+        showToast("请上传 Excel（.xlsx）文件；旧版 .xls 文件请先另存为 .xlsx。", true);
+        return false;
+      }
+      return true;
+    };
     const uploadFaq = async () => {
+      if (!validateFaqFile()) return;
       const file = $("faqFile").files[0];
       if (!file) return showToast("请选择新的 FAQ Excel 文件。", true);
       const form = new FormData();
       form.append("file", file);
       try {
-        await api("/admin/api/files/faq/upload", { method: "POST", body: form });
+        const result = await api("/admin/api/files/faq/upload", { method: "POST", body: form });
         $("faqFile").value = "";
-        showToast("FAQ 文件已覆盖。");
+        showToast(`FAQ 文件已保存为“${result.name}”，请点击“更新 FAQ 数据库”使其生效。`);
         await loadFaqInfo();
       } catch (error) { showToast(error.message, true); }
     };
@@ -2181,6 +2676,7 @@
     $("refreshAll").addEventListener("click", () => {
       if (state.view === "logs") loadLogs();
       else if (state.view === "quality") { stopQuality(); loadQuality(); }
+      else if (state.view === "presence") { stopQualityPresence(); startQualityPresence(); }
       else loadDashboard();
     });
     $("knowledgeRefresh").addEventListener("click", () => loadKnowledgeFiles().catch((error) => showToast(error.message, true)));
@@ -2188,10 +2684,33 @@
     $("knowledgeUpdate").addEventListener("click", submitKnowledgeUpdate);
     $("logsNav").addEventListener("click", () => navigateTo("#logs"));
     $("qualityNav").addEventListener("click", () => navigateTo("#quality"));
+    $("presenceNav").addEventListener("click", () => navigateTo("#presence"));
     $("qualityFilterForm").addEventListener("submit", (event) => { event.preventDefault(); applyQualityFilters(); });
     $("qualitySource").addEventListener("change", changeQualitySource);
     $("qualityInbox").addEventListener("change", () => changeQualityScopedFilter("qualityInbox"));
     $("qualityAgent").addEventListener("change", () => changeQualityScopedFilter("qualityAgent"));
+    $("qualityPresenceDay").addEventListener("change", () => {
+      clearPresenceHistory("正在读取所选日期的状态记录...");
+      if (!ensurePresenceDay()) return;
+      mergePresenceRoster();
+      return loadQualityPresenceDaily();
+    });
+    $("presenceAgent").addEventListener("change", loadPresenceTimeline);
+    $("presenceCheckTime").addEventListener("change", () => locatePresenceMinute());
+    $("presenceLocate").addEventListener("click", () => locatePresenceMinute());
+    $("presenceStatusFilter").addEventListener("change", () => { presenceState.page = 1; renderPresenceIntervals(); });
+    $("presencePrev").addEventListener("click", () => { if (presenceState.page > 1) { presenceState.page--; renderPresenceIntervals(); } });
+    $("presenceNext").addEventListener("click", () => { if (presenceState.page * presenceState.pageSize < presenceFilteredSegments().length) { presenceState.page++; renderPresenceIntervals(); } });
+    const handlePresenceMinuteClick = (event) => {
+      const button = event.target.closest("[data-presence-minute]");
+      if (button) locatePresenceMinute(button.dataset.presenceMinute);
+    };
+    $("presenceTimelineBar").addEventListener("click", handlePresenceMinuteClick);
+    $("presenceIntervals").addEventListener("click", handlePresenceMinuteClick);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) stopQualityPresence();
+      else startQualityPresence();
+    });
     $("qualityReset").addEventListener("click", () => {
       $("qualityFilterForm").reset();
       changeQualitySource();
@@ -2212,6 +2731,7 @@
     window.addEventListener("hashchange", showCurrentPage);
     $("faqPreview").addEventListener("click", previewFaqFile);
     $("faqDownload").addEventListener("click", downloadFaqFile);
+    $("faqFile").addEventListener("change", validateFaqFile);
     $("faqUpload").addEventListener("click", uploadFaq);
     $("faqUpdate").addEventListener("click", submitFaqUpdate);
     $("logClear").addEventListener("click", () => {

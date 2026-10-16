@@ -1,6 +1,7 @@
 """Read-only API, authorization and optional-resource isolation checks."""
 
 import asyncio
+from contextlib import nullcontext
 from datetime import datetime, timezone
 import threading
 from unittest.mock import AsyncMock, Mock, patch
@@ -12,7 +13,7 @@ import pytest
 from ics_agent.app.core.auth import require_admin
 from quality.query import routes
 from quality.query.config import QuerySettings
-from quality.query.repository import ArchiveFilters, customer_conditions, round_conditions
+from quality.query.repository import ArchiveFilters, QueryRepository, customer_conditions, round_conditions
 from quality.query.runtime import ArchiveUnavailable, QueryRuntime
 
 
@@ -32,7 +33,7 @@ def client(monkeypatch):
 def test_queries_reuse_existing_admin_auth(client):
     browser, runtime, app = client
     app.dependency_overrides.clear()
-    for path in ("status", "filters", "rounds", "customers", "unlinked-ratings", "rounds/id", "customers/id/history", "messages/1/versions?source_key=s&account_id=1", "events/1?source_key=s&account_id=1"):
+    for path in ("status", "filters", "overview", "presence", "presence/daily", "rounds", "customers", "unlinked-ratings", "rounds/id", "customers/id/history", "messages/1/versions?source_key=s&account_id=1", "events/1?source_key=s&account_id=1"):
         assert browser.get("/admin/api/quality/" + path).status_code == 401
     runtime.call.assert_not_called()
 
@@ -54,6 +55,74 @@ def test_filters_preserve_scope_and_beijing_time(client):
     assert filters.agent_scope == "assigned" and filters.has_attachment is False
     assert filters.start.astimezone(timezone.utc) == datetime(2026, 10, 16, tzinfo=timezone.utc)
     assert runtime.call.call_args.kwargs == {"page": 1, "page_size": 15}
+
+
+def test_overview_uses_identical_filters_without_pagination_or_customer_history_expansion(client):
+    browser, runtime, _ = client
+    runtime.call.return_value = {"total_rounds": 105, "total_customers": 3, "average_rating": None,
+        "participating_agents": [], "participating_agent_count": 0, "agents_truncated": False,
+        "generated_at": "2026-10-16T00:00:00+00:00"}
+    response = browser.get("/admin/api/quality/overview", params={
+        "source_key": "server-a", "account_id": 2, "agent_id": "9", "agent_scope": "replied",
+        "inbox_id": 3, "customer_query": " 客户 ", "keyword": " 原文 ", "channel_key": "unmapped",
+        "time_field": "message_at", "start": "2026-10-16T08:00:00", "end": "2026-10-17T08:00:00+08:00",
+        "reception_type": "human", "rating_status": "rated", "rating": 2, "message_scope": "contact",
+        "has_attachment": "false", "conversation_id": 12, "round_no": 2, "status": "resolved",
+        "page": 99, "page_size": 1,
+    })
+    assert response.status_code == 200 and response.json()["total_rounds"] == 105
+    method, filters = runtime.call.call_args.args
+    assert method == "overview" and runtime.call.call_args.kwargs == {}
+    assert filters == ArchiveFilters(source_key="server-a", account_id=2, agent_id="9", agent_scope="replied",
+        inbox_id=3, customer_query="客户", keyword="原文", channel_key="unmapped", time_field="message_at",
+        start=datetime(2026, 10, 16, tzinfo=timezone.utc), end=datetime(2026, 10, 17, tzinfo=timezone.utc),
+        reception_type="human", rating_status="rated", rating=2, message_scope="contact", has_attachment=False,
+        conversation_id=12, round_no=2, status="resolved")
+
+
+@pytest.mark.parametrize("params", [{"agent_id": "1"}, {"inbox_id": 3}, {"rating": 0},
+    {"agent_scope": "bad"}, {"start": "2026-10-17", "end": "2026-10-16"}])
+def test_overview_invalid_filters_never_reach_repository(client, params):
+    browser, runtime, _ = client
+    assert browser.get("/admin/api/quality/overview", params=params).status_code == 422
+    runtime.call.assert_not_called()
+
+
+def test_overview_unavailable_uses_existing_degraded_response(client):
+    browser, runtime, _ = client
+    runtime.call.side_effect = ArchiveUnavailable("private database details")
+    response = browser.get("/admin/api/quality/overview")
+    assert response.status_code == 503 and response.headers["Retry-After"] == "10"
+    assert "private" not in response.text
+
+
+@pytest.mark.parametrize("count", [0, 200, 201])
+def test_overview_is_one_bounded_aggregate_statement_in_a_read_only_snapshot(count):
+    connection = Mock()
+    connection.transaction.return_value = nullcontext()
+    connection.execute.return_value.fetchone.return_value = {
+        "participating_agent_count": count, "participating_agents": [],
+        "generated_at": datetime(2026, 10, 16, tzinfo=timezone.utc), "average_rating": None,
+    }
+    repository = QueryRepository.__new__(QueryRepository)
+    repository.pool = Mock()
+    repository.pool.connection.return_value = nullcontext(connection)
+    filters = ArchiveFilters(source_key="server-a", account_id=2, customer_query="selected", keyword="proof")
+    result = repository.overview(filters)
+    assert result["agents_truncated"] is (count > 200)
+    assert result["generated_at"] == "2026-10-16T00:00:00+00:00"
+    calls = connection.execute.call_args_list
+    assert len(calls) == 3
+    assert calls[0].args[0] == "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
+    assert calls[1].args[0] == "SET LOCAL statement_timeout = '3000ms'"
+    statement, values = calls[2].args
+    assert "WITH selected AS MATERIALIZED" in statement and "LIMIT 200" in statement
+    expected_where, expected_values = round_conditions(filters)
+    assert expected_where in statement and values == expected_values
+    assert "count(DISTINCT customer_id)" in statement
+    assert "FROM ops.message_index m" in statement and "archive.message_snapshots" in statement
+    assert "WHERE r.customer_id IN" not in statement
+    connection.execute.return_value.fetchall.assert_not_called()
 
 
 @pytest.mark.parametrize("params", [

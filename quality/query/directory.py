@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 import time
 
 from ics_agent.app.chatwoot.client import ChatwootClient
@@ -11,14 +12,14 @@ from ics_agent.channels import list_channels
 
 
 class ChatwootDirectory:
-    REFRESH_SECONDS = 300
+    REFRESH_SECONDS = 60
     RETRY_SECONDS = 60
     REQUEST_TIMEOUT_SECONDS = 2
     RESPONSE_MAX_BYTES = 2 * 1024 * 1024
     MAX_ITEMS = 2000
     WAIT_SECONDS = 5
 
-    def __init__(self, source_key, settings, *, client=None, clock=time.monotonic):
+    def __init__(self, source_key, settings, *, client=None, clock=time.monotonic, utcnow=None):
         self.source_key = source_key
         self.account_id = self._positive_id(settings.chatwoot_account_id)
         self.configured = bool(self.account_id and source_key and (
@@ -26,11 +27,15 @@ class ChatwootDirectory:
         ))
         self.client = client or ChatwootClient(settings)
         self.clock = clock
+        self.utcnow = utcnow or (lambda: datetime.now(timezone.utc))
         self.next_refresh = 0
         self.executor = None
         self.refresh = None
         self.cached = {"agents": [], "inboxes": []}
         self.status = "unconfigured" if not self.configured else "unavailable"
+        self.agents_sampled_at = None
+        self.agents_sampled_clock = None
+        self.agents_fetch_succeeded = False
 
     @staticmethod
     def _positive_id(value):
@@ -52,6 +57,10 @@ class ChatwootDirectory:
                 if not isinstance(items, list) or len(items) > self.MAX_ITEMS:
                     raise ValueError("Invalid or oversized Chatwoot directory")
                 result[kind] = self._normalize(kind, items)
+                if kind == "agents":
+                    # Capture the actual successful observation, before the independent inbox read.
+                    result["agents_sampled_at"] = self.utcnow().astimezone(timezone.utc).isoformat()
+                    result["agents_sampled_clock"] = self.clock()
             except Exception:
                 # Preserve the last good directory; never return upstream errors, tokens or bodies.
                 result[kind] = None
@@ -68,16 +77,22 @@ class ChatwootDirectory:
             if identifier is None:
                 continue
             scope = {"source_key": self.source_key, "account_id": self.account_id}
-            name = str(item.get("name") or item.get("available_name") or f"#{identifier}")[:200]
+            observed_name = next((value.strip() for value in (item.get("name"), item.get("available_name"))
+                if isinstance(value, str) and value.strip()), None)
+            name = (observed_name or f"#{identifier}")[:200]
             if kind == "agents":
-                normalized[identifier] = {**scope, "agent_id": str(identifier), "agent_name": name}
+                availability = item.get("availability_status") or item.get("availability")
+                availability = availability.strip().lower() if isinstance(availability, str) else "unknown"
+                normalized[identifier] = {**scope, "agent_id": str(identifier), "agent_name": name,
+                    "agent_name_source": "chatwoot" if observed_name else "unobserved",
+                    "availability_status": availability if availability in {"online", "busy", "offline"} else "unknown"}
             else:
                 normalized[identifier] = {**scope, "inbox_id": identifier, "name": name,
                                           "channel_key": bindings.get(identifier)}
         return list(normalized.values())
 
-    async def enrich(self, options):
-        if self.configured and self.refresh is None and self.clock() >= self.next_refresh:
+    async def _refresh_if_needed(self, *, force=False):
+        if self.configured and self.refresh is None and (force or self.clock() >= self.next_refresh):
             if self.executor is None:
                 self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="quality-directory")
             # One refresh is shared by every concurrent request. No unbounded executor queue.
@@ -88,16 +103,51 @@ class ChatwootDirectory:
             try:
                 result = await asyncio.wait_for(asyncio.shield(pending), timeout=self.WAIT_SECONDS)
             except asyncio.TimeoutError:
-                self.status = "stale" if any(self.cached.values()) else "unavailable"
-            else:
-                for kind, items in result.items():
-                    if items is not None:
-                        self.cached[kind] = items
-                success = all(items is not None for items in result.values())
-                self.status = "ready" if success else "stale" if any(self.cached.values()) else "unavailable"
-                self.next_refresh = self.clock() + (self.REFRESH_SECONDS if success else self.RETRY_SECONDS)
                 if self.refresh is pending:
+                    self.status = "stale" if any(self.cached.values()) else "unavailable"
+                    self.agents_fetch_succeeded = False
+            else:
+                if self.refresh is pending:
+                    for kind in ("agents", "inboxes"):
+                        if result[kind] is not None:
+                            self.cached[kind] = result[kind]
+                    self.agents_fetch_succeeded = result["agents"] is not None
+                    if self.agents_fetch_succeeded:
+                        self.agents_sampled_at = result["agents_sampled_at"]
+                        self.agents_sampled_clock = result["agents_sampled_clock"]
+                    success = all(result[kind] is not None for kind in ("agents", "inboxes"))
+                    self.status = "ready" if success else "stale" if any(self.cached.values()) else "unavailable"
+                    self.next_refresh = (self.agents_sampled_clock + self.REFRESH_SECONDS
+                                         if self.agents_fetch_succeeded else self.clock() + self.RETRY_SECONDS)
                     self.refresh = None
+
+    async def presence(self, *, force_refresh=False):
+        """Return real agent observations; forcing never invents a new sample time.
+
+        A history collector may bypass the cache, but still shares an in-flight
+        request. It must deduplicate using sampled_at's minute, not its own clock.
+        """
+        await self._refresh_if_needed(force=force_refresh)
+        if not self.configured:
+            status = "unconfigured"
+        elif self.agents_sampled_at is None:
+            status = "unavailable"
+        elif (not self.agents_fetch_succeeded
+              or self.clock() - self.agents_sampled_clock >= self.REFRESH_SECONDS):
+            status = "stale"
+        else:
+            status = "ready"
+        fields = ("source_key", "account_id", "agent_id", "agent_name", "agent_name_source", "availability_status")
+        return {
+            "status": status, "source_key": self.source_key, "account_id": self.account_id,
+            "sampled_at": self.agents_sampled_at,
+            "agents": [{key: row[key] for key in fields} for row in sorted(
+                self.cached["agents"], key=lambda item: (item["agent_name"], item["agent_id"]),
+            )],
+        }
+
+    async def enrich(self, options):
+        await self._refresh_if_needed()
         result = dict(options)
         sources = {(row["source_key"], row["account_id"]): dict(row) for row in options.get("sources", [])}
         if self.configured:

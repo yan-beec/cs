@@ -218,8 +218,10 @@ class FAQExcelReader:
             path=path,
             sheet_name=sheet_name,
         )
-        workbook = load_workbook(path, read_only=True, data_only=True)
+        source = path.open("rb")
+        workbook = None
         try:
+            workbook = load_workbook(source, read_only=True, data_only=True)
             selected_sheet = sheet_name or workbook.sheetnames[0]
             if selected_sheet not in workbook.sheetnames:
                 raise ValueError(
@@ -265,7 +267,11 @@ class FAQExcelReader:
             records.sort(key=lambda record: record.question)
             return records
         finally:
-            workbook.close()
+            try:
+                if workbook is not None:
+                    workbook.close()
+            finally:
+                source.close()
 
     @staticmethod
     def _validate_header(header: tuple[str, ...], path: Path) -> None:

@@ -13,6 +13,9 @@ from .config import QuerySettings
 from .responsibility import normalize_responsibility
 
 
+OVERVIEW_AGENT_LIMIT = 200
+
+
 @dataclass(frozen=True)
 class ArchiveFilters:
     source_key: str | None = None
@@ -241,6 +244,75 @@ class QueryRepository:
             """, [*values, page_size, (page - 1) * page_size]).fetchall()
             items = self._agents(connection, [_flatten(row) for row in rows])
         return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+    def overview(self, filters: ArchiveFilters):
+        """Aggregate only matched rounds, without expanding customers' full history."""
+        where, values = round_conditions(filters)
+        # One bounded statement computes totals and the limited seat list from
+        # one snapshot. No chat bodies or unbounded result sets leave PostgreSQL.
+        with self.pool.connection() as connection:
+            with connection.transaction():
+                connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+                connection.execute("SET LOCAL statement_timeout = '3000ms'")
+                result = dict(connection.execute(f"""
+                    WITH selected AS MATERIALIZED (
+                        SELECT r.round_id,r.source_key,r.account_id,r.customer_id,
+                            r.reception_type,r.status,r.rating_status,r.rating,r.data
+                        FROM ops.round_index r
+                        LEFT JOIN ops.customer_index c ON c.customer_id=r.customer_id
+                        WHERE {where}
+                    ), participation AS (
+                        SELECT r.source_key,r.account_id,r.round_id,
+                            r.data->>'responsible_agent_id' AS agent_id,
+                            r.data->>'responsible_agent_name' AS agent_name,
+                            TRUE AS responsible,FALSE AS replied,
+                            r.rating_status='rated' AND r.rating<4 AS low_rating
+                        FROM selected r
+                        WHERE r.data->>'responsibility_basis'='ics_assignment'
+                            AND NULLIF(r.data->>'responsible_agent_id','') IS NOT NULL
+                        UNION ALL
+                        SELECT r.source_key,r.account_id,r.round_id,a.agent_id,a.agent_name,
+                            FALSE,TRUE,FALSE
+                        FROM selected r JOIN ops.round_agent_index a ON a.round_id=r.round_id
+                        WHERE a.replied AND NULLIF(a.agent_id,'') IS NOT NULL
+                    ), per_round_agent AS (
+                        SELECT source_key,account_id,round_id,agent_id,
+                            max(NULLIF(agent_name,'')) AS agent_name,
+                            bool_or(responsible) AS responsible,bool_or(replied) AS replied,
+                            bool_or(low_rating) AS low_rating
+                        FROM participation GROUP BY source_key,account_id,round_id,agent_id
+                    ), agent_totals AS (
+                        SELECT source_key,account_id,agent_id,max(agent_name) AS agent_name,
+                            count(*) FILTER (WHERE responsible) AS responsible_rounds,
+                            count(*) FILTER (WHERE replied) AS replied_rounds,
+                            count(*) FILTER (WHERE low_rating) AS low_rating_rounds
+                        FROM per_round_agent GROUP BY source_key,account_id,agent_id
+                    )
+                    SELECT count(*) AS total_rounds,count(DISTINCT customer_id) AS total_customers,
+                        count(*) FILTER (WHERE reception_type='ai_only') AS ai_only_rounds,
+                        count(*) FILTER (WHERE reception_type='human') AS human_rounds,
+                        count(*) FILTER (WHERE status='active') AS active_rounds,
+                        count(*) FILTER (WHERE status='resolved') AS resolved_rounds,
+                        count(*) FILTER (WHERE rating_status='rated') AS rated_rounds,
+                        count(*) FILTER (WHERE rating_status='rated' AND rating<4) AS low_rating_rounds,
+                        (avg(rating) FILTER (WHERE rating_status='rated'))::double precision AS average_rating,
+                        count(*) FILTER (WHERE reception_type='human'
+                            AND data #>> '{{counts,agent}}' = '0') AS human_without_public_reply_rounds,
+                        count(*) FILTER (WHERE reception_type='human'
+                            AND data->>'responsibility_basis' IS DISTINCT FROM 'ics_assignment')
+                            AS responsibility_unrecorded_rounds,
+                        (SELECT count(*) FROM agent_totals) AS participating_agent_count,
+                        COALESCE((SELECT jsonb_agg(to_jsonb(limited)
+                            ORDER BY responsible_rounds DESC,replied_rounds DESC,source_key,account_id,agent_id)
+                            FROM (SELECT * FROM agent_totals
+                                ORDER BY responsible_rounds DESC,replied_rounds DESC,source_key,account_id,agent_id
+                                LIMIT {OVERVIEW_AGENT_LIMIT}) limited),'[]'::jsonb) AS participating_agents,
+                        CURRENT_TIMESTAMP AS generated_at
+                    FROM selected
+                """, values).fetchone())
+        result["agents_truncated"] = result["participating_agent_count"] > OVERVIEW_AGENT_LIMIT
+        result["generated_at"] = result["generated_at"].isoformat()
+        return result
 
     def list_customers(self, filters: ArchiveFilters, page: int = 1, page_size: int = 30):
         condition, values = customer_conditions(filters)
