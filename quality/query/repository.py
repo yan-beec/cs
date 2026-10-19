@@ -5,12 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
+import uuid
 
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 from .config import QuerySettings
 from .responsibility import normalize_responsibility
+from .service_metrics import RoundServiceMetrics
 
 
 OVERVIEW_AGENT_LIMIT = 200
@@ -317,6 +319,7 @@ class QueryRepository:
     def list_customers(self, filters: ArchiveFilters, page: int = 1, page_size: int = 30):
         condition, values = customer_conditions(filters)
         with self.pool.connection() as connection:
+            connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             total = connection.execute(f"SELECT count(*) AS total FROM ops.customer_index c WHERE {condition}", values).fetchone()["total"]
             rows = connection.execute(f"""
                 SELECT c.*, (SELECT count(*) FROM ops.round_index r WHERE r.customer_id=c.customer_id) AS round_count,
@@ -324,7 +327,38 @@ class QueryRepository:
                 FROM ops.customer_index c WHERE {condition}
                 ORDER BY c.last_message_at DESC NULLS LAST,c.customer_id LIMIT %s OFFSET %s
             """, [*values, page_size, (page - 1) * page_size]).fetchall()
-        return {"items": [_flatten(row) for row in rows], "total": total, "page": page, "page_size": page_size}
+            items = [_flatten(row) for row in rows]
+            self._customer_service_metrics(connection, items)
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+    @staticmethod
+    def _customer_service_metrics(connection, customers):
+        """Read only the latest round for customers on this page, in two batches."""
+        if not customers:
+            return
+        rows = connection.execute("""
+            SELECT DISTINCT ON (r.customer_id) r.* FROM ops.round_index r
+            WHERE r.customer_id=ANY(%s)
+            ORDER BY r.customer_id,r.started_at DESC,r.round_id DESC
+        """, ([item["customer_id"] for item in customers],)).fetchall()
+        rounds = {row["customer_id"]: _flatten(row) for row in rows}
+        metrics = {row["round_id"]: RoundServiceMetrics(row) for row in rounds.values()}
+        if metrics:
+            # A server cursor keeps memory proportional to the displayed customer
+            # count, even when a selected round contains a long chat history.
+            with connection.cursor(name="quality_service_metrics_" + uuid.uuid4().hex) as cursor:
+                cursor.execute("""
+                    SELECT round_id,message_id,sent_at,sender_role,direction,is_private,
+                        data->'is_rating' AS is_rating
+                    FROM ops.message_index WHERE round_id=ANY(%s)
+                    ORDER BY round_id,sent_at NULLS LAST,message_id
+                """, (list(metrics),))
+                while batch := cursor.fetchmany(500):
+                    for message in batch:
+                        metrics[message["round_id"]].observe(message)
+        for customer in customers:
+            latest = rounds.get(customer["customer_id"])
+            customer["latest_round"] = {**latest, "service_metrics": metrics[latest["round_id"]].result()} if latest else None
 
     def round_detail(self, round_id: str, page: int = 1, page_size: int = 100):
         with self.pool.connection() as connection:
@@ -360,6 +394,26 @@ class QueryRepository:
                 return None
             messages, total = self._messages(connection, "m.customer_id=%s", [customer_id], page, page_size)
         return {"customer": _flatten(customer), "messages": messages, "total": total, "page": page, "page_size": page_size}
+
+    def customer_rounds(self, customer_id: str, page: int = 1, page_size: int = 50):
+        """Read a customer's round directory without loading any message bodies."""
+        with self.pool.connection() as connection:
+            customer = connection.execute(
+                "SELECT customer_id FROM ops.customer_index WHERE customer_id=%s", (customer_id,)
+            ).fetchone()
+            if customer is None:
+                return None
+            total = connection.execute(
+                "SELECT count(*) AS total FROM ops.round_index WHERE customer_id=%s", (customer_id,)
+            ).fetchone()["total"]
+            rows = connection.execute("""
+                SELECT r.*,c.display_name AS customer_name,c.contact_id,c.business_user_id
+                FROM ops.round_index r JOIN ops.customer_index c ON c.customer_id=r.customer_id
+                WHERE r.customer_id=%s
+                ORDER BY r.started_at DESC,r.round_id DESC LIMIT %s OFFSET %s
+            """, (customer_id, page_size, (page - 1) * page_size)).fetchall()
+            items = [_flatten(row) for row in rows]
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
 
     def message_versions(self, source_key: str, account_id: int, message_id: int, page: int = 1, page_size: int = 100):
         with self.pool.connection() as connection:

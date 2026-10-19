@@ -74,20 +74,15 @@ class ExportDatabaseTest(unittest.TestCase):
         return workbook
 
     def test_filtered_round_export_contains_all_pages(self):
-        self.receive(*(event(index + 1, index, conversation_id=100 + index)
-                       for index in range(35)))
+        self.receive(*(event(index + 1, index, conversation_id=100 + index) for index in range(35)))
         self.drain()
         first_page = self.reader.list_rounds(self.filters())
         self.assertEqual((len(first_page["items"]), first_page["total"]), (30, 35))
-
         workbook = self.export_workbook()
-        rounds = sheet_rows(workbook, "轮次概览")
-        messages = sheet_rows(workbook, "消息明细")
-        self.assertEqual(len(rounds), 35)
-        self.assertEqual(len({row["轮次ID"] for row in rounds}), 35)
+        self.assertEqual(workbook.sheetnames, ["聊天记录"])
+        messages = sheet_rows(workbook, "聊天记录")
         self.assertEqual(len(messages), 35)
         self.assertEqual({row["会话ID"] for row in messages}, {str(100 + index) for index in range(35)})
-        self.assertEqual({row["实例来源"] for row in rounds}, {self.source})
 
     def test_keyword_selects_round_but_keeps_its_replies_and_private_notes(self):
         self.receive(
@@ -98,12 +93,11 @@ class ExportDatabaseTest(unittest.TestCase):
         )
         self.drain()
         workbook = self.export_workbook(filters=self.filters(keyword="100%_literal"))
-        self.assertEqual(len(sheet_rows(workbook, "轮次概览")), 1)
-        messages = sheet_rows(workbook, "消息明细")
-        self.assertEqual({row["正文分段"] for row in messages}, {"target 100%_literal", "bot reply", "internal note"})
+        messages = sheet_rows(workbook, "聊天记录")
+        self.assertEqual({row["聊天内容"] for row in messages}, {"target 100%_literal", "bot reply", "internal note"})
         self.assertEqual({row["会话ID"] for row in messages}, {"12"})
-        note = next(row for row in messages if row["正文分段"] == "internal note")
-        self.assertEqual((note["私密消息"], note["发送人类型"]), ("是", "客服"))
+        note = next(row for row in messages if row["聊天内容"] == "internal note")
+        self.assertEqual((note["消息标记"], note["发送人类型"]), ("内部备注", "客服"))
 
     def test_default_seat_export_uses_original_ics_assignment_and_keeps_actual_repliers(self):
         self.receive(event(1),
@@ -112,49 +106,32 @@ class ExportDatabaseTest(unittest.TestCase):
             agent_reply(4, 3, agent_id=9, agent_name="final reply"),
             agent_reply(5, 4, agent_id=8, private=True),
             event(6, 5, sender="agent_bot", direction="outgoing"),
-            event(7, 6, event_type="conversation_status_changed", status="resolved"),
-            event(8, 7))
-        assignment_id = self.receive_assignment()
+            event(7, 6, event_type="conversation_status_changed", status="resolved"), event(8, 7))
+        self.receive_assignment()
         self.drain()
         workbook = self.export_workbook(filters=self.filters(agent_id="8"))
-        rounds = sheet_rows(workbook, "轮次概览")
-        self.assertEqual(len(rounds), 1)
-        self.assertEqual((rounds[0]["责任坐席ID"], rounds[0]["ICS分配事件ID"]), ("8", str(assignment_id)))
-        self.assertEqual((rounds[0]["最后实际人工回复人ID（非责任）"], rounds[0]["最后实际人工回复人名称（非责任）"], rounds[0]["最后实际人工回复消息ID"]), ("9", "final reply", "4"))
-        self.assertEqual(rounds[0]["轮内最后分配坐席ID（非责任）"], "8")
-        self.assertEqual({row["消息ID"] for row in sheet_rows(workbook, "消息明细")}, {"1", "3", "4", "5", "6"})
-        messages = {row["消息ID"]: row for row in sheet_rows(workbook, "消息明细")}
-        self.assertEqual((messages["4"]["发送人ID"], messages["4"]["发送人名称"], messages["4"]["正文分段"]), ("9", "final reply", "message 4"))
+        messages = {row["消息ID"]: row for row in sheet_rows(workbook, "聊天记录")}
+        self.assertEqual(set(messages), {"1", "3", "4", "5", "6"})
+        self.assertEqual((messages["4"]["发送人"], messages["4"]["聊天内容"]), ("final reply", "message 4"))
         for agent_id in ("7", "9"):
             excluded = self.export_workbook(filters=self.filters(agent_id=agent_id))
-            self.assertEqual(sheet_rows(excluded, "轮次概览"), [])
+            self.assertEqual(sheet_rows(excluded, "聊天记录"), [])
         assigned = self.export_workbook(filters=self.filters(agent_id="8", agent_scope="current"))
-        assigned_rounds = sorted(sheet_rows(assigned, "轮次概览"), key=lambda row: row["轮次序号"])
-        self.assertEqual(len(assigned_rounds), 2)
-        self.assertIsNone(assigned_rounds[1]["责任坐席ID"])
-        self.assertEqual(assigned_rounds[1]["责任依据"], "未记录 ICS 分配")
-        # Selecting a responsible agent chooses a user; the user export still
-        # contains that user's whole history, including the next unowned round.
+        self.assertEqual({row["消息ID"] for row in sheet_rows(assigned, "聊天记录")}, {"1", "3", "4", "5", "6", "8"})
+        # The responsible-agent filter selects a customer; all their rounds follow.
         history = self.export_workbook("customers", self.filters(agent_id="8"))
-        self.assertEqual(len(sheet_rows(history, "用户概览")), 1)
-        self.assertEqual(len(sheet_rows(history, "轮次概览")), 2)
+        self.assertEqual({row["消息ID"] for row in sheet_rows(history, "聊天记录")}, {"1", "3", "4", "5", "6", "8"})
 
-    def test_live_directory_names_enrich_export_summary_without_rewriting_message_history(self):
+    def test_chat_export_keeps_archived_sender_names_and_does_not_rewrite_evidence(self):
         self.receive(event(1),
             event(2, 1, event_type="conversation_updated", assignee={"id": 8, "name": "分配坐席8"}),
             agent_reply(3, 2, agent_id=9, agent_name="Original responder name"))
         self.receive_assignment()
         self.drain()
         original_events, original_snapshots = self.rows("archive.events"), self.rows("archive.message_snapshots")
-        names = {(self.source, "1", "8"): "Real assigned agent", (self.source, "1", "9"): "Current responder name",
-            (self.source, "2", "8"): "Other account agent", ("other", "1", "8"): "Other instance agent"}
-        workbook = self.export_workbook(agent_names=names)
-        summary = sheet_rows(workbook, "轮次概览")[0]
-        self.assertEqual((summary["责任坐席ID"], summary["责任坐席名称"]), ("8", "Real assigned agent"))
-        self.assertEqual(summary["轮内最后分配坐席名称（非责任）"], "Real assigned agent")
-        self.assertEqual(summary["最后实际人工回复人名称（非责任）"], "Current responder name")
-        actual = next(row for row in sheet_rows(workbook, "消息明细") if row["消息ID"] == "3")
-        self.assertEqual((actual["发送人ID"], actual["发送人名称"], actual["正文分段"]), ("9", "Original responder name", "message 3"))
+        workbook = self.export_workbook()
+        actual = next(row for row in sheet_rows(workbook, "聊天记录") if row["消息ID"] == "3")
+        self.assertEqual((actual["发送人"], actual["聊天内容"]), ("Original responder name", "message 3"))
         self.assertEqual(self.rows("archive.events"), original_events)
         self.assertEqual(self.rows("archive.message_snapshots"), original_snapshots)
 
@@ -162,23 +139,13 @@ class ExportDatabaseTest(unittest.TestCase):
         self.receive(event(1))
         self.drain()
         workbook = self.export_workbook(filters=self.filters(reception_type="ai_only"))
-        initial = sheet_rows(workbook, "轮次概览")
-        self.assertEqual(len(initial), 1)
-        self.assertEqual((initial[0]["接待类型"], initial[0]["轮次已结束"], initial[0]["回复构成"]),
-                         ("纯 AI 接待", "否", "无回复"))
-        round_id = initial[0]["轮次ID"]
-
+        self.assertEqual([row["消息ID"] for row in sheet_rows(workbook, "聊天记录")], ["1"])
         self.receive(event(2, 1, event_type="conversation_updated", custom_attributes={"handoff_requested": True}))
         self.drain()
         workbook = self.export_workbook(filters=self.filters(reception_type="ai_only"))
-        self.assertEqual(sheet_rows(workbook, "轮次概览"), [])
+        self.assertEqual(sheet_rows(workbook, "聊天记录"), [])
         workbook = self.export_workbook(filters=self.filters(reception_type="human"))
-        changed = sheet_rows(workbook, "轮次概览")
-        self.assertEqual(len(changed), 1)
-        self.assertEqual(changed[0]["轮次ID"], round_id)
-        self.assertEqual((changed[0]["接待类型"], changed[0]["转人工结果"], changed[0]["轮次状态"]),
-                         ("人工介入", "已请求转人工", "未结束"))
-        self.assertIsNone(changed[0]["接入人工时间（北京时间）"])
+        self.assertEqual([row["消息ID"] for row in sheet_rows(workbook, "聊天记录")], ["1"])
         self.assertEqual(len(self.rows("ops.round_index")), 1)
 
     def test_customer_selection_exports_complete_cross_conversation_and_unassigned_history(self):
@@ -188,17 +155,12 @@ class ExportDatabaseTest(unittest.TestCase):
                      event(3, 2, message_id=102, conversation_id=22, content="outside conversation filter"))
         self.drain()
         workbook = self.export_workbook("customers", self.filters(conversation_id=12, keyword="select this customer"))
-        customers = sheet_rows(workbook, "用户概览")
-        self.assertEqual(len(customers), 1)
-        self.assertEqual((customers[0]["轮次数"], customers[0]["逻辑消息数"]), (2, 3))
-        self.assertEqual(len(sheet_rows(workbook, "轮次概览")), 2)
-        messages = sheet_rows(workbook, "消息明细")
+        self.assertEqual(workbook.sheetnames, ["聊天记录"])
+        messages = sheet_rows(workbook, "聊天记录")
         self.assertEqual({row["消息ID"] for row in messages}, {"100", "101", "102"})
         self.assertEqual({row["会话ID"] for row in messages}, {"12", "22"})
         unassigned = next(row for row in messages if row["消息ID"] == "100")
-        self.assertIsNone(unassigned["轮次ID"])
         self.assertIsNone(unassigned["发送时间（北京时间）"])
-        self.assertEqual(unassigned["时间状态"], "未知")
 
     def test_detail_scope_ignores_list_filters_and_unknown_scope_is_not_found(self):
         self.receive(event(1), event(2, 1, conversation_id=22))
@@ -208,10 +170,10 @@ class ExportDatabaseTest(unittest.TestCase):
         excluded = self.filters(keyword="no matching message", conversation_id=999)
 
         workbook = self.export_workbook("rounds", excluded, round_id=selected_round["round_id"])
-        self.assertEqual([row["轮次ID"] for row in sheet_rows(workbook, "轮次概览")], [selected_round["round_id"]])
-        self.assertEqual(len(sheet_rows(workbook, "消息明细")), 1)
+        self.assertEqual([row["会话ID"] for row in sheet_rows(workbook, "聊天记录")], [str(selected_round["conversation_id"])])
+        self.assertEqual(len(sheet_rows(workbook, "聊天记录")), 1)
         workbook = self.export_workbook("customers", excluded, customer_id=customer_id)
-        self.assertEqual(len(sheet_rows(workbook, "消息明细")), 2)
+        self.assertEqual(len(sheet_rows(workbook, "聊天记录")), 2)
         for mode, scope in (("rounds", {"round_id": "round:does-not-exist"}),
                             ("customers", {"customer_id": "customer:does-not-exist"})):
             with self.subTest(mode=mode), self.assertRaises(ExportNotFound):
@@ -230,32 +192,26 @@ class ExportDatabaseTest(unittest.TestCase):
                     make_file.assert_not_called()
                 self.assertEqual(list(Path(directory).iterdir()), [])
 
-    def test_repeatable_read_keeps_all_sheets_at_one_projection_snapshot(self):
+    def test_repeatable_read_keeps_selection_and_messages_at_one_projection_snapshot(self):
         self.receive(event(1, content="before snapshot"))
         self.drain()
         build = excel.build_workbook
         changed = []
-
-        def change_projection_between_sheets(destination, dataset, **metadata):
-            customers = list(dataset["customers"])
-            rounds = list(dataset["rounds"])
+        def change_projection_after_selection(destination, dataset, **metadata):
+            self.assertEqual(set(dataset), {"messages"})
             self.receive(event(2, 1, sender="user", direction="outgoing", content="after snapshot reply"),
                          event(3, 2, conversation_id=22, content="after snapshot conversation"))
             self.drain()
             changed.append(True)
-            return build(destination, {**dataset, "customers": customers, "rounds": rounds}, **metadata)
-
-        with patch("quality.query.excel.build_workbook", side_effect=change_projection_between_sheets):
+            return build(destination, dataset, **metadata)
+        with patch("quality.query.excel.build_workbook", side_effect=change_projection_after_selection):
             workbook = self.export_workbook("customers")
         self.assertEqual(changed, [True])
         self.assertEqual(len(self.rows("ops.round_index")), 2)
         self.assertEqual(len(self.rows("ops.message_index")), 3)
-        customers = sheet_rows(workbook, "用户概览")
-        self.assertEqual((customers[0]["轮次数"], customers[0]["逻辑消息数"]), (1, 1))
-        self.assertEqual(len(sheet_rows(workbook, "轮次概览")), 1)
-        self.assertEqual([row["正文分段"] for row in sheet_rows(workbook, "消息明细")], ["before snapshot"])
+        self.assertEqual([row["聊天内容"] for row in sheet_rows(workbook, "聊天记录")], ["before snapshot"])
 
-    def test_byte_budget_includes_seat_records_before_loading_them(self):
+    def test_chat_export_does_not_load_or_budget_unrelated_seat_records(self):
         self.receive(event(1), event(2, 1, sender="user", direction="outgoing"))
         self.drain()
         self.admin.execute("""UPDATE ops.round_agent_index SET agent_name=%s
@@ -266,11 +222,13 @@ class ExportDatabaseTest(unittest.TestCase):
             (self.source,)).fetchone()["bytes"]
             for table in ("round_index", "customer_index", "message_index"))
         repository = self.new_exporter(export_max_bytes=max(1024, baseline + 1))
-        with patch.object(repository, "_agents") as load_seats, patch("quality.query.export.tempfile.mkstemp") as make_file:
-            with self.assertRaises(ExportTooLarge):
-                repository.create_export("rounds", self.filters())
+        with patch.object(repository, "_agents") as load_seats:
+            result = repository.create_export("rounds", self.filters())
+            self.addCleanup(result.cleanup)
+            workbook = load_workbook(result.path, read_only=True)
+            self.addCleanup(workbook.close)
+            self.assertEqual(len(sheet_rows(workbook, "聊天记录")), 2)
             load_seats.assert_not_called()
-            make_file.assert_not_called()
 
     def test_export_pool_is_independent_and_database_enforces_read_only(self):
         self.assertIsNot(self.exporter.pool, self.reader.pool)
@@ -311,7 +269,7 @@ class ExportDatabaseTest(unittest.TestCase):
             self.assertFalse(created[0].exists())
             self.assertEqual(list(Path(directory).iterdir()), [])
         workbook = self.export_workbook()
-        self.assertEqual(len(sheet_rows(workbook, "消息明细")), 1)
+        self.assertEqual(len(sheet_rows(workbook, "聊天记录")), 1)
 
     def test_excel_limit_is_reported_as_a_clear_export_limit(self):
         self.receive(event(1))
@@ -330,7 +288,7 @@ class ExportDatabaseTest(unittest.TestCase):
         stored = self.rows("ops.rating_index")[0]
         self.assertEqual(stored["status"], "unlinked")
         workbook = self.export_workbook("unlinked-ratings")
-        self.assertEqual(workbook.sheetnames, ["导出说明", "待关联评价"])
+        self.assertEqual(workbook.sheetnames, ["待关联评价"])
         own = [row for row in sheet_rows(workbook, "待关联评价") if row["实例来源"] == self.source]
         self.assertEqual(len(own), 1)
         row = own[0]
@@ -346,7 +304,7 @@ class ExportDatabaseTest(unittest.TestCase):
         self.assertEqual(self.rows("ops.round_index")[0]["rating_status"], "not_invited")
         self.assertTrue(all(cell.data_type != "f" for cells in workbook["待关联评价"] for cell in cells))
 
-    def test_submitted_rating_filter_exports_feedback_on_its_original_round(self):
+    def test_submitted_rating_filter_selects_chat_from_its_original_round(self):
         attrs = {"ics_round_id": "ics-business-round", "ics_closed_at": (START + timedelta(minutes=1, microseconds=1)).isoformat()}
         self.receive(event(1), event(2, 1, event_type="conversation_status_changed", status="resolved"),
                      event(3, 2),
@@ -357,11 +315,8 @@ class ExportDatabaseTest(unittest.TestCase):
                                "rating": 5, "feedback_message": "=feedback from previous round"}}}))
         self.drain()
         workbook = self.export_workbook(filters=self.filters(rating_status="rated", rating=5))
-        rows = sheet_rows(workbook, "轮次概览")
-        self.assertEqual(len(rows), 1)
-        self.assertEqual((rows[0]["轮次序号"], rows[0]["评分"], rows[0]["评价反馈"]),
-                         (1, 5, "=feedback from previous round"))
-        self.assertEqual({row["轮次序号"] for row in sheet_rows(workbook, "消息明细")}, {1})
+        self.assertEqual(workbook.sheetnames, ["聊天记录"])
+        self.assertEqual({row["消息ID"] for row in sheet_rows(workbook, "聊天记录")}, {"1", "500"})
 
     def test_unlinked_rating_time_does_not_become_later_card_lifecycle_time(self):
         for index, known in enumerate((False, True)):

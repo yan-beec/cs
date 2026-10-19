@@ -201,12 +201,6 @@ class QueryRuntime:
             await asyncio.wait_for(self.export_slot.acquire(), timeout=0.2)
         except asyncio.TimeoutError:
             raise ExportBusy() from None
-        try:
-            options = await self._directory_options({}) if mode != "unlinked-ratings" else {}
-            agent_names = agent_name_index(options.get("agents", []))
-        except BaseException:
-            self.export_slot.release()
-            raise
         cancelled = threading.Event()
         self.export_cancellations.add(cancelled)
 
@@ -219,7 +213,7 @@ class QueryRuntime:
                     repository.close()
                     raise
                 self.export_repository = repository
-            return self.export_repository.create_export(mode, filters, cancelled=cancelled, agent_names=agent_names, **scope)
+            return self.export_repository.create_export(mode, filters, cancelled=cancelled, **scope)
 
         future = asyncio.get_running_loop().run_in_executor(self.export_executor, work)
         slot = self.export_slot

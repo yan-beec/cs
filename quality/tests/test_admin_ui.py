@@ -28,30 +28,33 @@ class Element {
     const classes = new Set();
     this.classList = {add: name => classes.add(name), remove: name => classes.delete(name), contains: name => classes.has(name), toggle(name, value) {value ? classes.add(name) : classes.delete(name);}};
   }
-  set innerHTML(value) {this._html = value; if (['qualitySource', 'qualityAgent', 'qualityInbox', 'qualityChannel', 'presenceAgent'].includes(this.id)) this.value = this.options[0]?.value || '';}
+  set innerHTML(value) {this._html = value; if (['qualityAgent', 'qualityInbox', 'presenceAgent'].includes(this.id)) this.value = this.options[0]?.value || '';}
   get innerHTML() {return this._html;}
   get options() {return [...this._html.matchAll(/<option value="([^"]*)"/g)].map(match => ({value: decode(match[1])}));}
   addEventListener(name, handler) {this.handlers[name] = handler;}
   setAttribute(name, value) {this.attributes[name] = value;}
   removeAttribute(name) {delete this.attributes[name];}
-  querySelectorAll() {return [];}
+  querySelectorAll(selector) {
+    if (this.id === 'qualityFilterForm' && selector === 'input, select') return [...Object.keys(fields),'qualityInbox','qualityAgent'].map(node);
+    return [];
+  }
   scrollIntoView() {}
-  reset() {for (const [id, node] of nodes) if (Object.hasOwn(fields,id) || ['qualitySource','qualityInbox','qualityAgent'].includes(id)) node.value = defaults[id] || '';}
+  focus() {this.focused = true;}
+  reset() {for (const [id, node] of nodes) if (Object.hasOwn(fields,id) || ['qualityInbox','qualityAgent'].includes(id)) node.value = defaults[id] || '';}
 }
 const node = id => {if (!nodes.has(id)) nodes.set(id, new Element(id)); return nodes.get(id);};
 const fields = {
- qualityCustomer: 'customer_query', qualityKeyword: 'keyword', qualityChannel: 'channel_key',
+ qualityCustomer: 'customer_query', qualityKeyword: 'keyword',
  qualityReception: 'reception_type', qualityAgentScope: 'agent_scope', qualityConversation: 'conversation_id',
- qualityRoundNo: 'round_no', qualityRoundStatus: 'status', qualityTimeField: 'time_field', qualityStart: 'start',
- qualityEnd: 'end', qualityRatingStatus: 'rating_status', qualityRating: 'rating', qualityMessageScope: 'message_scope',
- qualityAttachment: 'has_attachment'
+ qualityRoundNo: 'round_no', qualityTimeField: 'time_field', qualityStart: 'start',
+ qualityEnd: 'end', qualityRatingStatus: 'rating_status', qualityRating: 'rating', qualityMessageScope: 'message_scope'
 };
 class BrowserFormData {
   constructor() {this.values = Object.entries(fields).map(([id, name]) => [name, node(id).value]);}
   [Symbol.iterator]() {return this.values[Symbol.iterator]();}
 }
 const requests = [], downloads = [], confirmations = [], confirmationAnswers = [];
-const overviewRequests = [], presenceRequests = [], dailyRequests = [], timelineRequests = [], timers = new Map(), documentEvents = {};
+const overviewRequests = [], presenceRequests = [], dailyRequests = [], timelineRequests = [], roundRequests = [], timers = new Map(), documentEvents = {};
 let nextTimer = 1;
 let browserNow = Date.parse('2026-10-16T08:00:00Z');
 class BrowserDate extends Date {
@@ -73,7 +76,7 @@ const context = vm.createContext({
  setInterval(callback, milliseconds) {const id=nextTimer++; timers.set(id,{callback,milliseconds}); return id;}, clearInterval(id) {timers.delete(id);},
  fetch: (url, options) => new Promise((resolve, reject) => {
    const path = new URL(url,'http://localhost').pathname;
-   const queue = path.endsWith('/presence/timeline') ? timelineRequests : path.endsWith('/presence/daily') ? dailyRequests : path.endsWith('/presence') ? presenceRequests : path.endsWith('/overview') ? overviewRequests : requests;
+   const queue = /\/customers\/[^/]+\/rounds$/.test(path) ? roundRequests : path.endsWith('/presence/timeline') ? timelineRequests : path.endsWith('/presence/daily') ? dailyRequests : path.endsWith('/presence') ? presenceRequests : path.endsWith('/overview') ? overviewRequests : requests;
    queue.push({url, options, resolve, reject});
  }),
  console
@@ -96,15 +99,146 @@ globalThis.ui = {state, qualityState, presenceState, showCurrentPage, collectQua
  qualitySafeLink, qualityAttachments, renderQualityTimeline, qualitySnapshotLabel, loadQualityList, qualityAgentLabel,
  openQualityDetail, loadQualityDetail, openQualityVersions, loadQualityVersions, stopQuality, logout,
  qualityRequest, loadQuality, downloadQualityEvent, changeQualityMode, closeQualityDetail, applyQualityFilters,
+ setQualityFiltersCollapsed, loadQualityRoundDirectory, renderQualityRoundDirectory, renderQualityList,
  exportQuality, cancelQualityExport, updateQualityExportButtons, qualityExportFilename,
  loadQualityOverview, loadQualityPresence, loadQualityPresenceDaily, startQualityPresence, stopQualityPresence, qualityBeijingDay, qualityMinute, presenceRequest, mergePresenceRoster, loadPresenceTimeline, renderPresenceTimeline, renderPresenceIntervals, locatePresenceMinute, presenceAgentValue, updatePresenceDateRange, ensurePresenceDay, renderQualityPresenceDaily};
 """
 
 CASES = {
+    "customer_cards_show_latest_round_service_metrics_and_keep_history_totals": r"""
+ui.qualityState.mode='customers'; ui.qualityState.total=1;
+ui.qualityState.items=[{customer_id:'c1',display_name:'Customer',contact_id:42,business_user_id:'U1',
+ source_key:'PRIVATE_ORIGIN',account_id:999,round_count:12,message_count:86,
+ latest_round:{conversation_id:3108,round_no:3,reception_type:'human',rating_status:'rated',rating:5,
+ rating_feedback:'<img src=x onerror=evil()>',service_metrics:{first_response_status:'recorded',
+ first_response_seconds:120,average_response_seconds:150,response_sample_count:2,
+ last_message_by_agent:false,last_message_sender_role:'contact',duration_seconds:720,
+ human_phase_message_count:8,human_phase_customer_count:5,human_phase_agent_count:3,
+ human_phase_basis:'handoff_request'}}}];
+ui.renderQualityList(); const html=node('qualityList').innerHTML;
+for (const label of ['转人工首响','人工平均响应','最后一句为人工','本轮总时长','访客评价','人工对话数']) assert.equal(html.includes(label),true,label);
+for (const value of ['12 轮 · 86 条消息','最近一轮 · 会话 3108 · 第 3 轮','2分','2分30秒','否 · 客户','12分','5 分','8（5：3）']) assert.equal(html.includes(value),true,value);
+assert.equal(html.includes('PRIVATE_ORIGIN'),false); assert.equal(html.includes('账号'),false);
+assert.equal(html.includes('<img'),false); assert.equal(html.includes('&lt;img'),true);
+assert.equal((html.match(/class="quality-customer-metric"/g)||[]).length,6);
+assert.equal(html.includes('data-quality-open="0"'),true);
+""",
+    "customer_metrics_distinguish_zero_unknown_and_unanswered_transfer": r"""
+ui.qualityState.mode='customers';
+const round={conversation_id:7,round_no:1,reception_type:'human',rating_status:'not_invited'};
+ui.qualityState.items=[{customer_id:'c',latest_round:{...round,service_metrics:{first_response_status:'awaiting_agent',
+ first_response_seconds:null,average_response_seconds:null,last_message_by_agent:null,duration_seconds:0,
+ human_phase_message_count:0,human_phase_customer_count:0,human_phase_agent_count:0}}}];
+ui.renderQualityList(); let html=node('qualityList').innerHTML;
+for (const text of ['待人工回复','待确认','0秒','0（0：0）','未评价']) assert.equal(html.includes(text),true,text);
+assert.equal(html.includes('NaN'),false); assert.equal(html.includes('undefined'),false);
+ui.qualityState.items=[{customer_id:'empty'}]; ui.renderQualityList(); html=node('qualityList').innerHTML;
+assert.equal(html.includes('暂无可确认的对话轮次'),true); assert.equal(html.includes('0秒'),false);
+""",
+    "customer_default_collapsible_filters_and_compact_cards": r"""
+assert.equal(ui.qualityState.mode,'customers');
+ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+node('qualityKeyword').value = '退款'; ui.applyQualityFilters();
+assert.equal(new URL(requests[0].url).pathname,'/admin/api/quality/customers');
+assert.equal(node('qualityFilterFields').classList.contains('hidden'),true);
+assert.equal(node('qualityToggleFilters').attributes['aria-expanded'],'false');
+assert.equal(node('qualityFilterSummary').textContent.includes('关键词：退款'),true);
+assert.equal(node('qualityFilterForm').classList.contains('hidden'),false,'action buttons remain available when fields collapse');
+respond(0,{items:[{customer_id:'c1',display_name:'<Customer>',round_count:20,message_count:500}],total:1,page:1}); await tick();
+assert.equal(node('qualityList').innerHTML.includes('quality-customer-card'),true);
+assert.equal(node('qualityList').innerHTML.includes('&lt;Customer&gt;'),true);
+assert.equal(node('qualityList').innerHTML.includes('<table>'),false);
+node('qualityToggleFilters').handlers.click();
+assert.equal(node('qualityFilterFields').classList.contains('hidden'),false);
+assert.equal(node('qualityKeyword').value,'退款');
+assert.equal(requests.length,1,'expanding must retain the query and avoid a reload');
+ui.stopQuality(true);
+assert.equal(ui.qualityState.mode,'customers');
+assert.equal(node('qualityToggleFilters').attributes['aria-expanded'],'true');
+""",
+    "round_directory_pages_independently_and_survives_round_switching": r"""
+ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+ui.qualityState.applied = new URLSearchParams({keyword:'filtered'});
+const opened = ui.openQualityDetail('customer','c1');
+respond(0,{customer:{customer_id:'c1',display_name:'Customer'},messages:[],total:500,page:1}); await opened;
+assert.equal(node('qualityDetail').classList.contains('hidden'),false);
+assert.equal(node('qualityCloseDetail').focused,true);
+assert.equal(roundRequests.length,1);
+assert.equal(new URL(roundRequests[0].url).searchParams.has('keyword'),false);
+respondTo(roundRequests,0,{items:[{round_id:'r1',round_no:1,conversation_id:7,started_at:'2026-10-16T00:00:00Z'}],total:55,page:1}); await tick();
+assert.equal(node('qualityRoundList').innerHTML.includes('会话 7'),true);
+assert.equal(node('qualityRoundNext').disabled,false);
+node('qualityRoundNext').handlers.click();
+assert.equal(new URL(roundRequests[1].url).searchParams.get('page'),'2');
+respondTo(roundRequests,1,{items:[{round_id:'r55',round_no:55,conversation_id:7}],total:55,page:2}); await tick();
+assert.equal(node('qualityRoundPrev').disabled,false);
+assert.equal(node('qualityRoundNext').disabled,true);
+const selected = ui.openQualityDetail('round','r55',true);
+respond(1,{round:{round_id:'r55',customer_id:'c1',round_no:55},messages:[],total:2,page:1}); await selected;
+assert.equal(roundRequests.length,2,'round selection must retain the current directory page');
+assert.equal(node('qualityRoundList').innerHTML.includes('aria-current="true"'),true);
+assert.equal(node('qualityAllHistory').attributes['aria-current'],'false');
+node('qualityAllHistory').handlers.click();
+respond(2,{customer:{customer_id:'c1'},messages:[],total:500,page:1}); await tick();
+assert.equal(ui.qualityState.detail.type,'customer');
+assert.equal(ui.qualityState.roundDirectory.page,2);
+assert.equal(node('qualityAllHistory').attributes['aria-current'],'true');
+""",
+    "stale_round_directory_cannot_mix_customers_or_reopen_closed_drawer": r"""
+ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+let opened = ui.openQualityDetail('customer','old');
+respond(0,{customer:{},messages:[],total:0}); await opened;
+opened = ui.openQualityDetail('customer','new');
+assert.equal(roundRequests[0].options.signal.aborted,true);
+respond(1,{customer:{},messages:[],total:0}); await opened;
+respondTo(roundRequests,1,{items:[{round_id:'new-round',round_no:3,conversation_id:'NEW CUSTOMER'}],total:1,page:1}); await tick();
+respondTo(roundRequests,0,{items:[{round_id:'old-round',conversation_id:'PRIVATE OLD CUSTOMER'}],total:1,page:1}); await tick();
+assert.equal(node('qualityRoundList').innerHTML.includes('NEW CUSTOMER'),true);
+assert.equal(node('qualityRoundList').innerHTML.includes('PRIVATE OLD CUSTOMER'),false);
+const pending = ui.loadQualityRoundDirectory('new');
+ui.closeQualityDetail();
+assert.equal(roundRequests[2].options.signal.aborted,true);
+respondTo(roundRequests,2,{items:[{round_id:'late'}],total:1,page:1}); await pending;
+assert.equal(ui.qualityState.roundDirectory,null);
+assert.equal(node('qualityDetail').classList.contains('hidden'),true);
+assert.equal(node('qualityRoundList').innerHTML.includes('late'),false);
+""",
+    "directory_failure_keeps_history_readable_and_escape_closes_in_order": r"""
+ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+const opened = ui.openQualityDetail('customer','c1');
+respond(0,{customer:{},messages:[{content:'VISIBLE MESSAGE',sender_role:'contact'}],total:1}); await opened;
+respondTo(roundRequests,0,{detail:'directory unavailable'},503); await tick();
+assert.equal(node('qualityRoundCount').textContent,'读取失败');
+assert.equal(node('qualityTimeline').innerHTML.includes('VISIBLE MESSAGE'),true);
+assert.equal(ui.qualityState.ready,true);
+ui.qualityState.versions = {message:{}};
+documentEvents.keydown({key:'Escape'});
+assert.equal(ui.qualityState.versions,null);
+assert.notEqual(ui.qualityState.detail,null);
+documentEvents.keydown({key:'Escape'});
+assert.equal(ui.qualityState.detail,null);
+assert.equal(node('qualityDetail').classList.contains('hidden'),true);
+""",
+    "compact_chat_keeps_order_roles_and_original_text": r"""
+ui.qualityState.detail = {type:'customer'};
+ui.qualityState.messages = [
+ {sender_role:'contact',content:'第一句\n原始换行',round_id:'r1',round_no:1,conversation_id:7,sent_at:'2026-10-16T00:00:00Z'},
+ {sender_role:'bot',content:'<机器人回复>',round_id:'r1',round_no:1,conversation_id:7,sent_at:'2026-10-16T00:00:01Z'},
+ {sender_role:'agent',content:'人工回复',is_private:true,round_id:'r2',round_no:2,conversation_id:7,sent_at:'2026-10-17T00:00:00Z'}
+];
+ui.renderQualityTimeline(); const html = node('qualityTimeline').innerHTML;
+assert.equal((html.match(/quality-chat-divider/g)||[]).length,2);
+assert.equal((html.match(/quality-message outgoing/g)||[]).length,2);
+assert.equal(html.includes('第一句\n原始换行'),true);
+assert.equal(html.includes('&lt;机器人回复&gt;'),true);
+assert.equal(html.indexOf('第一句') < html.indexOf('&lt;机器人回复&gt;'),true);
+assert.equal(html.includes('私密消息 / 内部备注'),true);
+assert.equal(html.includes('原文与版本'),true);
+""",
     "overview_uses_all_filtered_rounds_and_does_not_reload_on_pagination_or_history": r"""
 ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+ui.qualityState.mode = 'rounds';
 node('qualityKeyword').value = 'refund'; node('qualityCustomer').value = 'customer';
-node('qualitySource').value = JSON.stringify({source_key:'cw',account_id:'1'});
 node('qualityAgent').value = JSON.stringify({source_key:'cw',account_id:'1',agent_id:'1'});
 node('qualityStart').value = '2026-10-15T00:00';
 ui.qualityState.filters.agents = [{source_key:'cw',account_id:1,agent_id:1,agent_name:'beec',agent_name_source:'chatwoot'}];
@@ -141,6 +275,7 @@ assert.equal(overviewRequests.length,1); assert.equal(ui.qualityState.overview.t
 """,
     "overview_rejects_old_results_and_failure_keeps_the_list_available": r"""
 ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+ui.qualityState.mode = 'rounds';
 ui.qualityState.applied = new URLSearchParams({keyword:'old'}); const older = ui.loadQualityOverview();
 ui.qualityState.applied = new URLSearchParams({keyword:'new'}); const newer = ui.loadQualityOverview();
 assert.equal(overviewRequests[0].options.signal.aborted,true);
@@ -586,9 +721,8 @@ ui.qualityState.filters = {sources: [{source_key:'cw-two',account_id:'2'}],chann
  {source_key:'cw-one',account_id:'1',agent_id:'7',agent_name:'A'},
  {source_key:'cw-two',account_id:'2',agent_id:'7',agent_name:'<B>'}
 ]};
-node('qualitySource').value = JSON.stringify({source_key:'cw-two',account_id:'2'});
 ui.populateQualityFilters();
-assert.equal(node('qualityAgent').innerHTML.includes('>A ·'), false);
+assert.equal(node('qualityAgent').innerHTML.includes('>A ·'), true);
 assert.equal(node('qualityAgent').innerHTML.includes('&lt;B&gt;'), true);
 """,
     "message_and_attachment_content_is_inert": r"""
@@ -610,62 +744,55 @@ assert.equal(html.includes('未归轮'), true); assert.equal(html.includes('缺�
 assert.equal(html.includes('尚未独立复制'), true);
 assert.equal(ui.qualitySnapshotLabel({snapshot_kind:'backfill',id:1},{has_creation_event:false,original_snapshot_id:1}), '补录时观察');
 """,
-    "inbox_and_agent_choices_keep_the_visible_source_scope": r"""
-ui.qualityState.filters = {sources:[],channels:[{key:'business',name:'ICS业务'}],agents:[
+    "inbox_and_agent_choices_derive_scope_without_a_source_field": r"""
+ui.qualityState.filters = {sources:[],channels:[],agents:[
  {source_key:'cw-one',account_id:1,agent_id:'7',agent_name:'Agent One'},
  {source_key:'cw-two',account_id:2,agent_id:'7',agent_name:'<Agent Two>'}
 ],inboxes:[
- {source_key:'cw-one',account_id:1,inbox_id:5,name:'Inbox One',channel_key:'business'},
- {source_key:'cw-two',account_id:2,inbox_id:5,name:'<Inbox Two>',channel_key:null}
+ {source_key:'cw-one',account_id:1,inbox_id:5,name:'Inbox One'},
+ {source_key:'cw-two',account_id:2,inbox_id:5,name:'<Inbox Two>'}
 ]};
 ui.populateQualityFilters();
-assert.equal(node('qualitySource').options.length, 3, 'directory-only accounts must be selectable');
-assert.equal(node('qualityInbox').innerHTML.includes('&lt;Inbox Two&gt;'), true);
+assert.equal(node('qualityInbox').options.length,3);
+assert.equal(node('qualityAgent').options.length,3);
+assert.equal(node('qualityInbox').innerHTML.includes('&lt;Inbox Two&gt;'),true);
 node('qualityInbox').value = JSON.stringify({source_key:'cw-two',account_id:'2',inbox_id:'5'});
 node('qualityInbox').handlers.change();
-assert.deepEqual(JSON.parse(node('qualitySource').value), {source_key:'cw-two',account_id:'2'});
-assert.equal(node('qualityAgent').innerHTML.includes('Agent One'), false);
-assert.equal(node('qualityAgent').innerHTML.includes('&lt;Agent Two&gt;'), true);
-assert.equal(node('qualityChannel').value, '', 'a Chatwoot inbox must not silently select an ICS channel');
 node('qualityAgent').value = JSON.stringify({source_key:'cw-two',account_id:'2',agent_id:'7'});
 node('qualityAgent').handlers.change();
 let params = ui.collectQualityFilters();
-assert.equal(params.get('inbox_id'), '5'); assert.equal(params.get('agent_id'), '7');
-assert.equal(params.get('source_key'), 'cw-two'); assert.equal(params.get('account_id'), '2');
-node('qualitySource').value = JSON.stringify({source_key:'cw-one',account_id:'1'});
-node('qualitySource').handlers.change();
-assert.equal(node('qualityInbox').value, ''); assert.equal(node('qualityAgent').value, '');
-assert.equal(node('qualityInbox').innerHTML.includes('Inbox One'), true);
-assert.equal(node('qualityInbox').innerHTML.includes('Inbox Two'), false);
-node('qualitySource').value = ''; node('qualitySource').handlers.change();
-node('qualityAgent').value = JSON.stringify({source_key:'cw-one',account_id:'1',agent_id:'7'});
+assert.equal(params.get('inbox_id'),'5'); assert.equal(params.get('agent_id'),'7');
+assert.equal(params.get('source_key'),'cw-two'); assert.equal(params.get('account_id'),'2');
+node('qualityInbox').value = JSON.stringify({source_key:'cw-one',account_id:'1',inbox_id:'5'});
+node('qualityInbox').handlers.change();
+assert.equal(node('qualityAgent').value,'','changing account clears a conflicting seat');
+assert.equal(ui.collectQualityFilters().get('source_key'),'cw-one');
+node('qualityAgent').value = JSON.stringify({source_key:'cw-two',account_id:'2',agent_id:'7'});
 node('qualityAgent').handlers.change();
-assert.equal(JSON.parse(node('qualitySource').value).source_key, 'cw-one');
-node('qualitySource').value = ''; node('qualitySource').handlers.change();
+assert.equal(node('qualityInbox').value,'','changing account clears a conflicting inbox');
+assert.equal(ui.collectQualityFilters().get('source_key'),'cw-two');
+node('qualityAgent').value = ''; node('qualityAgent').handlers.change();
 params = ui.collectQualityFilters();
-assert.equal(params.has('source_key'), false); assert.equal(params.has('account_id'), false);
-assert.equal(params.has('agent_id'), false); assert.equal(params.has('inbox_id'), false);
+for (const key of ['source_key','account_id','agent_id','inbox_id','channel_key','status','has_attachment']) assert.equal(params.has(key),false,key);
 """,
-    "conflicting_inbox_and_agent_scopes_never_silently_override_source": r"""
+    "conflicting_inbox_and_agent_scopes_do_not_start_a_query": r"""
 ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
-node('qualitySource').value = JSON.stringify({source_key:'cw-one',account_id:'1'});
 node('qualityInbox').value = JSON.stringify({source_key:'cw-two',account_id:'2',inbox_id:'5'});
 node('qualityAgent').value = JSON.stringify({source_key:'cw-one',account_id:'1',agent_id:'7'});
 assert.throws(() => ui.collectQualityFilters(), /来源.*账号不一致/);
-ui.applyQualityFilters(); assert.equal(requests.length, 0);
-assert.equal(node('qualityListSummary').textContent.includes('不一致'), true);
-node('qualitySource').value = ''; node('qualityInbox').value = '';
-assert.equal(ui.collectQualityFilters().get('source_key'), 'cw-one');
+ui.applyQualityFilters(); assert.equal(requests.length,0);
+assert.equal(node('qualityListSummary').textContent.includes('不一致'),true);
+node('qualityInbox').value = '';
+assert.equal(ui.collectQualityFilters().get('source_key'),'cw-one');
 """,
     "round_inbox_and_range_filters_match_list_and_excel_parameters": r"""
 ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
-node('qualitySource').value = JSON.stringify({source_key:'cw',account_id:'2'});
 node('qualityInbox').value = JSON.stringify({source_key:'cw',account_id:'2',inbox_id:'5'});
 node('qualityAgent').value = JSON.stringify({source_key:'cw',account_id:'2',agent_id:'7'});
-node('qualityChannel').value = 'business'; node('qualityConversation').value = '123';
-node('qualityRoundNo').value = '2'; node('qualityRoundStatus').value = 'resolved';
+node('qualityConversation').value = '123';
+node('qualityRoundNo').value = '2';
 node('qualityReception').value = 'human'; node('qualityMessageScope').value = 'private';
-node('qualityTimeField').value = 'message_at'; node('qualityAttachment').value = 'false';
+node('qualityTimeField').value = 'message_at';
 node('qualityStart').value = '2026-10-16T08:00'; node('qualityEnd').value = '2026-10-17T00:00';
 for (const scope of ['responsible','replied','assigned','current']) {
  node('qualityAgentScope').value = scope; assert.equal(ui.collectQualityFilters().get('agent_scope'), scope);
@@ -673,8 +800,8 @@ for (const scope of ['responsible','replied','assigned','current']) {
 node('qualityFilterForm').handlers.submit({preventDefault() {}});
 const list = new URL(requests[0].url).searchParams;
 const expected = {source_key:'cw',account_id:'2',inbox_id:'5',agent_id:'7',agent_scope:'current',
- channel_key:'business',conversation_id:'123',round_no:'2',status:'resolved',reception_type:'human',
- message_scope:'private',time_field:'message_at',has_attachment:'false',
+ conversation_id:'123',round_no:'2',reception_type:'human',
+ message_scope:'private',time_field:'message_at',
  start:'2026-10-16T08:00:00+08:00',end:'2026-10-17T00:00:00+08:00'};
 for (const [key, value] of Object.entries(expected)) assert.equal(list.get(key), value, key);
 respond(0, {items:[],total:0,page:1}); await tick();
@@ -719,6 +846,7 @@ assert.equal(ui.qualityState.ready, true);
 """,
     "round_rows_and_details_resolve_inbox_names_with_source_and_account": r"""
 ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+ui.qualityState.mode = 'rounds';
 ui.qualityState.filters.inboxes = [
  {source_key:'cw-one',account_id:1,inbox_id:5,name:'Wrong Inbox'},
  {source_key:'cw-two',account_id:2,inbox_id:5,name:'<Correct Inbox>'}
@@ -735,6 +863,7 @@ assert.equal(node('qualityDetailMeta').innerHTML.includes('&lt;Correct Inbox&gt;
 """,
     "reception_type_stays_independent_from_lifecycle_and_handoff_progress": r"""
 ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+ui.qualityState.mode = 'rounds';
 const items = [
  {round_id:'ai-active',reception_type:'ai_only',status:'active',classification_finalized:false},
  {round_id:'ai-ended',reception_type:'ai_only',status:'resolved',classification_finalized:true},
@@ -764,16 +893,16 @@ for (const [index, item] of items.entries()) {
   assert.equal(meta.includes(`转接结果：${item.handoff_result === 'requested' ? '已确认接管' : '已申请'}`), false);
  }
 }
-node('qualityRoundStatus').value = 'active';
 for (const reception of ['ai_only','human']) {
  node('qualityReception').value = reception;
  const params = ui.collectQualityFilters();
  assert.equal(params.get('reception_type'), reception);
- assert.equal(params.get('status'), 'active', 'lifecycle and reception filters must remain independent');
+ assert.equal(params.has('status'),false,'removed lifecycle filter must not constrain queries');
 }
 """,
     "round_responsibility_uses_only_original_ics_assignment_evidence": r"""
 ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+ui.qualityState.mode = 'rounds';
 const history = [
  {agent_id:'1',agent_name:'Original A',was_assigned:true},
  {agent_id:'2',agent_name:'Actual B',replied:true,reply_count:1},
@@ -829,6 +958,7 @@ for (const [index, item] of items.entries()) {
 """,
     "directory_agent_names_use_exact_scope_and_preserve_original_message_evidence": r"""
 ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+ui.qualityState.mode = 'rounds';
 ui.qualityState.filters.agents = [
  {source_key:'cw',account_id:1,agent_id:1,agent_name:'beec',agent_name_source:'chatwoot'},
  {source_key:'cw',account_id:1,agent_id:2,agent_name:'QQ',agent_name_source:'chatwoot'},
@@ -915,6 +1045,7 @@ for (const [index,agentId] of ['1','7'].entries()) {
 """,
     "responsibility_remains_original_a_when_b_replies_and_chatwoot_reassigns": r"""
 ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+ui.qualityState.mode = 'rounds';
 const original = {round_id:'fixed',responsibility_basis:'ics_assignment',responsible_agent_id:'1',responsible_agent_name:'Original A',responsible_assigned_at:'2026-10-16T00:00:00Z',responsibility_event_id:'1001',responsibility_external_round_id:'round-fixed',responsibility_trigger_message_id:'700'};
 for (const [index, replyName] of ['<Actual B>','Later C'].entries()) {
  const item = {...original,current_assignee_id:String(index + 2),agents:[{agent_id:String(index + 2),agent_name:replyName,replied:true,was_assigned:true,reply_count:1}],last_public_agent_id:String(index + 2),last_public_agent_name:replyName,last_public_reply_at:'2026-10-16T00:03:00Z',last_public_message_id:String(index + 701)};
@@ -961,21 +1092,41 @@ for (const [scope, label] of Object.entries(labels)) {
 }
 assert.equal(downloads.length, 4);
 """,
-    "reset_and_logout_restore_responsible_scope_default": r"""
+    "reset_clears_every_filter_and_keeps_panel_open_while_logout_restores_defaults": r"""
 ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+for (const id of Object.keys(fields)) node(id).value = 'previous filter';
 node('qualityAgentScope').value = 'assigned';
 node('qualityAgent').value = JSON.stringify({source_key:'cw',account_id:'2',agent_id:'7'});
+node('qualityInbox').value = JSON.stringify({source_key:'cw',account_id:'2',inbox_id:'3'});
+ui.qualityState.applied = new URLSearchParams({keyword:'previous filter',agent_scope:'assigned'});
+ui.qualityState.page = 4;
+ui.setQualityFiltersCollapsed(true);
 node('qualityReset').handlers.click();
-assert.equal(node('qualityAgentScope').value, 'responsible');
+for (const id of [...Object.keys(fields),'qualityInbox','qualityAgent']) assert.equal(node(id).value,'',id);
+assert.equal(ui.collectQualityFilters().toString(),'');
+assert.equal(ui.qualityState.applied.toString(),'');
+assert.equal(ui.qualityState.page,1);
+assert.equal(ui.qualityState.filtersCollapsed,false);
+assert.equal(node('qualityFilterFields').classList.contains('hidden'),false);
+assert.equal(node('qualityFilterSummary').classList.contains('hidden'),true);
+assert.equal(node('qualityToggleFilters').attributes['aria-expanded'],'true');
+assert.equal(node('qualityFilterFields').scrollTop,0);
 const query = new URL(requests[0].url).searchParams;
-assert.equal(query.get('agent_scope'), 'responsible'); assert.equal(query.has('agent_id'), false);
+assert.equal(query.get('page'),'1');
+query.delete('page'); query.delete('page_size');
+assert.equal(query.toString(),'','reset queries without any stale filters');
 respond(0, {items:[],total:0,page:1}); await tick();
+node('qualityReset').handlers.click();
+assert.equal(ui.qualityState.filtersCollapsed,false,'repeated reset must keep the filters visible');
+assert.equal(ui.collectQualityFilters().toString(),'');
+respond(1, {items:[],total:0,page:1}); await tick();
 node('qualityAgentScope').value = 'current'; ui.logout(false);
 assert.equal(node('qualityAgentScope').value, 'responsible');
 assert.equal(ui.collectQualityFilters().get('agent_scope'), 'responsible');
 """,
     "late_list_response_cannot_replace_new_query": r"""
 ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+ui.qualityState.mode = 'rounds';
 const older = ui.loadQualityList();
 ui.qualityState.applied = new URLSearchParams({keyword:'new'});
 const newer = ui.loadQualityList();
@@ -1069,6 +1220,7 @@ assert.equal(ui.qualityState.controllers.size, 0);
 """,
     "ratings_show_only_actual_scores_and_feedback_in_list_and_detail": r"""
 ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+ui.qualityState.mode = 'rounds';
 const items = [
  {round_id:'not-invited',rating_status:'not_invited',rating:null},
  {round_id:'pending',rating_status:'pending',rating:null,rating_feedback:'must not show'},
@@ -1160,6 +1312,7 @@ assert.equal(node('qualityExportList').textContent, '导出筛选结果（Excel�
 """,
     "excel_detail_exports_complete_history_or_round_without_filters": r"""
 ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+ui.qualityState.mode = 'rounds';
 ui.qualityState.applied = new URLSearchParams({keyword:'secret',page:'3'});
 ui.qualityState.detail = {type:'customer',id:'c/2',item:{display_name:'User'},page:3};
 ui.updateQualityExportButtons();
@@ -1231,6 +1384,7 @@ assert.equal(ui.qualityState.controllers.size, 0); assert.equal(ui.qualityState.
 """,
     "excel_context_changes_cancel_old_download_and_keep_new_busy": r"""
 ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+ui.qualityState.mode = 'rounds';
 const old = ui.exportQuality('list');
 ui.changeQualityMode('customers');
 assert.equal(requests[0].options.signal.aborted, true);
@@ -1276,18 +1430,16 @@ def test_page_has_all_referenced_elements_and_unique_ids() -> None:
     assert references <= set(parser.ids), references - set(parser.ids)
 
 
-def test_reception_and_lifecycle_filters_keep_separate_choices() -> None:
+def test_reception_choices_remain_and_removed_filters_have_no_controls() -> None:
     html = ADMIN_PAGE.read_text(encoding="utf-8")
     reception = re.search(r'<select id="qualityReception" name="reception_type">(.*?)</select>', html)
-    lifecycle = re.search(r'<select id="qualityRoundStatus" name="status">(.*?)</select>', html)
-    assert reception is not None and lifecycle is not None
+    assert reception is not None
     assert re.findall(r'<option value="([^"]*)">([^<]*)</option>', reception.group(1)) == [
         ("", "全部分类"), ("ai_only", "纯 AI 接待"), ("human", "人工介入")
     ]
-    assert re.findall(r'<option value="([^"]*)">([^<]*)</option>', lifecycle.group(1)) == [
-        ("", "全部状态"), ("active", "未结束"), ("resolved", "已解决"),
-        ("idle_boundary", "超时分轮"), ("unknown", "待确认")
-    ]
+    for removed in ("qualitySource", "qualityChannel", "qualityRoundStatus", "qualityAttachment"):
+        assert f'id="{removed}"' not in html
+    assert "更多筛选" not in html and "quality-advanced" not in html
 
 
 def test_archive_has_no_unlinked_rating_mode_or_unanswered_rating_filters() -> None:
@@ -1307,10 +1459,12 @@ def test_agent_scope_defaults_to_round_responsibility_and_labels_other_scopes() 
     html = ADMIN_PAGE.read_text(encoding="utf-8")
     scope = re.search(r'<select id="qualityAgentScope" name="agent_scope">(.*?)</select>', html)
     assert scope is not None
-    assert re.findall(r'<option value="([^"]*)">([^<]*)</option>', scope.group(1)) == [
+    assert re.findall(r'<option value="([^"]*)"(?: selected)?>([^<]*)</option>', scope.group(1)) == [
+        ("", "请选择坐席范围"),
         ("responsible", "本轮责任坐席（ICS分配）"), ("replied", "本轮全部回复坐席"),
         ("assigned", "历史分配（非责任）"), ("current", "会话当前分配（非责任）")
     ]
+    assert '<option value="responsible" selected>' in scope.group(1)
     assert "responsible_reply_at" not in html
     assert "responsible_message_id" not in html
     assert "本轮责任坐席（最后人工回复）" not in html

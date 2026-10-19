@@ -33,7 +33,7 @@ def client(monkeypatch):
 def test_queries_reuse_existing_admin_auth(client):
     browser, runtime, app = client
     app.dependency_overrides.clear()
-    for path in ("status", "filters", "overview", "presence", "presence/daily", "rounds", "customers", "unlinked-ratings", "rounds/id", "customers/id/history", "messages/1/versions?source_key=s&account_id=1", "events/1?source_key=s&account_id=1"):
+    for path in ("status", "filters", "overview", "presence", "presence/daily", "rounds", "customers", "unlinked-ratings", "rounds/id", "customers/id/history", "customers/id/rounds", "messages/1/versions?source_key=s&account_id=1", "events/1?source_key=s&account_id=1"):
         assert browser.get("/admin/api/quality/" + path).status_code == 401
     runtime.call.assert_not_called()
 
@@ -144,6 +144,71 @@ def test_history_is_complete_not_inherited_from_list_filters(client):
     runtime.call.return_value = {"customer": {"customer_id": "customer-one"}, "messages": [], "total": 0}
     assert browser.get("/admin/api/quality/customers/customer-one/history", params={"keyword": "ignored", "reception_type": "human"}).status_code == 200
     runtime.call.assert_awaited_once_with("customer_history", "customer-one", page=1, page_size=100)
+
+
+def test_customer_round_directory_is_paginated_and_not_limited_by_list_filters(client):
+    browser, runtime, _ = client
+    response = browser.get("/admin/api/quality/customers/customer-one/rounds",
+        params={"page": 2, "page_size": 50, "keyword": "ignored", "start": "2026-10-16"})
+    assert response.status_code == 200
+    runtime.call.assert_awaited_once_with("customer_rounds", "customer-one", page=2, page_size=50)
+
+
+@pytest.mark.parametrize("params", [{"page": 0}, {"page_size": 101}, {"page_size": 0}])
+def test_customer_round_directory_rejects_unbounded_pagination(client, params):
+    browser, runtime, _ = client
+    assert browser.get("/admin/api/quality/customers/id/rounds", params=params).status_code == 422
+    runtime.call.assert_not_called()
+
+
+def test_customer_round_directory_missing_customer_is_explicit(client):
+    browser, runtime, _ = client
+    runtime.call.return_value = None
+    assert browser.get("/admin/api/quality/customers/missing/rounds").status_code == 404
+
+
+def test_customer_round_directory_reads_only_selected_customers_round_metadata():
+    connection = Mock()
+    exists, count, page = Mock(), Mock(), Mock()
+    exists.fetchone.return_value = {"customer_id": "selected"}
+    count.fetchone.return_value = {"total": 60}
+    page.fetchall.return_value = [{"round_id": "r51", "data": {"reception_type": "human"}}]
+    connection.execute.side_effect = [exists, count, page]
+    repository = QueryRepository.__new__(QueryRepository)
+    repository.pool = Mock()
+    repository.pool.connection.return_value = nullcontext(connection)
+    result = repository.customer_rounds("selected", page=2, page_size=50)
+    assert result["total"] == 60 and result["page"] == 2
+    assert result["items"][0]["round_id"] == "r51"
+    calls = connection.execute.call_args_list
+    assert calls[0].args[1] == ("selected",) and calls[1].args[1] == ("selected",)
+    statement, values = calls[2].args
+    assert "WHERE r.customer_id=%s" in statement
+    assert "ORDER BY r.started_at DESC,r.round_id DESC" in statement
+    assert "LIMIT %s OFFSET %s" in statement and values == ("selected", 50, 50)
+    assert "message_snapshots" not in statement and "message_index" not in statement
+
+
+def test_customer_metrics_batch_only_page_customers_and_stream_message_metadata():
+    connection = Mock()
+    connection.execute.return_value.fetchall.return_value = [
+        {"customer_id": "a", "round_id": "latest-a", "started_at": "2026-10-19T08:00:00Z",
+         "last_message_at": "2026-10-19T08:03:00Z", "data": {"handoff_requested_at": "2026-10-19T08:01:00Z"}},
+        {"customer_id": "b", "round_id": "latest-b", "data": {}},
+    ]
+    cursor = Mock()
+    cursor.fetchmany.side_effect = [[{"round_id": "latest-a", "sent_at": "2026-10-19T08:03:00Z",
+                                    "sender_role": "agent", "direction": "outgoing"}], []]
+    connection.cursor.return_value = nullcontext(cursor)
+    customers = [{"customer_id": "a"}, {"customer_id": "b"}, {"customer_id": "no-round"}]
+    QueryRepository._customer_service_metrics(connection, customers)
+    assert connection.execute.call_args.args[1] == (["a", "b", "no-round"],)
+    assert "DISTINCT ON (r.customer_id)" in connection.execute.call_args.args[0]
+    assert cursor.execute.call_args.args[1] == (["latest-a", "latest-b"],)
+    assert "content" not in cursor.execute.call_args.args[0]
+    assert cursor.fetchmany.call_count == 2 and connection.cursor.call_count == 1
+    assert customers[0]["latest_round"]["service_metrics"]["first_response_seconds"] == 120
+    assert customers[2]["latest_round"] is None
 
 
 def test_versions_require_full_message_identity(client):

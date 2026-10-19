@@ -770,16 +770,14 @@
     .quality-stack > .panel > .panel-header { flex-wrap: wrap; }
     .quality-status { margin: 0; color: var(--muted); font-size: 13px; }
     .quality-filters { margin: 0; padding: 0; border: 0; min-width: 0; }
-    .quality-filter-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .quality-filter-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
     .quality-field { display: grid; gap: 6px; min-width: 0; color: var(--ink-soft); font-size: 12px; font-weight: 700; }
     .quality-field input, .quality-field select {
-      width: 100%; min-width: 0; min-height: 37px; padding: 8px 10px; border: 1px solid var(--line-strong);
+      width: 100%; min-width: 0; min-height: 31px; padding: 5px 8px; border: 1px solid var(--line-strong);
       border-radius: var(--radius-sm); background: #fff; color: var(--ink); font: inherit; font-weight: 400;
     }
     .quality-field input:focus, .quality-field select:focus { outline: none; border-color: var(--blue); box-shadow: var(--ring); }
     .quality-filters:disabled { opacity: .6; }
-    .quality-advanced { margin-top: 14px; }
-    .quality-advanced summary { width: fit-content; margin-bottom: 12px; color: var(--blue-dark); cursor: pointer; font-size: 12px; font-weight: 700; }
     .quality-form-actions, .quality-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
     .quality-form-actions { margin-top: 16px; }
     .quality-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -804,6 +802,146 @@
     .quality-versions { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line); }
     .quality-versions h4 { margin-bottom: 4px; }
     .quality-empty { padding: 28px 18px; text-align: center; color: var(--muted); font-size: 13px; }
+    #qualityPage { --quality-switcher-width: 280px; font-size: 12px; animation: none; }
+    #qualityPage .workspace-heading { margin-bottom: 12px; }
+    #qualityPage .workspace-heading h3 { font-size: 19px; }
+    #qualityPage .workspace-heading p { font-size: 12px; }
+    #qualityPage .eyebrow { display: none; }
+    #qualityPage .quality-stack { gap: 10px; }
+    .quality-overview-panel > summary { cursor: pointer; list-style: none; }
+    .quality-overview-panel > summary::-webkit-details-marker { display: none; }
+    .quality-overview-panel > summary::after { content: "展开统计 ▾"; color: var(--muted); font-size: 11px; flex-shrink: 0; }
+    .quality-overview-panel[open] > summary::after { content: "收起统计 ▴"; }
+    #qualityPage .workspace-heading { flex-shrink: 0; }
+    #qualityPage .quality-results { display: flex; flex-direction: column; min-height: 180px; }
+    #qualityPage .quality-results > .panel-header, #qualityPage .quality-results > .panel-footer { flex-shrink: 0; }
+    #qualityPage .quality-results > .panel-body { flex: 1; min-height: 0; overflow: hidden; }
+    #qualityFilterPanel { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+    #qualityFilterPanel > .panel-header { flex-shrink: 0; align-items: flex-start; gap: 8px; }
+    .quality-filter-form { display: flex; flex-direction: column; flex: 1; min-height: 0; max-height: calc(100dvh - 190px); }
+    #qualityFilters { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+    .quality-filter-fields { flex: 1; min-height: 0; overflow: auto; padding: 10px 14px; overscroll-behavior: contain; }
+    .quality-filter-fields > .hint { margin: 10px 0 0; font-size: 10px; }
+    #qualityFilterPanel .quality-filter-fields + .quality-form-actions { flex-shrink: 0; margin-top: auto; padding: 10px 14px; border-top: 1px solid var(--line); background: var(--surface); }
+    #qualityFilterPanel .quality-form-actions > .toolbar-actions { width: 100%; justify-content: flex-end; }
+    @media (min-width: 901px) {
+      .content:has(> #qualityPage:not(.hidden)) { max-width: none; padding-bottom: 12px; }
+      #qualityPage { display: flex; flex-direction: column; height: calc(100dvh - 118px); min-height: 500px; }
+      #qualityPage .quality-stack { display: grid; flex: 1; min-height: 0; grid-template-columns: minmax(0, 4fr) minmax(210px, 1fr); grid-template-rows: auto minmax(0, 1fr); grid-template-areas: "overview filters" "results filters"; }
+      #qualityFilterPanel { grid-area: filters; }
+      #qualityFilterPanel .quality-filter-form { max-height: none; }
+      #qualityFilterPanel .quality-filter-grid { grid-template-columns: minmax(0, 1fr); }
+      #qualityOverviewPanel { grid-area: overview; min-width: 0; max-height: min(180px, 22dvh); overflow: auto; }
+      #qualityResultsPanel { grid-area: results; min-width: 0; min-height: 0; }
+      #qualityPage .quality-results .quality-customer-list { height: 100%; max-height: 100%; align-content: start; }
+      #qualityPage .quality-overview-panel .panel-header { padding-bottom: 4px; }
+      #qualityPage .quality-overview-panel .panel-body { padding-top: 4px; }
+      #qualityPage .quality-overview-agents[open] { max-height: 180px; overflow: auto; }
+      #qualityPage.quality-reading .quality-stack { grid-template-columns: var(--quality-switcher-width) minmax(0, 1fr); }
+      #qualityPage.quality-reading #qualityOverviewPanel .panel-heading p { display: none; }
+      #qualityPage.quality-reading .quality-overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      #qualityPage.quality-reading #qualityResultsPanel > .panel-header { flex-wrap: wrap; gap: 8px; }
+      #qualityPage.quality-reading #qualityListSummary { font-size: 10px; }
+      #qualityPage.quality-reading .quality-customer-card { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 6px; padding: 4px 6px; }
+      #qualityPage.quality-reading .quality-customer-identity, #qualityPage.quality-reading .quality-customer-counts { grid-column: span 1; }
+      #qualityPage.quality-reading .quality-customer-identity > span:last-child, #qualityPage.quality-reading .quality-customer-counts { grid-template-columns: minmax(0, 1fr); }
+      #qualityPage.quality-reading .quality-customer-counts { font-size: 10px; }
+      #qualityPage.quality-reading .quality-customer-identity .quality-secondary, #qualityPage.quality-reading .quality-customer-counts .quality-secondary { display: none; }
+      #qualityPage.quality-reading .quality-customer-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px 6px; }
+      #qualityPage.quality-reading .quality-customer-round-heading { grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr) 32px 48px; gap: 3px; font-size: 9px; }
+      #qualityPage.quality-reading .quality-customer-metric { grid-template-columns: minmax(0, 1fr); gap: 1px; line-height: 1.1; }
+      #qualityPage.quality-reading .quality-customer-metric > span { font-size: 9px; }
+      #qualityPage.quality-reading .quality-customer-metric > strong { font-size: 10px; }
+      #qualityPage.quality-reading #qualityResultsPanel > .panel-footer { flex-wrap: wrap; gap: 5px; }
+      #qualityPage.quality-reading #qualityResultsPanel > .panel-footer .quality-secondary { display: none; }
+      #qualityPage.quality-reading #qualityResultsPanel .toolbar-actions { gap: 4px; }
+      #qualityPage.quality-reading #qualityResultsPanel .button { padding: 4px 6px; font-size: 10px; }
+      #qualityPage.quality-reading #qualityDetail { left: calc(270px + var(--quality-switcher-width) + 10px); width: auto; }
+    }
+    #qualityPage .panel-header, #qualityPage .panel-footer { padding: 10px 14px; }
+    #qualityPage .panel-body { padding: 10px 14px; }
+    #qualityPage .panel-heading h3 { font-size: 13px; }
+    #qualityPage .panel-heading p, #qualityPage .quality-status { font-size: 11px; }
+    #qualityPage .button { padding: 5px 9px; min-height: 29px; font-size: 11px; }
+    #qualityPage .quality-field { gap: 4px; font-size: 11px; }
+    #qualityPage .quality-form-actions { margin-top: 8px; }
+    #qualityPage .quality-form-actions > .hint { flex: 1 1 300px; margin: 0; font-size: 10px; }
+    .quality-filter-summary { margin: 0; color: var(--ink-soft); font-size: 11px; line-height: 1.5; }
+    .quality-customer-list { display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; gap: 5px; max-height: max(250px, calc(100dvh - 340px)); overflow: auto; }
+    .quality-customer-card { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); align-items: baseline; gap: 3px 8px; min-width: 0; width: 100%; padding: 4px 7px; text-align: left; color: var(--ink); border: 2px solid #234b7a; border-radius: 5px; background: #fff; font: inherit; line-height: 1.25; cursor: pointer; }
+    .quality-customer-card:hover, .quality-customer-card:focus-visible { border-color: #12365f; background: #f1f6fd; outline: none; }
+    .quality-customer-card:focus-visible { outline: 2px solid #234b7a; outline-offset: 1px; }
+    .quality-customer-card[aria-pressed="true"] { border-color: #092f5f; background: #e5efff; box-shadow: inset 3px 0 #12365f; }
+    .quality-customer-identity { grid-column: span 2; min-width: 0; }
+    .quality-customer-avatar, .quality-customer-open { display: none; }
+    .quality-customer-identity > span:last-child { display: grid; grid-template-columns: 48px minmax(0, 1fr); align-items: baseline; gap: 6px; min-width: 0; }
+    .quality-customer-identity strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+    .quality-customer-card .quality-secondary { display: inline; margin: 0; font-size: 9px; }
+    .quality-customer-card .quality-secondary, .quality-customer-totals { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .quality-customer-counts { display: grid; grid-column: span 2; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: baseline; gap: 6px; min-width: 0; color: var(--ink-soft); font-size: 10px; }
+    .quality-customer-round { display: contents; }
+    .quality-customer-round-heading { display: grid; grid-column: span 2; grid-template-columns: minmax(0, 1fr) 42px 56px; align-items: baseline; gap: 4px; min-width: 0; color: var(--muted); font-size: 9px; }
+    .quality-customer-round-heading > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .quality-customer-round-heading .tag { flex-shrink: 0; min-height: 0; padding: 0 4px; font-size: 9px; line-height: 1.25; }
+    .quality-customer-metrics { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(6, minmax(0, 1fr)); align-items: baseline; gap: 3px 8px; min-width: 0; }
+    .quality-customer-metric { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: baseline; gap: 3px; min-width: 0; white-space: nowrap; }
+    .quality-customer-metric > span { color: var(--muted); font-size: 9px; }
+    .quality-customer-metric > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-soft); font-size: 10px; font-weight: 600; }
+    @media (max-width: 1200px) {
+      .quality-customer-identity, .quality-customer-counts { grid-column: span 3; }
+      .quality-customer-round-heading { grid-column: 1 / -1; }
+      .quality-customer-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
+    @media (max-width: 560px) { .quality-customer-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    #qualityDetail { position: fixed; z-index: 45; top: 12px; right: 12px; bottom: 12px; width: min(1040px, calc(100vw - 500px)); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 12px; background: #fff; box-shadow: -12px 0 48px #172b4d26; font-size: 12px; }
+    #qualityDetail > .panel-header { flex-shrink: 0; gap: 8px; }
+    #qualityDetail .panel-heading { min-width: 0; }
+    #qualityDetailTitle { font-size: 13px; overflow-wrap: anywhere; }
+    #qualityDetailHint { margin-top: 4px; font-size: 10px; }
+    .quality-reader { display: grid; grid-template-columns: 180px minmax(0, 1fr); flex: 1; min-height: 0; }
+    .quality-round-sidebar { display: flex; flex-direction: column; min-height: 0; padding: 10px 8px; border-right: 1px solid var(--line); background: #f8fafc; }
+    .quality-round-heading { display: flex; align-items: center; justify-content: space-between; gap: 4px; padding: 1px 4px 9px; font-size: 11px; }
+    .quality-round-list { flex: 1; min-height: 0; overflow: auto; padding-top: 6px; }
+    .quality-round-item { display: block; width: 100%; margin-bottom: 5px; padding: 8px; text-align: left; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--ink-soft); font: inherit; font-size: 11px; cursor: pointer; }
+    .quality-round-item:hover { background: #edf2f7; }
+    .quality-round-item[aria-current="true"] { border-color: var(--blue-line); background: var(--blue-soft); color: var(--blue-dark); }
+    .quality-round-item strong { display: block; margin-bottom: 4px; }
+    .quality-round-item > span { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+    .quality-round-item strong span { font-size: 9px; font-weight: 400; }
+    .quality-round-item .quality-secondary { margin-top: 3px; font-size: 10px; }
+    .quality-round-pages { display: flex; justify-content: space-between; align-items: center; gap: 3px; padding-top: 8px; font-size: 10px; }
+    .quality-reader-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+    .quality-reader-info { flex-shrink: 0; max-height: 30%; overflow: auto; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+    .quality-reader-info summary { color: var(--muted); cursor: pointer; font-size: 10px; }
+    .quality-reader-info .quality-meta { gap: 5px 16px; margin: 8px 0 0; font-size: 10px; }
+    .quality-chat-scroll { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px; overscroll-behavior: contain; }
+    #qualityTimeline { display: flex; flex-direction: column; gap: 7px; }
+    .quality-chat-divider { margin: 8px 0; text-align: center; color: var(--muted); font-size: 10px; }
+    #qualityTimeline .quality-message { width: 88%; max-width: 680px; align-self: flex-start; border: 0; border-radius: 0; padding: 0; background: transparent; }
+    #qualityTimeline .quality-message.outgoing { align-self: flex-end; }
+    #qualityTimeline .quality-message-header { justify-content: flex-start; gap: 7px; margin-bottom: 3px; color: var(--muted); font-size: 10px; }
+    #qualityTimeline .outgoing .quality-message-header { justify-content: flex-end; }
+    #qualityTimeline .quality-message-header strong { color: var(--ink-soft); font-size: 10px; font-weight: 600; }
+    #qualityTimeline .quality-message-header .hint { font-size: 10px; }
+    #qualityPage #qualityTimeline .quality-message-header .button, #qualityPage .quality-chat-divider .button { min-height: 17px; padding: 0 3px; font-size: 9px; color: var(--muted); }
+    #qualityTimeline .quality-message-content { padding: 7px 10px; border-radius: 2px 9px 9px 9px; background: #f1f4f8; color: var(--ink); font-size: 12px; line-height: 1.6; }
+    #qualityTimeline .outgoing .quality-message-content { border-radius: 9px 2px 9px 9px; background: #eaf2ff; }
+    #qualityTimeline .bot .quality-message-content { background: #f1e8ff; }
+    #qualityTimeline .private .quality-message-content { background: #fff4dc; }
+    #qualityTimeline .system .quality-message-content { background: #f6f7f9; color: var(--muted); }
+    #qualityTimeline .quality-message-footer { justify-content: flex-start; gap: 7px; margin-top: 2px; font-size: 9px; }
+    #qualityTimeline .outgoing .quality-message-footer { justify-content: flex-end; }
+    #qualityTimeline .quality-message-footer .button { min-height: 18px; padding: 0 3px; color: var(--muted); font-size: 9px; }
+    #qualityTimeline .tag { padding: 1px 5px; min-height: 0; font-size: 9px; }
+    #qualityTimeline .quality-attachments { margin-top: 4px; padding: 5px 7px; font-size: 10px; }
+    #qualityDetail .quality-versions { margin-top: 12px; padding-top: 12px; }
+    #qualityVersionList .quality-message { padding: 9px 10px; font-size: 11px; }
+    #qualityVersionList .quality-message-content { font-size: 12px; }
+    .quality-reader-main > .panel-footer { flex-shrink: 0; }
+    @media (max-width: 1250px) { .quality-filter-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .quality-reader { grid-template-columns: 155px minmax(0, 1fr); } }
+    @media (min-width: 901px) and (max-width: 1100px) { #qualityPage { --quality-switcher-width: 220px; } }
+    @media (max-width: 900px) { #qualityDetail { top: 6px; right: 6px; bottom: 6px; width: calc(100vw - 90px); } }
+    @media (max-width: 600px) { #qualityDetail { top: 0; right: 0; bottom: 0; width: 100%; border-radius: 0; } .quality-reader { grid-template-columns: 125px minmax(0, 1fr); } .quality-chat-scroll { padding: 8px; } #qualityTimeline .quality-message { width: 96%; } #qualityDetail > .panel-header { padding: 9px; } }
     @media (max-width: 1400px) { .quality-overview-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
     @media (max-width: 1100px) { .quality-filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     @media (max-width: 560px) { .quality-filter-grid { grid-template-columns: 1fr; } .quality-overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
@@ -1042,59 +1180,55 @@
               <div>
                 <span class="eyebrow">Conversation Archive</span>
                 <h3>对话归档</h3>
-                <p>按接待轮次筛选，或查看同一用户跨会话的完整历史。所有时间均为北京时间（UTC+8）。</p>
+                <p>筛选客户，点击记录在右侧阅读连续对话。所有时间均为北京时间。</p>
               </div>
               <span id="qualityStatusTag" class="tag amber">等待读取</span>
             </div>
-            <div class="quality-stack">
-              <section class="panel" aria-label="归档筛选">
-                <div class="panel-header"><div class="panel-heading"><h3 id="qualityFilterHeading">筛选对话</h3><p id="qualityStatus" class="quality-status" role="status">正在检查归档状态...</p><p id="qualityDirectoryWarning" class="hint hidden" role="status"></p></div></div>
-                <form id="qualityFilterForm" class="panel-body">
+            <div id="qualityWorkspace" class="quality-stack">
+              <section id="qualityFilterPanel" class="panel" aria-label="归档筛选">
+                <div class="panel-header"><div class="panel-heading"><h3 id="qualityFilterHeading">筛选对话</h3><p id="qualityStatus" class="quality-status" role="status">正在检查归档状态...</p><p id="qualityDirectoryWarning" class="hint hidden" role="status"></p><p id="qualityFilterSummary" class="quality-filter-summary hidden"></p></div><button id="qualityToggleFilters" class="button secondary" type="button" aria-expanded="true" aria-controls="qualityFilterFields">收起筛选</button></div>
+                <form id="qualityFilterForm" class="quality-filter-form">
                   <fieldset id="qualityFilters" class="quality-filters" disabled>
-                    <div class="quality-filter-grid">
-                      <label class="quality-field">用户<input id="qualityCustomer" name="customer_query" placeholder="姓名、联系人 ID 或业务用户 ID" maxlength="200"></label>
-                      <label class="quality-field">正文关键词<input id="qualityKeyword" name="keyword" placeholder="在已归档正文中查找" maxlength="200"></label>
-                      <label class="quality-field">来源 / 账号<select id="qualitySource"><option value="">全部来源和账号</option></select></label>
-                      <label class="quality-field">Chatwoot 收件箱<select id="qualityInbox"><option value="">全部收件箱</option></select></label>
-                      <label class="quality-field">ICS 业务渠道<select id="qualityChannel" name="channel_key"><option value="">全部 ICS 业务渠道</option><option value="unmapped">未映射渠道</option></select></label>
-                      <label class="quality-field">接待分类<select id="qualityReception" name="reception_type"><option value="">全部分类</option><option value="ai_only">纯 AI 接待</option><option value="human">人工介入</option></select></label>
-                    </div>
-                    <details class="quality-advanced">
-                      <summary>更多筛选：坐席、时间、评价及消息类型</summary>
+                    <div id="qualityFilterFields" class="quality-filter-fields">
                       <div class="quality-filter-grid">
+                        <label class="quality-field">用户<input id="qualityCustomer" name="customer_query" placeholder="姓名、联系人 ID 或业务用户 ID" maxlength="200"></label>
+                        <label class="quality-field">正文关键词<input id="qualityKeyword" name="keyword" placeholder="在已归档正文中查找" maxlength="200"></label>
+                        <label class="quality-field">Chatwoot 收件箱<select id="qualityInbox"><option value="">全部收件箱</option></select></label>
+                        <label class="quality-field">接待分类<select id="qualityReception" name="reception_type"><option value="">全部分类</option><option value="ai_only">纯 AI 接待</option><option value="human">人工介入</option></select></label>
                         <label class="quality-field">坐席<select id="qualityAgent"><option value="">全部坐席</option></select></label>
-                        <label class="quality-field">坐席范围<select id="qualityAgentScope" name="agent_scope"><option value="responsible">本轮责任坐席（ICS分配）</option><option value="replied">本轮全部回复坐席</option><option value="assigned">历史分配（非责任）</option><option value="current">会话当前分配（非责任）</option></select></label>
+                        <label class="quality-field">坐席范围<select id="qualityAgentScope" name="agent_scope"><option value="">请选择坐席范围</option><option value="responsible" selected>本轮责任坐席（ICS分配）</option><option value="replied">本轮全部回复坐席</option><option value="assigned">历史分配（非责任）</option><option value="current">会话当前分配（非责任）</option></select></label>
                         <label class="quality-field">会话 ID<input id="qualityConversation" name="conversation_id" placeholder="Chatwoot 会话 ID" inputmode="numeric" pattern="[1-9][0-9]*" maxlength="19"></label>
                         <label class="quality-field">轮次编号（会话内）<input id="qualityRoundNo" name="round_no" type="number" min="1" max="2147483647" step="1" placeholder="会话内第几轮"></label>
-                        <label class="quality-field">轮次状态<select id="qualityRoundStatus" name="status"><option value="">全部状态</option><option value="active">未结束</option><option value="resolved">已解决</option><option value="idle_boundary">超时分轮</option><option value="unknown">待确认</option></select></label>
-                        <label class="quality-field">筛选时间依据<select id="qualityTimeField" name="time_field"><option value="started_at">轮次开始时间</option><option value="message_at">消息时间</option><option value="resolved_at">解决时间</option><option value="rating_at">评价时间</option></select></label>
+                        <label class="quality-field">筛选时间依据<select id="qualityTimeField" name="time_field"><option value="">请选择时间依据</option><option value="started_at" selected>轮次开始时间</option><option value="message_at">消息时间</option><option value="resolved_at">解决时间</option><option value="rating_at">评价时间</option></select></label>
                         <label class="quality-field">开始时间（北京时间）<input id="qualityStart" name="start" type="datetime-local"></label>
                         <label class="quality-field">结束时间（北京时间，不含该时刻）<input id="qualityEnd" name="end" type="datetime-local"></label>
                         <label class="quality-field">评价状态<select id="qualityRatingStatus" name="rating_status"><option value="">全部评价状态</option><option value="rated">已评价</option></select></label>
                         <label class="quality-field">评价分数<select id="qualityRating" name="rating"><option value="">全部分数</option><option value="1">1 分</option><option value="2">2 分</option><option value="3">3 分</option><option value="4">4 分</option><option value="5">5 分</option></select></label>
-                        <label class="quality-field">消息范围<select id="qualityMessageScope" name="message_scope"><option value="all">全部消息</option><option value="contact">客户消息</option><option value="agent">真人客服公开回复</option><option value="bot">机器人消息</option><option value="private">私密消息 / 内部备注</option></select></label>
-                        <label class="quality-field">附件<select id="qualityAttachment" name="has_attachment"><option value="">不限附件</option><option value="true">含附件</option><option value="false">无附件</option></select></label>
+                        <label class="quality-field">消息范围<select id="qualityMessageScope" name="message_scope"><option value="">请选择消息范围</option><option value="all" selected>全部消息</option><option value="contact">客户消息</option><option value="agent">真人客服公开回复</option><option value="bot">机器人消息</option><option value="private">私密消息 / 内部备注</option></select></label>
                       </div>
-                    </details>
-                    <div class="quality-form-actions"><p class="hint">收件箱和坐席按来源 / 账号区分；责任坐席固定为本轮 ICS 原始分配者，后续改派或他人回复不改变责任。ICS 业务渠道按现有映射筛选。消息范围用于选择包含该类消息的轮次或用户，详情展示完整对话；用户历史包含未归轮消息。</p><div class="toolbar-actions"><button id="qualityReset" class="button secondary" type="button">重置</button><button class="button" type="submit">查询归档</button></div></div>
+                      <p class="hint">筛选用于查找客户或轮次；打开客户后可阅读完整历史。责任坐席取本轮 ICS 原始分配者。</p>
+                    </div>
+                    <div class="quality-form-actions"><div class="toolbar-actions"><button id="qualityReset" class="button secondary" type="button">重置</button><button class="button" type="submit">查询归档</button></div></div>
                   </fieldset>
                 </form>
               </section>
-              <section class="panel quality-overview-panel" aria-label="筛选概况">
-                <div class="panel-header"><div class="panel-heading"><h3>筛选概况</h3><p id="qualityOverviewStatus" role="status">按已应用筛选统计全部匹配轮次，不限当前页；用户完整历史不会扩大概况范围。</p></div></div>
+              <details id="qualityOverviewPanel" class="panel quality-overview-panel" aria-label="筛选概况">
+                <summary class="panel-header"><div class="panel-heading"><h3>筛选概况</h3><p id="qualityOverviewStatus" role="status">按已应用筛选统计全部匹配轮次，不限当前页；用户完整历史不会扩大概况范围。</p></div></summary>
                 <div class="panel-body"><div id="qualityOverviewCards" class="quality-overview-grid"><div class="hint">归档查询就绪后显示概况。</div></div><p id="qualityOverviewNotice" class="hint"></p><details class="quality-overview-agents"><summary id="qualityOverviewAgentSummary">参与坐席</summary><div id="qualityOverviewAgents" class="table-wrap quality-table"><div class="quality-empty">等待读取概况。</div></div></details></div>
-              </section>
-              <section class="panel" aria-label="归档查询结果">
-                <div class="panel-header"><div class="panel-heading"><h3 id="qualityListTitle">接待轮次</h3><p id="qualityListSummary" role="status">等待读取归档</p></div><div class="toolbar-actions"><div class="quality-tabs" role="group" aria-label="归档查看方式"><button id="qualityRoundsTab" class="button secondary" type="button" aria-pressed="true" disabled>按轮次</button><button id="qualityCustomersTab" class="button secondary" type="button" aria-pressed="false" disabled>按用户</button></div><button id="qualityExportList" class="button secondary" type="button" title="导出所选轮次完整消息，包含所有分页" disabled>导出筛选结果（Excel）</button></div></div>
-                <div class="panel-body"><div id="qualityList" class="table-wrap quality-table"><div class="quality-empty">请选择筛选条件后查询对话。</div></div></div>
+              </details>
+              <section id="qualityResultsPanel" class="panel quality-results" aria-label="归档查询结果">
+                <div class="panel-header"><div class="panel-heading"><h3 id="qualityListTitle">客户对话</h3><p id="qualityListSummary" role="status">等待读取归档</p></div><div class="toolbar-actions"><div class="quality-tabs" role="group" aria-label="归档查看方式"><button id="qualityCustomersTab" class="button secondary" type="button" aria-pressed="true" disabled>按客户</button><button id="qualityRoundsTab" class="button secondary" type="button" aria-pressed="false" disabled>按轮次</button></div><button id="qualityExportList" class="button secondary" type="button" title="导出所选客户完整消息，包含所有分页" disabled>导出筛选结果（Excel）</button></div></div>
+                <div class="panel-body"><div id="qualityList" class="quality-customer-list"><div class="quality-empty">请选择筛选条件后查询对话。</div></div></div>
                 <div class="panel-footer quality-pagination"><div><span id="qualityPageInfo" class="hint">第 1 页</span><span class="quality-secondary">Excel 导出包含全部匹配结果，不限当前页。</span></div><div class="toolbar-actions"><button id="qualityPrev" class="button tertiary" type="button" disabled>上一页</button><button id="qualityNext" class="button tertiary" type="button" disabled>下一页</button></div></div>
               </section>
-              <section id="qualityDetail" class="panel hidden" aria-label="归档详情">
-                <div class="panel-header"><div class="panel-heading"><h3 id="qualityDetailTitle">对话详情</h3><p id="qualityDetailHint">完整归档时间线</p></div><div class="toolbar-actions"><button id="qualityExportDetail" class="button secondary hidden" type="button" disabled>导出本轮（Excel）</button><button id="qualityCustomerHistory" class="button secondary hidden" type="button">查看用户完整历史</button><button id="qualityCloseDetail" class="button tertiary" type="button">收起详情</button></div></div>
-                <div class="panel-body"><div id="qualityDetailMeta" class="quality-meta"></div><div id="qualityTimeline" class="quality-timeline" aria-live="polite"></div>
+              <section id="qualityDetail" class="panel hidden" role="dialog" aria-modal="false" aria-labelledby="qualityDetailTitle" tabindex="-1">
+                <div class="panel-header"><div class="panel-heading"><h3 id="qualityDetailTitle">对话详情</h3><p id="qualityDetailHint">完整归档时间线</p></div><div class="toolbar-actions"><button id="qualityExportDetail" class="button secondary hidden" type="button" disabled>导出本轮（Excel）</button><button id="qualityCustomerHistory" class="button secondary hidden" type="button">客户完整历史</button><button id="qualityCloseDetail" class="button tertiary" type="button" aria-label="关闭聊天窗口（Esc）">关闭 ×</button></div></div>
+                <div class="quality-reader">
+                  <nav class="quality-round-sidebar" aria-label="客户对话轮次"><div class="quality-round-heading"><strong>对话轮次</strong><span id="qualityRoundCount" class="hint"></span></div><button id="qualityAllHistory" class="quality-round-item" type="button" aria-current="true">全部聊天记录</button><div id="qualityRoundList" class="quality-round-list"><div class="hint">选择客户后读取轮次。</div></div><div class="quality-round-pages"><button id="qualityRoundPrev" class="button tertiary" type="button" disabled>上一页</button><span id="qualityRoundPageInfo"></span><button id="qualityRoundNext" class="button tertiary" type="button" disabled>下一页</button></div></nav>
+                  <div class="quality-reader-main"><details class="quality-reader-info"><summary>对话资料、责任坐席及评价</summary><div id="qualityDetailMeta" class="quality-meta"></div></details><div id="qualityChatScroll" class="quality-chat-scroll"><div id="qualityTimeline" class="quality-timeline" aria-live="polite"></div>
                   <section id="qualityVersions" class="quality-versions hidden" aria-label="消息版本"><div class="quality-message-header"><div><h4 id="qualityVersionsTitle">消息观察版本</h4><p class="hint">保留创建、编辑和删除时已收到的内容；缺少最初事件时不会将后续观察标为原文。</p></div><button id="qualityCloseVersions" class="button tertiary" type="button">收起版本</button></div><div id="qualityVersionList" class="quality-timeline"></div><div class="quality-form-actions"><span id="qualityVersionsPageInfo" class="hint">第 1 页</span><div class="toolbar-actions"><button id="qualityVersionsPrev" class="button tertiary" type="button" disabled>上一页版本</button><button id="qualityVersionsNext" class="button tertiary" type="button" disabled>下一页版本</button></div></div></section>
+                  </div><div class="panel-footer quality-pagination"><span id="qualityDetailPageInfo" class="hint">第 1 页</span><div class="toolbar-actions"><button id="qualityDetailPrev" class="button tertiary" type="button" disabled>上一页消息</button><button id="qualityDetailNext" class="button tertiary" type="button" disabled>下一页消息</button></div></div></div>
                 </div>
-                <div class="panel-footer quality-pagination"><span id="qualityDetailPageInfo" class="hint">第 1 页</span><div class="toolbar-actions"><button id="qualityDetailPrev" class="button tertiary" type="button" disabled>上一页消息</button><button id="qualityDetailNext" class="button tertiary" type="button" disabled>下一页消息</button></div></div>
               </section>
             </div>
           </section>
@@ -1251,11 +1385,12 @@
     }[char]));
 
     const qualityState = {
-      generation: 0, controllers: new Map(), ready: false, mode: "rounds", page: 1, pageSize: 30,
+      generation: 0, controllers: new Map(), ready: false, mode: "customers", page: 1, pageSize: 30,
       total: 0, items: [], filters: { sources: [], channels: [], agents: [], inboxes: [] }, applied: new URLSearchParams(),
       detail: null, versions: null, messages: [], listVersion: 0, detailVersion: 0, versionsVersion: 0,
       listLoading: false, detailLoading: false, exportJob: null, exportEpoch: 0,
-      overview: null, overviewVersion: 0, overviewLoading: false
+      overview: null, overviewVersion: 0, overviewLoading: false,
+      roundDirectory: null, filtersCollapsed: false
     };
     const presenceState = {
       generation: 0, controllers: new Map(), timer: null,
@@ -1342,6 +1477,39 @@
       return qualityAgentLabel(item, item.responsible_agent_id, item.responsible_agent_name);
     };
     const qualityRatingLabel = (item) => item.rating_status === "rated" && item.rating !== null && item.rating !== undefined ? `${item.rating} 分` : "—";
+    const qualityDuration = (value) => {
+      if (value === null || value === undefined || value === "" || !Number.isFinite(Number(value)) || Number(value) < 0) return "—";
+      if (Number(value) > 0 && Number(value) < 1) return "不足1秒";
+      let seconds = Math.round(Number(value));
+      const parts = [];
+      for (const [unit, label] of [[86400, "天"], [3600, "小时"], [60, "分"], [1, "秒"]]) {
+        const count = Math.floor(seconds / unit);
+        if (count) parts.push(`${count}${label}`);
+        seconds %= unit;
+      }
+      return parts.join("") || "0秒";
+    };
+    const qualityCustomerRound = (item) => {
+      const round = item.latest_round, metrics = round?.service_metrics || {};
+      const firstLabels = { not_handed_off: "未转人工", missing_handoff_time: "时间待确认", unknown_time: "时间待确认", awaiting_agent: "待人工回复" };
+      const first = metrics.first_response_status === "recorded" ? qualityDuration(metrics.first_response_seconds) : firstLabels[metrics.first_response_status] || "待确认";
+      const last = metrics.last_message_by_agent === true ? "是" : metrics.last_message_by_agent === false ? `否 · ${qualityRoleLabel(metrics.last_message_sender_role)}` : "待确认";
+      const rating = round && qualityRatingLabel(round) !== "—" ? qualityRatingLabel(round) : "未评价";
+      const feedback = round ? qualityRatingFeedback(round) : "";
+      const counts = [metrics.human_phase_message_count, metrics.human_phase_customer_count, metrics.human_phase_agent_count];
+      const messages = counts.every((value) => value !== null && value !== undefined) ? `${counts[0]}（${counts[1]}：${counts[2]}）` : "待确认";
+      const firstBasis = { handoff_request: "从转人工请求到首条人工公开回复", ics_assignment: "从 ICS 分配成功到首条人工公开回复", inherited_takeover: "沿用人工接待，从本轮开始到首条人工公开回复" };
+      const cells = [
+        ["转人工首响", first, firstBasis[metrics.human_phase_basis] || "缺少转人工时间时不推算首响时长"],
+        ["人工平均响应", qualityDuration(metrics.average_response_seconds), `基于 ${metrics.response_sample_count ?? 0} 次已完成响应。连续访客消息从首条未回复消息计时；首次等待从转人工时间起计。`],
+        ["最后一句为人工", last, "按本轮最后一条公开聊天消息判断，忽略内部备注、系统活动和评价卡"],
+        ["本轮总时长", qualityDuration(metrics.duration_seconds), "从本轮开始至解决时间；未解决或超时分轮按最后一条聊天消息计时"],
+        ["访客评价", feedback ? `${rating} · ${feedback}` : rating, feedback ? `${rating} · ${feedback}` : rating],
+        ["人工对话数", messages, "总消息数（客户消息数：人工客服消息数），仅计人工接待阶段的公开消息" + (metrics.human_phase_basis === "first_agent_reply" ? "；未记录转人工时间，从首条人工回复起统计" : "")],
+      ];
+      const heading = round ? `最近一轮 · 会话 ${escapeHtml(round.conversation_id)} · 第 ${escapeHtml(round.round_no)} 轮` : "暂无可确认的对话轮次";
+      return `<span class="quality-customer-round"><span class="quality-customer-round-heading" title="${heading}"><span>${round ? `最近一轮 · 会话 ${escapeHtml(round.conversation_id)}` : heading}</span><span>${round ? `第 ${escapeHtml(round.round_no)} 轮` : ""}</span>${round ? qualityTag(qualityReceptionLabel(round), round.reception_type === "human" ? "green" : "") : "<span></span>"}</span><span class="quality-customer-metrics">${cells.map(([label, value, hint]) => `<span class="quality-customer-metric" title="${escapeHtml(hint)}"><span>${escapeHtml(label)}</span><strong title="${escapeHtml(value)}">${escapeHtml(value)}</strong></span>`).join("")}</span></span>`;
+    };
     const qualityRatingFeedback = (item) => item.rating_status === "rated" && typeof item.rating_feedback === "string" ? item.rating_feedback.trim() : "";
     const qualityRoleLabel = (role) => ({ contact: "客户", customer: "客户", agent: "真人客服", bot: "机器人", system: "系统", unknown: "身份待确认" }[role] || "身份待确认");
     const qualityChannelName = (key) => !key || key === "unmapped" ? "未映射渠道" : qualityState.filters.channels.find((item) => item.key === key)?.name || state.channels.find((item) => item.key === key)?.name || key;
@@ -1817,13 +1985,35 @@
       $("qualityVersionsNext").disabled = true;
       $("qualityVersionsPageInfo").textContent = "第 1 页";
     };
-    const closeQualityDetail = () => {
+    const clearQualityRoundDirectory = () => {
+      cancelQualityRequest("round-directory");
+      qualityState.roundDirectory = null;
+      $("qualityRoundList").innerHTML = '<div class="hint">选择客户后读取轮次。</div>';
+      $("qualityRoundCount").textContent = "";
+      $("qualityRoundPageInfo").textContent = "";
+      $("qualityRoundPrev").disabled = true;
+      $("qualityRoundNext").disabled = true;
+      $("qualityAllHistory").disabled = true;
+    };
+    const syncQualityCustomerSelection = () => {
+      const detail = qualityState.detail;
+      const customerId = detail?.type === "customer" ? detail.id : detail?.item?.customer_id;
+      $("qualityList").querySelectorAll("[data-quality-open]").forEach((button) => {
+        const item = qualityState.items[Number(button.dataset.qualityOpen)];
+        const selected = detail && item && (qualityState.mode === "customers" ? String(item.customer_id) === String(customerId) : detail.type === "round" && String(item.round_id) === String(detail.id));
+        button.setAttribute("aria-pressed", String(!!selected));
+      });
+    };
+    const closeQualityDetail = (preserveDirectory = false) => {
       cancelQualityExport();
       cancelQualityRequest("detail");
       qualityState.detailVersion++;
       qualityState.detail = null;
       qualityState.detailLoading = false;
       qualityState.messages = [];
+      $("qualityPage").classList.remove("quality-reading");
+      syncQualityCustomerSelection();
+      if (preserveDirectory !== true) clearQualityRoundDirectory();
       closeQualityVersions();
       $("qualityDetail").classList.add("hidden");
       $("qualityDetailTitle").textContent = "对话详情";
@@ -1872,18 +2062,16 @@
       if (reset) {
         qualityState.filters = { sources: [], channels: [], agents: [], inboxes: [] };
         qualityState.applied = new URLSearchParams();
-        qualityState.mode = "rounds";
+        qualityState.mode = "customers";
         qualityState.page = 1;
-        $("qualityListTitle").textContent = "接待轮次";
+        $("qualityListTitle").textContent = "客户对话";
         $("qualityFilterHeading").textContent = "筛选对话";
-        $("qualityFilterForm").classList.remove("hidden");
-        $("qualityRoundsTab").setAttribute("aria-pressed", "true");
-        $("qualityCustomersTab").setAttribute("aria-pressed", "false");
+        setQualityFiltersCollapsed(false);
+        $("qualityRoundsTab").setAttribute("aria-pressed", "false");
+        $("qualityCustomersTab").setAttribute("aria-pressed", "true");
         $("qualityFilterForm").reset();
-        $("qualitySource").innerHTML = '<option value="">全部来源和账号</option>';
         $("qualityInbox").innerHTML = '<option value="">全部收件箱</option>';
         $("qualityAgent").innerHTML = '<option value="">全部坐席</option>';
-        $("qualityChannel").innerHTML = '<option value="">全部 ICS 业务渠道</option><option value="unmapped">未映射渠道</option>';
       }
     };
     const scopedQualityValue = (item) => JSON.stringify({ source_key: String(item.source_key), account_id: String(item.account_id), ...(item.agent_id !== undefined ? { agent_id: String(item.agent_id) } : {}), ...(item.inbox_id !== undefined ? { inbox_id: String(item.inbox_id) } : {}) });
@@ -1892,44 +2080,27 @@
     };
     const qualityScopesMatch = (left, right) => String(left.source_key) === String(right.source_key) && String(left.account_id) === String(right.account_id);
     const populateQualityInboxes = () => {
-      const previous = $("qualityInbox").value, source = parseQualityScope($("qualitySource").value);
-      const inboxes = (qualityState.filters.inboxes || []).filter((item) => !source || qualityScopesMatch(item, source));
+      const previous = $("qualityInbox").value;
+      const inboxes = qualityState.filters.inboxes || [];
       $("qualityInbox").innerHTML = '<option value="">全部收件箱</option>' + inboxes.map((item) => `<option value="${escapeHtml(scopedQualityValue(item))}">${escapeHtml(item.name || "收件箱")} · #${escapeHtml(item.inbox_id)} · ${escapeHtml(item.source_key)} / 账号 ${escapeHtml(item.account_id)}</option>`).join("");
       if ([...$("qualityInbox").options].some((item) => item.value === previous)) $("qualityInbox").value = previous;
     };
     const populateQualityAgents = () => {
       const previous = $("qualityAgent").value;
-      const source = parseQualityScope($("qualitySource").value);
-      const agents = (qualityState.filters.agents || []).filter((item) => !source || qualityScopesMatch(item, source));
+      const agents = qualityState.filters.agents || [];
       $("qualityAgent").innerHTML = '<option value="">全部坐席</option>' + agents.map((item) => `<option value="${escapeHtml(scopedQualityValue(item))}">${escapeHtml(qualityAgentLabel(item, item.agent_id, item.agent_name))} · ${escapeHtml(item.source_key)} / 账号 ${escapeHtml(item.account_id)}</option>`).join("");
       if ([...$("qualityAgent").options].some((item) => item.value === previous)) $("qualityAgent").value = previous;
     };
     const populateQualityFilters = () => {
-      const previousSource = $("qualitySource").value, previousChannel = $("qualityChannel").value;
-      const sources = new Map();
-      for (const item of [...qualityState.filters.sources, ...(qualityState.filters.inboxes || []), ...qualityState.filters.agents]) {
-        const source = { source_key: String(item.source_key), account_id: String(item.account_id) };
-        sources.set(scopedQualityValue(source), source);
-      }
-      $("qualitySource").innerHTML = '<option value="">全部来源和账号</option>' + [...sources.values()].map((item) => `<option value="${escapeHtml(scopedQualityValue(item))}">${escapeHtml(item.source_key)} · 账号 ${escapeHtml(item.account_id)}</option>`).join("");
-      if ([...$("qualitySource").options].some((item) => item.value === previousSource)) $("qualitySource").value = previousSource;
-      const channels = new Map(state.channels.map((item) => [item.key, item]));
-      for (const item of qualityState.filters.channels) if (item.key && item.key !== "unmapped") channels.set(item.key, item);
-      $("qualityChannel").innerHTML = '<option value="">全部 ICS 业务渠道</option><option value="unmapped">未映射渠道</option>' + [...channels.values()].map((item) => `<option value="${escapeHtml(item.key)}">${escapeHtml(item.name || item.key)}</option>`).join("");
-      if ([...$("qualityChannel").options].some((item) => item.value === previousChannel)) $("qualityChannel").value = previousChannel;
-      populateQualityInboxes();
-      populateQualityAgents();
-    };
-    const changeQualitySource = () => {
-      if (!$("qualitySource").value) { $("qualityInbox").value = ""; $("qualityAgent").value = ""; }
       populateQualityInboxes();
       populateQualityAgents();
     };
     const changeQualityScopedFilter = (id) => {
       const selected = parseQualityScope($(id).value);
-      if (selected) $("qualitySource").value = scopedQualityValue({ source_key: selected.source_key, account_id: selected.account_id });
-      populateQualityInboxes();
-      populateQualityAgents();
+      const otherId = id === "qualityInbox" ? "qualityAgent" : "qualityInbox";
+      const other = parseQualityScope($(otherId).value);
+      if (selected && other && !qualityScopesMatch(selected, other)) $(otherId).value = "";
+      populateQualityFilters();
     };
     const collectQualityFilters = () => {
       const params = new URLSearchParams();
@@ -1937,9 +2108,9 @@
         const value = String(raw).trim();
         if (value) params.set(key, key === "start" || key === "end" ? qualityLocalTime(value) : value);
       }
-      const source = parseQualityScope($("qualitySource").value), agent = parseQualityScope($("qualityAgent").value), inbox = parseQualityScope($("qualityInbox").value);
-      const scope = source || inbox || agent;
-      if (scope && [source, inbox, agent].some((item) => item && !qualityScopesMatch(item, scope))) throw new Error("收件箱、坐席与来源 / 账号不一致，请重新选择。");
+      const agent = parseQualityScope($("qualityAgent").value), inbox = parseQualityScope($("qualityInbox").value);
+      const scope = inbox || agent;
+      if (inbox && agent && !qualityScopesMatch(inbox, agent)) throw new Error("收件箱与坐席的来源 / 账号不一致，请重新选择。");
       if (scope) { params.set("source_key", scope.source_key); params.set("account_id", scope.account_id); }
       if (agent) params.set("agent_id", agent.agent_id);
       if (inbox) params.set("inbox_id", inbox.inbox_id);
@@ -1997,21 +2168,27 @@
       const rounds = qualityState.mode === "rounds";
       $("qualityRoundsTab").setAttribute("aria-pressed", String(rounds));
       $("qualityCustomersTab").setAttribute("aria-pressed", String(!rounds));
-      $("qualityListTitle").textContent = rounds ? "接待轮次" : "归档用户";
-      $("qualityListSummary").textContent = `共 ${qualityState.total} ${rounds ? "轮接待" : "位用户"}${rounds ? "" : " · 点击用户查看不受列表筛选限制的完整历史"}`;
+      $("qualityListTitle").textContent = rounds ? "接待轮次" : "客户对话";
+      $("qualityListSummary").textContent = `共 ${qualityState.total} ${rounds ? "轮接待" : "位客户"}${rounds ? "" : " · 点击客户，在右侧查看完整聊天记录"}`;
+      $("qualityList").className = rounds ? "table-wrap quality-table quality-customer-list" : "quality-customer-list";
       if (!qualityState.items.length) {
         $("qualityList").innerHTML = '<div class="quality-empty">没有符合条件的归档记录。可调整筛选，或刷新查看最新采集内容。</div>';
         return;
       }
       const rows = qualityState.items.map((item, index) => {
-        const source = `${escapeHtml(item.source_key)} / 账号 ${escapeHtml(item.account_id)}`;
-        if (!rounds) return `<tr><td>${escapeHtml(item.display_name || "未命名用户")}<span class="quality-secondary">联系人 ${escapeHtml(item.contact_id || "未知")} · 业务用户 ${escapeHtml(item.business_user_id || "未关联")}</span></td><td>${source}</td><td>${escapeHtml(item.round_count ?? 0)} 轮</td><td>${escapeHtml(item.message_count ?? 0)} 条</td><td>${escapeHtml(qualityTime(item.last_message_at))}</td><td><button class="button tertiary" type="button" data-quality-open="${index}">完整历史</button></td></tr>`;
+        if (!rounds) {
+          const name = escapeHtml(item.display_name || "未命名用户");
+          const identity = `联系人 ${escapeHtml(item.contact_id || "未知")} · 业务用户 ${escapeHtml(item.business_user_id || "未关联")}`;
+          const totals = `${escapeHtml(item.round_count ?? 0)} 轮 · ${escapeHtml(item.message_count ?? 0)} 条消息`;
+          const time = escapeHtml(qualityTime(item.last_message_at));
+          return `<button class="quality-customer-card" type="button" data-quality-open="${index}" aria-haspopup="dialog"><span class="quality-customer-identity"><span><strong title="${name}">${name}</strong><span class="quality-secondary" title="${identity}">${identity}</span></span></span><span class="quality-customer-counts"><span class="quality-customer-totals" title="${totals}">${totals}</span><span class="quality-secondary" title="${time}">${time}</span></span>${qualityCustomerRound(item)}</button>`;
+        }
         const responsible = qualityResponsibleAgentLabel(item);
         const feedback = qualityRatingFeedback(item);
-        return `<tr><td>${escapeHtml(item.customer_name || "未命名用户")}<span class="quality-secondary">${source}</span></td><td>会话 ${escapeHtml(item.conversation_id)} · 第 ${escapeHtml(item.round_no)} 轮<span class="quality-secondary">${escapeHtml(qualityInboxName(item))}</span><span class="quality-secondary">ICS 业务渠道：${escapeHtml(qualityChannelName(item.channel_key))}</span></td><td><div class="quality-tags">${qualityTag(qualityReceptionLabel(item), item.reception_type === "human" ? "green" : "")}${qualityTag(qualityStatusLabel(item.status), item.status === "active" ? "amber" : "")}</div></td><td>${escapeHtml(responsible)}</td><td>${escapeHtml(qualityTime(item.started_at))}<span class="quality-secondary">最近消息 ${escapeHtml(qualityTime(item.last_message_at))}</span></td><td>${escapeHtml(qualityRatingLabel(item))}${feedback ? `<span class="quality-secondary quality-rating-feedback">${escapeHtml(feedback)}</span>` : ""}</td><td><div class="row-actions"><button class="button tertiary" type="button" data-quality-open="${index}">本轮详情</button>${item.customer_id ? `<button class="button tertiary" type="button" data-quality-history="${index}">用户全史</button>` : ""}</div></td></tr>`;
+        return `<tr><td>${escapeHtml(item.customer_name || "未命名用户")}</td><td>会话 ${escapeHtml(item.conversation_id)} · 第 ${escapeHtml(item.round_no)} 轮<span class="quality-secondary">${escapeHtml(qualityInboxName(item))}</span><span class="quality-secondary">ICS 业务渠道：${escapeHtml(qualityChannelName(item.channel_key))}</span></td><td><div class="quality-tags">${qualityTag(qualityReceptionLabel(item), item.reception_type === "human" ? "green" : "")}${qualityTag(qualityStatusLabel(item.status), item.status === "active" ? "amber" : "")}</div></td><td>${escapeHtml(responsible)}</td><td>${escapeHtml(qualityTime(item.started_at))}<span class="quality-secondary">最近消息 ${escapeHtml(qualityTime(item.last_message_at))}</span></td><td>${escapeHtml(qualityRatingLabel(item))}${feedback ? `<span class="quality-secondary quality-rating-feedback">${escapeHtml(feedback)}</span>` : ""}</td><td><div class="row-actions"><button class="button tertiary" type="button" data-quality-open="${index}">本轮详情</button>${item.customer_id ? `<button class="button tertiary" type="button" data-quality-history="${index}">用户全史</button>` : ""}</div></td></tr>`;
       }).join("");
-      const headings = rounds ? ["用户 / 来源", "会话 / 轮次", "分类 / 状态", "本轮责任坐席", "北京时间", "服务评价", "操作"] : ["用户身份", "来源 / 账号", "接待轮次", "消息", "最近消息（北京时间）", "操作"];
-      $("qualityList").innerHTML = `<table><thead><tr>${headings.map((heading) => `<th>${heading}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>`;
+      const headings = ["用户", "会话 / 轮次", "分类 / 状态", "本轮责任坐席", "北京时间", "服务评价", "操作"];
+      $("qualityList").innerHTML = rounds ? `<table><thead><tr>${headings.map((heading) => `<th>${heading}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>` : rows;
       $("qualityList").querySelectorAll("[data-quality-open]").forEach((button) => button.addEventListener("click", () => {
         const item = qualityState.items[Number(button.dataset.qualityOpen)];
         if (item) openQualityDetail(rounds ? "round" : "customer", rounds ? item.round_id : item.customer_id);
@@ -2020,6 +2197,7 @@
         const item = qualityState.items[Number(button.dataset.qualityHistory)];
         if (item?.customer_id) openQualityDetail("customer", item.customer_id);
       }));
+      syncQualityCustomerSelection();
     };
     const loadQualityList = async () => {
       if (!qualityState.ready || state.view !== "quality" || !state.token) return;
@@ -2070,18 +2248,23 @@
         return;
       }
       $("qualityTimeline").innerHTML = qualityState.messages.map((message, index) => {
+        const previous = qualityState.messages[index - 1];
+        const day = qualityTime(message.sent_at).split(" ")[0];
+        const newRound = history && (!previous || previous.round_id !== message.round_id || previous.conversation_id !== message.conversation_id);
+        const separator = newRound || !previous || qualityTime(previous.sent_at).split(" ")[0] !== day
+          ? `<div class="quality-chat-divider">${escapeHtml(day)}${newRound ? ` · 会话 ${escapeHtml(message.conversation_id ?? "未知")} · ${message.round_id ? `<button class="button tertiary" type="button" data-quality-round="${index}">第 ${escapeHtml(message.round_no ?? "未知")} 轮 ↗</button>` : "未归轮消息"}` : ""}</div>` : "";
         const badges = [qualityTag(qualityRoleLabel(message.sender_role))];
         if (message.is_private) badges.push(qualityTag("私密消息 / 内部备注", "amber"));
         if (message.is_deleted) badges.push(qualityTag("已观察到删除", "red"));
         if (message.has_creation_event === false) badges.push(qualityTag("缺少创建时原文", "amber"));
         if (!message.round_id) badges.push(qualityTag("未归轮", "amber"));
         const content = message.content === null || message.content === undefined || message.content === "" ? "（无文字内容）" : message.content;
-        const roundLink = history && message.round_id ? `<button class="button tertiary" type="button" data-quality-round="${index}">查看第 ${escapeHtml(message.round_no ?? "未知")} 轮</button>` : "";
-        return `<article class="quality-message${message.is_private ? " private" : ""}${message.is_deleted ? " deleted" : ""}"><div class="quality-message-header"><div class="quality-tags">${badges.join("")}<strong>${escapeHtml(message.sender_name || "名称未知")}</strong></div><span class="hint">${escapeHtml(qualityTime(message.sent_at))}</span></div><p class="quality-message-content">${escapeHtml(content)}</p>${qualityAttachments(message.attachments)}<div class="quality-message-footer"><span>会话 ${escapeHtml(message.conversation_id ?? "未知")} · 消息 ${escapeHtml(message.message_id)}${message.is_deleted ? " · 展示删除前最后收到的内容" : ""}</span><div class="row-actions">${roundLink}<button class="button tertiary" type="button" data-quality-versions="${index}">原文与版本</button></div></div></article>`;
+        const outgoing = ["agent", "bot"].includes(message.sender_role);
+        return `${separator}<article class="quality-message${outgoing ? " outgoing" : ""}${message.sender_role === "bot" ? " bot" : ""}${message.sender_role === "system" ? " system" : ""}${message.is_private ? " private" : ""}${message.is_deleted ? " deleted" : ""}" title="会话 ${escapeHtml(message.conversation_id ?? "未知")} · 消息 ${escapeHtml(message.message_id)}"><div class="quality-message-header"><div class="quality-tags"><strong>${escapeHtml(message.sender_name || qualityRoleLabel(message.sender_role))}</strong>${badges.join("")}</div><span class="hint">${escapeHtml(qualityTime(message.sent_at))}</span><button class="button tertiary" type="button" data-quality-versions="${index}">原文与版本</button></div><p class="quality-message-content">${escapeHtml(content)}</p>${qualityAttachments(message.attachments)}${message.is_deleted ? '<div class="quality-message-footer">展示删除前最后收到的内容</div>' : ""}</article>`;
       }).join("");
       $("qualityTimeline").querySelectorAll("[data-quality-round]").forEach((button) => button.addEventListener("click", () => {
         const message = qualityState.messages[Number(button.dataset.qualityRound)];
-        if (message?.round_id) openQualityDetail("round", message.round_id);
+        if (message?.round_id) openQualityDetail("round", message.round_id, true);
       }));
       $("qualityTimeline").querySelectorAll("[data-quality-versions]").forEach((button) => button.addEventListener("click", () => {
         const message = qualityState.messages[Number(button.dataset.qualityVersions)];
@@ -2128,12 +2311,55 @@
       }
       return fields.map(([label, value]) => `<span${label === "评价反馈" ? ' class="quality-rating-feedback"' : ""}>${escapeHtml(label)}：${escapeHtml(value ?? "未知")}</span>`).join("");
     };
-    const openQualityDetail = async (type, id) => {
+    const renderQualityRoundDirectory = () => {
+      const directory = qualityState.roundDirectory;
+      if (!directory) return;
+      const detail = qualityState.detail;
+      $("qualityAllHistory").disabled = false;
+      $("qualityAllHistory").setAttribute("aria-current", String(detail?.type === "customer"));
+      $("qualityRoundCount").textContent = directory.loading ? "读取中" : `${directory.total} 轮`;
+      $("qualityRoundList").innerHTML = directory.loading ? '<div class="hint">正在读取轮次...</div>' : directory.items.length ? directory.items.map((item, index) => `<button class="quality-round-item" type="button" data-quality-directory-round="${index}" aria-current="${detail?.type === "round" && String(detail.id) === String(item.round_id)}"><strong>第 ${escapeHtml(item.round_no)} 轮 <span>${escapeHtml(qualityReceptionLabel(item))}</span></strong><span>${escapeHtml(qualityTime(item.started_at))}</span><span>会话 ${escapeHtml(item.conversation_id)} · ${escapeHtml(qualityStatusLabel(item.status))}${item.rating !== null && item.rating !== undefined ? ` · ${escapeHtml(item.rating)} 分` : ""}</span></button>`).join("") : '<div class="hint">暂无已归档轮次；可查看全部聊天记录。</div>';
+      const pages = Math.max(1, Math.ceil(directory.total / directory.pageSize));
+      $("qualityRoundPageInfo").textContent = `${directory.page} / ${pages}`;
+      $("qualityRoundPrev").disabled = directory.loading || directory.page <= 1;
+      $("qualityRoundNext").disabled = directory.loading || directory.page >= pages;
+      $("qualityRoundList").querySelectorAll("[data-quality-directory-round]").forEach((button) => button.addEventListener("click", () => {
+        const item = directory.items[Number(button.dataset.qualityDirectoryRound)];
+        if (item) openQualityDetail("round", item.round_id, true);
+      }));
+    };
+    const loadQualityRoundDirectory = async (customerId, page = 1) => {
+      if (!customerId || !qualityState.detail || !qualityState.ready || state.view !== "quality") return;
+      const previous = qualityState.roundDirectory;
+      const directory = { customerId: String(customerId), page, pageSize: 50, total: previous?.customerId === String(customerId) ? previous.total : 0, items: [], loading: true };
+      qualityState.roundDirectory = directory;
+      renderQualityRoundDirectory();
+      try {
+        const result = await qualityRequest("round-directory", `/customers/${encodeURIComponent(customerId)}/rounds?page=${page}&page_size=${directory.pageSize}`);
+        if (qualityState.roundDirectory !== directory || !qualityState.detail) return;
+        directory.items = result.items || [];
+        directory.total = Number(result.total || 0);
+        directory.page = Number(result.page || page);
+        directory.loading = false;
+        renderQualityRoundDirectory();
+      } catch (error) {
+        if (error.name === "AbortError" || qualityState.roundDirectory !== directory || !qualityState.detail) return;
+        directory.loading = false;
+        renderQualityRoundDirectory();
+        $("qualityRoundCount").textContent = "读取失败";
+        $("qualityRoundList").innerHTML = '<button class="button tertiary" type="button">重试读取轮次</button>';
+        $("qualityRoundList").querySelectorAll("button").forEach((button) => button.addEventListener("click", () => loadQualityRoundDirectory(customerId, page)));
+      }
+    };
+    const openQualityDetail = async (type, id, preserveDirectory = false) => {
       if (!id || !qualityState.ready || state.view !== "quality") return;
-      closeQualityDetail();
+      closeQualityDetail(preserveDirectory);
       qualityState.detail = { type, id: String(id), page: 1, total: 0, item: null };
+      $("qualityPage").classList.add("quality-reading");
+      syncQualityCustomerSelection();
       $("qualityDetail").classList.remove("hidden");
-      $("qualityDetail").scrollIntoView({ behavior: "smooth", block: "start" });
+      $("qualityCloseDetail").focus({ preventScroll: true });
+      renderQualityRoundDirectory();
       await loadQualityDetail();
     };
     const loadQualityDetail = async () => {
@@ -2153,17 +2379,22 @@
         if (!isQualityCurrent(generation, token) || version !== qualityState.detailVersion || qualityState.detail !== detail) return;
         const item = detail.type === "customer" ? result.customer : result.round;
         detail.item = item || {};
+        syncQualityCustomerSelection();
         detail.total = Number(result.total || 0);
         detail.page = Number(result.page || detail.page);
         qualityState.messages = result.messages || [];
+        const customerId = detail.type === "customer" ? detail.id : item?.customer_id;
+        if (customerId && qualityState.roundDirectory?.customerId !== String(customerId)) loadQualityRoundDirectory(customerId);
         $("qualityDetailTitle").textContent = detail.type === "customer" ? `${item?.display_name || "未命名用户"} · 完整历史` : `${item?.customer_name || "未命名用户"} · 会话 ${item?.conversation_id ?? "未知"} · 第 ${item?.round_no ?? "未知"} 轮`;
         $("qualityDetailHint").textContent = detail.type === "customer" ? "同一归档用户跨会话的完整历史 · 包含未归轮消息 · 不受列表筛选限制" : "本轮完整消息 · 可查看用户全史和每条消息的观察版本";
         $("qualityDetailMeta").innerHTML = qualityDetailMetadata(detail.item, detail.type);
         if (detail.type === "round" && item?.customer_id) {
           $("qualityCustomerHistory").classList.remove("hidden");
-          $("qualityCustomerHistory").onclick = () => openQualityDetail("customer", item.customer_id);
+          $("qualityCustomerHistory").onclick = () => openQualityDetail("customer", item.customer_id, true);
         }
         renderQualityTimeline();
+        $("qualityChatScroll").scrollTop = 0;
+        renderQualityRoundDirectory();
         const pages = Math.max(1, Math.ceil(detail.total / qualityState.pageSize));
         $("qualityDetailPageInfo").textContent = `共 ${detail.total} 条消息 · 第 ${detail.page} / ${pages} 页 · 北京时间`;
         $("qualityDetailPrev").disabled = detail.page <= 1;
@@ -2262,14 +2493,23 @@
       qualityState.mode = mode; qualityState.page = 1;
       $("qualityRoundsTab").setAttribute("aria-pressed", String(mode === "rounds"));
       $("qualityCustomersTab").setAttribute("aria-pressed", String(mode === "customers"));
-      $("qualityListTitle").textContent = mode === "rounds" ? "接待轮次" : "归档用户";
+      $("qualityListTitle").textContent = mode === "rounds" ? "接待轮次" : "客户对话";
       loadQualityList();
     };
-    const applyQualityFilters = () => {
+    const setQualityFiltersCollapsed = (collapsed) => {
+      qualityState.filtersCollapsed = collapsed;
+      $("qualityFilterFields").classList.toggle("hidden", collapsed);
+      $("qualityFilterSummary").classList.toggle("hidden", !collapsed);
+      $("qualityFilterSummary").textContent = qualityExportFilterSummary(qualityState.applied).replace(/\n/g, " · ");
+      $("qualityToggleFilters").textContent = collapsed ? "展开筛选" : "收起筛选";
+      $("qualityToggleFilters").setAttribute("aria-expanded", String(!collapsed));
+    };
+    const applyQualityFilters = ({ collapse = true } = {}) => {
       if (!qualityState.ready) return;
       try {
         qualityState.applied = collectQualityFilters();
         qualityState.page = 1;
+        setQualityFiltersCollapsed(collapse);
         loadQualityList();
         loadQualityOverview();
       } catch (error) { $("qualityListSummary").textContent = error.message; }
@@ -2695,7 +2935,7 @@
     $("qualityNav").addEventListener("click", () => navigateTo("#quality"));
     $("presenceNav").addEventListener("click", () => navigateTo("#presence"));
     $("qualityFilterForm").addEventListener("submit", (event) => { event.preventDefault(); applyQualityFilters(); });
-    $("qualitySource").addEventListener("change", changeQualitySource);
+    $("qualityToggleFilters").addEventListener("click", () => setQualityFiltersCollapsed(!qualityState.filtersCollapsed));
     $("qualityInbox").addEventListener("change", () => changeQualityScopedFilter("qualityInbox"));
     $("qualityAgent").addEventListener("change", () => changeQualityScopedFilter("qualityAgent"));
     $("qualityPresenceDay").addEventListener("change", () => {
@@ -2722,8 +2962,11 @@
     });
     $("qualityReset").addEventListener("click", () => {
       $("qualityFilterForm").reset();
-      changeQualitySource();
-      applyQualityFilters();
+      $("qualityFilterForm").querySelectorAll("input, select").forEach((field) => { field.value = ""; });
+      populateQualityFilters();
+      setQualityFiltersCollapsed(false);
+      $("qualityFilterFields").scrollTop = 0;
+      applyQualityFilters({ collapse: false });
     });
     $("qualityRoundsTab").addEventListener("click", () => changeQualityMode("rounds"));
     $("qualityCustomersTab").addEventListener("click", () => changeQualityMode("customers"));
@@ -2731,7 +2974,15 @@
     $("qualityExportDetail").addEventListener("click", () => exportQuality("detail"));
     $("qualityPrev").addEventListener("click", () => { if (qualityState.page > 1) { qualityState.page--; loadQualityList(); } });
     $("qualityNext").addEventListener("click", () => { if (qualityState.page * qualityState.pageSize < qualityState.total) { qualityState.page++; loadQualityList(); } });
-    $("qualityCloseDetail").addEventListener("click", closeQualityDetail);
+    $("qualityCloseDetail").addEventListener("click", () => closeQualityDetail());
+    $("qualityAllHistory").addEventListener("click", () => { if (qualityState.roundDirectory) openQualityDetail("customer", qualityState.roundDirectory.customerId, true); });
+    $("qualityRoundPrev").addEventListener("click", () => { const directory = qualityState.roundDirectory; if (directory && !directory.loading && directory.page > 1) loadQualityRoundDirectory(directory.customerId, directory.page - 1); });
+    $("qualityRoundNext").addEventListener("click", () => { const directory = qualityState.roundDirectory; if (directory && !directory.loading && directory.page * directory.pageSize < directory.total) loadQualityRoundDirectory(directory.customerId, directory.page + 1); });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || state.view !== "quality" || !qualityState.detail) return;
+      if (qualityState.versions) closeQualityVersions();
+      else closeQualityDetail();
+    });
     $("qualityCloseVersions").addEventListener("click", closeQualityVersions);
     $("qualityDetailPrev").addEventListener("click", () => { if (qualityState.detail?.page > 1) { qualityState.detail.page--; loadQualityDetail(); } });
     $("qualityDetailNext").addEventListener("click", () => { if (qualityState.detail && qualityState.detail.page * qualityState.pageSize < qualityState.detail.total) { qualityState.detail.page++; loadQualityDetail(); } });

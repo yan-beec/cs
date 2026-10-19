@@ -394,6 +394,83 @@ class QueryDatabaseTest(unittest.TestCase):
         self.assertIsNone(unassigned["round_id"])
         self.assertIsNone(unassigned["sent_at"])
 
+    def test_customer_card_metrics_use_logical_messages_handoff_and_original_round_rating(self):
+        attrs = {"ics_round_id": "metrics-round", "ics_closed_at": (START + timedelta(minutes=12, microseconds=1)).isoformat()}
+        self.receive(event(1), event(2, .5, sender="agent_bot", direction="outgoing"),
+            event(3, 1, event_type="conversation_updated", custom_attributes={"handoff_requested": True}),
+            event(4, 1.5), event(5, 2), agent_reply(6, 3), agent_reply(7, 3.5),
+            event(8, 4), event(9, 5), event(10, 5.5, sender="agent_bot", direction="outgoing"),
+            agent_reply(11, 7), event(12, 8), agent_reply(13, 9, private=True),
+            event(14, 12, event_type="conversation_status_changed", status="resolved"),
+            event(15, 13, message_id=500, sender="agent_bot", direction="outgoing", content_type="input_csat", content_attributes=attrs),
+            event(16, 14, event_type="message_updated", message_id=500, content_type="input_csat",
+                updated_at=(START + timedelta(minutes=14)).isoformat(),
+                content_attributes={**attrs, "submitted_values": {"csat_survey_response": {
+                    "rating": 5, "feedback_message": "helpful service"}}}),
+            event(17, 15, event_type="message_updated", message_id=6, sender="user", direction="outgoing",
+                created_at=(START + timedelta(minutes=3)).isoformat(),
+                updated_at=(START + timedelta(minutes=15)).isoformat(), content="edited response"))
+        self.drain()
+        customer = self.reader.list_customers(ArchiveFilters(source_key=self.source, account_id=1))["items"][0]
+        latest = customer["latest_round"]
+        metrics = latest["service_metrics"]
+        self.assertEqual(customer["round_count"], 1)
+        self.assertEqual((latest["conversation_id"], latest["round_no"], latest["rating"], latest["rating_feedback"]),
+                         (12, 1, 5, "helpful service"))
+        self.assertEqual(metrics["first_response_seconds"], 120)
+        self.assertEqual((metrics["average_response_seconds"], metrics["response_sample_count"]), (150, 2))
+        self.assertEqual((metrics["human_phase_message_count"], metrics["human_phase_customer_count"], metrics["human_phase_agent_count"]), (8, 5, 3))
+        self.assertIs(metrics["last_message_by_agent"], False)
+        self.assertEqual(metrics["last_message_sender_role"], "contact")
+        self.assertEqual(metrics["duration_seconds"], 720)
+
+    def test_customer_card_keeps_history_counts_but_metrics_only_cover_the_latest_round(self):
+        self.receive(event(1, content="old-round-keyword"), agent_reply(2, 1),
+                     event(3, 2, event_type="conversation_status_changed", status="resolved"),
+                     event(4, 3, conversation_id=22),
+                     event(5, 4, conversation_id=22, sender="agent_bot", direction="outgoing"))
+        self.drain()
+        selected = self.reader.list_customers(ArchiveFilters(source_key=self.source, account_id=1, keyword="old-round-keyword"))
+        self.assertEqual(selected["total"], 1)
+        customer = selected["items"][0]
+        self.assertEqual((customer["round_count"], customer["message_count"]), (2, 4))
+        latest = customer["latest_round"]
+        self.assertEqual((latest["conversation_id"], latest["round_no"]), (22, 1))
+        metrics = latest["service_metrics"]
+        self.assertEqual(metrics["first_response_status"], "not_handed_off")
+        self.assertEqual(metrics["human_phase_message_count"], 0)
+        self.assertEqual(metrics["last_message_sender_role"], "bot")
+        self.assertEqual(metrics["duration_seconds"], 60)
+
+    def test_customer_card_metrics_cover_messages_beyond_detail_pagination(self):
+        self.receive(event(1), event(2, 1, event_type="conversation_updated", custom_attributes={"handoff_requested": True}),
+                     *(agent_reply(index + 3, 2 + index/1000) for index in range(105)))
+        self.drain()
+        customer = self.reader.list_customers(ArchiveFilters(source_key=self.source, account_id=1))["items"][0]
+        metrics = customer["latest_round"]["service_metrics"]
+        self.assertEqual(metrics["human_phase_agent_count"], 105)
+        self.assertEqual(metrics["human_phase_message_count"], 105)
+        self.assertEqual(metrics["response_sample_count"], 1)
+        self.assertEqual(metrics["first_response_seconds"], 60)
+        self.assertIs(metrics["last_message_by_agent"], True)
+        self.assertEqual(customer["message_count"], 106)
+
+    def test_customer_round_directory_is_complete_paginated_and_scoped(self):
+        expected = {self.overview_round(f"directory-{index:03}") for index in range(55)}
+        self.overview_round("other-customer", customer="99")
+        self.overview_round("other-source", source=self.source + "-other")
+        customer_id = f"overview-customer:{self.source}:1:42"
+        first = self.reader.customer_rounds(customer_id, page=1, page_size=50)
+        second = self.reader.customer_rounds(customer_id, page=2, page_size=50)
+        self.assertEqual((first["total"], second["total"]), (55, 55))
+        self.assertEqual((len(first["items"]), len(second["items"])), (50, 5))
+        actual = [row["round_id"] for row in first["items"] + second["items"]]
+        self.assertEqual(set(actual), expected)
+        self.assertEqual(actual, sorted(expected, reverse=True))
+        self.assertTrue(all(row["customer_id"] == customer_id for row in first["items"] + second["items"]))
+        self.assertEqual(self.reader.customer_rounds(customer_id, page=3)["items"], [])
+        self.assertIsNone(self.reader.customer_rounds("nonexistent-customer"))
+
     def test_reader_keyword_matches_original_edit_delete_versions_and_literal_wildcards(self):
         self.receive(event(1, message_id=100, content="原文 100%_literal"),
             event(2, 1, event_type="message_updated", message_id=100, content="改后的正文", updated_at=(START+timedelta(minutes=1)).isoformat()),

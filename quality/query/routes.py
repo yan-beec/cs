@@ -227,6 +227,18 @@ async def customer_history(
     return result
 
 
+@router.get("/customers/{customer_id}/rounds")
+async def customer_rounds(
+    customer_id: str, page: int = Query(1, ge=1, le=100000), page_size: int = Query(50, ge=1, le=100),
+):
+    if len(customer_id) > 200:
+        raise HTTPException(status_code=422, detail="用户标识无效。")
+    result = await _call("customer_rounds", customer_id, page=page, page_size=page_size)
+    if result is None:
+        raise HTTPException(status_code=404, detail="未找到该用户。")
+    return result
+
+
 @router.get("/messages/{message_id}/versions")
 async def message_versions(
     message_id: int, source_key: str = Query(..., min_length=1, max_length=128),

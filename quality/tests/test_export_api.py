@@ -192,33 +192,25 @@ def test_disabled_archive_does_not_allocate_export_resources():
     asyncio.run(check())
 
 
-def test_cancelling_name_lookup_releases_export_capacity_without_starting_database_work():
+def test_chat_export_uses_archived_senders_without_fetching_live_directory():
     async def check():
         runtime = QueryRuntime()
         runtime.ready = True
         runtime.settings = QuerySettings(_env_file=None, reader_password="test-reader")
-        started = asyncio.Event()
-        async def lookup(options):
-            started.set()
-            await asyncio.Event().wait()
-        runtime.directory = Mock(enrich=AsyncMock(side_effect=lookup), close=AsyncMock())
-        task = asyncio.create_task(runtime.export("rounds", ArchiveFilters()))
-        try:
-            await asyncio.wait_for(started.wait(), timeout=1)
-            with pytest.raises(ExportBusy):
-                await runtime.export("rounds", ArchiveFilters())
-            runtime.directory.enrich.assert_awaited_once()
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-            assert runtime.export_slot._value == 1
-            assert runtime.export_repository is None
-            assert not runtime.export_cancellations
-            assert runtime.ready is True
-        finally:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-            await runtime.close()
+        runtime.directory = Mock(enrich=AsyncMock(side_effect=AssertionError("Live directory is unnecessary")), close=AsyncMock())
+        repository = Mock()
+        result = artifact()
+        repository.create_export.return_value = result
+        with patch("quality.query.runtime.ExportRepository", return_value=repository):
+            try:
+                assert await runtime.export("customers", ArchiveFilters(), customer_id="c-one") == result
+                runtime.directory.enrich.assert_not_awaited()
+                repository.create_export.assert_called_once()
+                assert set(repository.create_export.call_args.kwargs) == {"cancelled", "customer_id"}
+                assert runtime.ready
+            finally:
+                await runtime.close()
+                result.cleanup()
     asyncio.run(check())
 
 
