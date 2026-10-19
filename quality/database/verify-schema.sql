@@ -16,6 +16,23 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM ops.schema_migrations WHERE version = '005_presence_retention') THEN
         RAISE EXCEPTION 'FAIL: presence retention migration is not recorded';
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM ops.schema_migrations WHERE version = '006_presence_retention_state') THEN
+        RAISE EXCEPTION 'FAIL: durable presence cleanup migration is not recorded';
+    END IF;
+    IF has_table_privilege('archive_presence', 'ops.agent_presence_cleanup_state', 'INSERT,UPDATE,DELETE,TRUNCATE')
+        OR NOT has_function_privilege('archive_presence', 'ops.run_presence_cleanup(text,bigint)', 'EXECUTE') THEN
+        RAISE EXCEPTION 'FAIL: durable cleanup permissions are incorrect';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_roles r ON r.oid=p.proowner
+        WHERE p.oid='ops.run_presence_cleanup(text,bigint)'::regprocedure
+            AND p.prosecdef AND r.rolname='archive_owner'
+            AND 'search_path=pg_catalog, pg_temp'=ANY(p.proconfig))
+        OR EXISTS (SELECT 1 FROM pg_proc p,
+            LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a
+            WHERE p.oid='ops.run_presence_cleanup(text,bigint)'::regprocedure
+                AND a.grantee=0 AND a.privilege_type='EXECUTE') THEN
+        RAISE EXCEPTION 'FAIL: durable cleanup owner, search path or public permissions are incorrect';
+    END IF;
     FOREACH runtime_role IN ARRAY ARRAY['archive_ingest', 'archive_reader', 'archive_quality'] LOOP
         IF pg_has_role(runtime_role, 'archive_owner', 'MEMBER') THEN
             RAISE EXCEPTION 'FAIL: runtime role can become archive_owner: %', runtime_role;

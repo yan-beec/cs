@@ -751,6 +751,8 @@
     .presence-missing { --presence-color: #cb4d4d; }
     .presence-not_monitored { --presence-color: #bcc3ce; }
     .presence-future { --presence-color: #e9edf3; }
+    .presence-expired { --presence-color: #c8b9a7; }
+    .presence-segment.presence-expired { background: repeating-linear-gradient(135deg, #d9cfc2 0, #d9cfc2 4px, #c8b9a7 4px, #c8b9a7 8px); }
     .presence-hours { overflow-x: auto; padding: 6px 1px 12px; }
     .presence-hours-inner { min-width: 650px; }
     .presence-bar { position: relative; height: 30px; border: 1px solid var(--line-strong); border-radius: 5px; overflow: hidden; background: var(--surface-soft); }
@@ -1106,16 +1108,16 @@
               </section>
               <section class="panel" aria-label="每日状态时长">
                 <div class="panel-header"><div class="panel-heading"><h3>每日状态时长</h3><p>历史从启用后累计；后台持续采集，不依赖本页面。缺采样不计为离线。</p></div><label class="quality-field quality-presence-day">日期（北京时间）<input id="qualityPresenceDay" type="date" aria-label="客服每日统计日期"></label></div>
-                <div class="panel-body"><p id="presenceRetentionNote" class="hint">状态历史保留 45 个自然日（当天及前 44 天），北京时间每天 04:00 清理过期记录。</p><p id="qualityPresenceDailyStatus" class="hint" role="status">等待读取每日统计。</p><p id="qualityPresenceDailyNotice" class="hint quality-data-warning hidden" role="status"></p><div id="qualityPresenceDaily" class="table-wrap quality-table"><div class="quality-empty">选择日期查看各客服在线、忙碌、离线和未知分钟。</div></div></div>
+                <div class="panel-body"><p id="presenceRetentionNote" class="hint">状态历史按实际采样时间保留45天，北京时间每天04:00分批清理；最早日期为部分保留。</p><p id="qualityPresenceDailyStatus" class="hint" role="status">等待读取每日统计。</p><p id="qualityPresenceDailyNotice" class="hint quality-data-warning hidden" role="status"></p><div id="qualityPresenceDaily" class="table-wrap quality-table"><div class="quality-empty">选择日期查看各客服在线、忙碌、离线和未知分钟。</div></div></div>
               </section>
               <section class="panel" aria-label="全天分钟核对">
                 <div class="panel-header"><div class="panel-heading"><h3>全天分钟核对</h3><p>状态按每分钟观测记录，时间段用于核对，不代表秒级上下线时间。</p><p id="presenceTimelineStatus" class="hint" role="status">选择客服查看当天 00:00–24:00。</p></div></div>
                 <div class="panel-body">
                   <div class="presence-controls"><label class="quality-field presence-agent-field">客服（当前与当日历史名单）<select id="presenceAgent"><option value="">等待客服名单</option></select></label><label class="quality-field presence-time-field">核对时间点<input id="presenceCheckTime" type="time" step="60" value="09:00"></label><button id="presenceLocate" class="button secondary" type="button">定位时间点</button></div>
-                  <div class="presence-legend" aria-label="状态图例"><span class="presence-online">在线</span><span class="presence-busy">忙碌</span><span class="presence-offline">离线</span><span class="presence-unknown">未知（已采样）</span><span class="presence-missing">缺采样</span><span class="presence-not_monitored">未监管</span><span class="presence-future">未结束 / 未来</span></div>
+                  <div class="presence-legend" aria-label="状态图例"><span class="presence-online">在线</span><span class="presence-busy">忙碌</span><span class="presence-offline">离线</span><span class="presence-unknown">未知（已采样）</span><span class="presence-missing">缺采样</span><span class="presence-not_monitored">未监管</span><span class="presence-future">未结束 / 未来</span><span class="presence-expired">已过期</span></div>
                   <div class="presence-hours"><div class="presence-hours-inner"><div id="presenceTimelineBar" class="presence-bar" aria-label="全天状态时间条"></div><div id="presenceHourTicks" class="presence-hour-ticks" aria-hidden="true"></div></div></div>
                   <div id="presencePoint" class="presence-point" role="status">选择客服后核对具体分钟。</div>
-                  <div class="quality-form-actions"><label class="quality-field quality-presence-day">区间状态<select id="presenceStatusFilter"><option value="">全部状态</option><option value="online">在线</option><option value="busy">忙碌</option><option value="offline">离线</option><option value="unknown">未知（已采样）</option><option value="missing">缺采样</option><option value="not_monitored">未监管</option><option value="future">未结束 / 未来</option></select></label><span id="presenceTimelineSummary" class="hint"></span></div>
+                  <div class="quality-form-actions"><label class="quality-field quality-presence-day">区间状态<select id="presenceStatusFilter"><option value="">全部状态</option><option value="online">在线</option><option value="busy">忙碌</option><option value="offline">离线</option><option value="unknown">未知（已采样）</option><option value="missing">缺采样</option><option value="not_monitored">未监管</option><option value="future">未结束 / 未来</option><option value="expired">已过期</option></select></label><span id="presenceTimelineSummary" class="hint"></span></div>
                   <div id="presenceIntervals" class="table-wrap presence-table"><div class="quality-empty">选择客服查看分钟区间。</div></div>
                 </div>
                 <div class="panel-footer quality-pagination"><span id="presencePageInfo" class="hint">第 1 页</span><div class="toolbar-actions"><button id="presencePrev" class="button tertiary" type="button" disabled>上一页区间</button><button id="presenceNext" class="button tertiary" type="button" disabled>下一页区间</button></div></div>
@@ -1261,7 +1263,7 @@
       daily: null, dailyVersion: 0, dailyLoading: false, dailyRequestedDay: "", dailyRoster: [],
       roster: [], timeline: null, segments: [], timelineVersion: 0, timelineLoading: false,
       timelineRequestedKey: "", timelineKey: "", page: 1, pageSize: 50, selectedMinute: null,
-      rangeDay: "", oldestAvailableDay: "", expiredDay: ""
+      rangeDay: "", oldestAvailableDay: "", retentionCutoffAt: "", expiredDay: ""
     };
     const isPresenceCurrent = (generation, token) => state.view === "presence" && !!token && state.token === token && presenceState.generation === generation;
     const cancelPresenceRequest = (slot) => {
@@ -1427,18 +1429,25 @@
     };
     const qualityPresenceVisible = () => state.view === "presence" && !!state.token && document.hidden !== true;
     const updatePresenceDateRange = (result = {}) => {
-      const today = qualityBeijingDay(), oldest = new Date(`${today}T00:00:00Z`);
-      oldest.setUTCDate(oldest.getUTCDate() - 44);
-      const localOldest = oldest.toISOString().slice(0, 10);
-      if (presenceState.rangeDay !== today) {
-        presenceState.rangeDay = today;
-        presenceState.oldestAvailableDay = localOldest;
+      const today = qualityBeijingDay(), now = new Date(), anchor = new Date(`${today}T04:00:00+08:00`);
+      if (now < anchor) anchor.setUTCDate(anchor.getUTCDate() - 1);
+      const rangeKey = anchor.toISOString(), cutoff = new Date(anchor.getTime() - 45 * 86400000);
+      if (presenceState.rangeDay !== rangeKey) {
+        presenceState.rangeDay = rangeKey;
+        presenceState.retentionCutoffAt = cutoff.toISOString();
+        presenceState.oldestAvailableDay = new Date(cutoff.getTime() + 8 * 3600000).toISOString().slice(0, 10);
       }
-      const reported = result.oldest_available_day;
-      if (typeof reported === "string" && /^\d{4}-\d{2}-\d{2}$/.test(reported) && reported > presenceState.oldestAvailableDay) presenceState.oldestAvailableDay = reported;
+      const reported = result.oldest_available_day, reportedCutoff = result.retention_cutoff_at ? new Date(result.retention_cutoff_at) : null;
+      if (reportedCutoff && Number.isFinite(reportedCutoff.getTime())) {
+        presenceState.retentionCutoffAt = reportedCutoff.toISOString();
+        presenceState.oldestAvailableDay = new Date(reportedCutoff.getTime() + 8 * 3600000).toISOString().slice(0, 10);
+      } else if (typeof reported === "string" && /^\d{4}-\d{2}-\d{2}$/.test(reported)) {
+        presenceState.oldestAvailableDay = reported;
+        presenceState.retentionCutoffAt = new Date(`${reported}T04:00:00+08:00`).toISOString();
+      }
       $("qualityPresenceDay").min = presenceState.oldestAvailableDay;
       $("qualityPresenceDay").max = today;
-      $("presenceRetentionNote").textContent = `状态历史保留 45 个自然日（当天及前 44 天），北京时间每天 04:00 清理过期记录。可查询日期：${presenceState.oldestAvailableDay} 至 ${today}。`;
+      $("presenceRetentionNote").textContent = `状态历史按实际采样时间保留45天，北京时间每天04:00分批清理，漏清次日补清。可查询日期：${presenceState.oldestAvailableDay} 至 ${today}。最早日期为部分保留，仅保留04:00起的分钟；保留边界 ${qualityMinute(presenceState.retentionCutoffAt)}（北京时间）。`;
     };
     const clearPresenceHistory = (message, expired = false) => {
       cancelPresenceRequest("presenceDaily"); cancelPresenceRequest("timeline");
@@ -1520,7 +1529,7 @@
         $("qualityPresenceDailyNotice").classList.remove("hidden");
       }
       const through = result.through_at || result.generated_at;
-      $("qualityPresenceDailyStatus").textContent = `${day} · 北京时间 · 每分钟采样统计${through ? ` · 统计截至 ${qualityMinute(through)}` : ""}。${result.monitoring_started_at ? `采集启用于 ${qualityMinute(result.monitoring_started_at)}。` : "历史仅从启用采集后累计。"}`;
+      $("qualityPresenceDailyStatus").textContent = `${day} · 北京时间 · 每分钟采样统计${through ? ` · 统计截至 ${qualityMinute(through)}` : ""}。${day === presenceState.oldestAvailableDay ? "最早日期为部分保留，仅统计04:00起的分钟。" : ""}${result.monitoring_started_at ? `采集启用于 ${qualityMinute(result.monitoring_started_at)}。` : "历史仅从启用采集后累计。"}`;
       $("qualityPresenceDaily").innerHTML = agents.length ? `<table><thead><tr><th>坐席</th><th>在线分钟</th><th>忙碌分钟</th><th>离线分钟</th><th>未知分钟</th><th>有效采样 / 覆盖情况</th><th>最近采样（北京时间）</th></tr></thead><tbody>${agents.map((row) => {
         const agent = { source_key: result.source_key, account_id: result.account_id, ...row };
         const sampled = qualityCount(agent.sampled_minutes), expected = qualityCount(agent.expected_minutes), missing = qualityCount(agent.missing_minutes);
@@ -1555,7 +1564,7 @@
         if (isPresenceCurrent(generation, token) && version === presenceState.dailyVersion) presenceState.dailyLoading = false;
       }
     };
-    const presenceStatusLabels = { online: "在线", busy: "忙碌", offline: "离线", unknown: "未知（已采样）", missing: "缺采样", not_monitored: "未监管", future: "未结束 / 未来" };
+    const presenceStatusLabels = { online: "在线", busy: "忙碌", offline: "离线", unknown: "未知（已采样）", missing: "缺采样", not_monitored: "未监管", future: "未结束 / 未来", expired: "已过期" };
     const presenceClock = (minute) => `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
     const presenceSelectionKey = () => `${$("qualityPresenceDay").value}|${$("presenceAgent").value}`;
     const clearPresenceTimeline = (message = "选择客服查看当天 00:00–24:00。") => {
@@ -1574,7 +1583,7 @@
       const minute = presenceState.selectedMinute;
       const segment = presenceState.segments.find((item) => minute !== null && minute >= item.start_minute && minute < item.end_minute);
       if (!segment) { $("presencePoint").textContent = "输入时间点，核对该分钟状态。"; return; }
-      const meaning = { missing: "该分钟应有记录但缺采样，不计为离线。", not_monitored: "该分钟尚未启用监管或客服不在监管名单，不计为缺采样。", future: "该分钟尚未结束或尚未到达，不计为缺采样。", unknown: "该分钟已有采样，但上游状态未知。" }[segment.status] || "";
+      const meaning = { missing: "该分钟应有记录但缺采样，不计为离线。", not_monitored: "该分钟尚未启用监管或客服不在监管名单，不计为缺采样。", future: "该分钟尚未结束或尚未到达，不计为缺采样。", unknown: "该分钟已有采样，但上游状态未知。", expired: "该分钟记录已超出45天保留期，不计入缺采样或离线。" }[segment.status] || "";
       $("presencePoint").textContent = `${$("qualityPresenceDay").value} ${presenceClock(minute)} · ${presenceStatusLabels[segment.status]} · 所在区间 ${presenceClock(segment.start_minute)}–${presenceClock(segment.end_minute)}（结束分钟不含）· ${segment.end_minute - segment.start_minute} 分钟。${meaning}`;
     };
     const renderPresenceIntervals = () => {
@@ -1616,7 +1625,7 @@
       presenceState.timeline = result;
       presenceState.segments = segments.map((segment) => ({ start_minute: segment.start_minute, end_minute: segment.end_minute, status: Object.hasOwn(presenceStatusLabels, segment.status) ? segment.status : "unknown" }));
       const agent = { source_key: result.source_key, account_id: result.account_id, ...result.agent };
-      $("presenceTimelineStatus").textContent = `${result.day} · ${presenceAgentName(agent)} · ${result.source_key} / 账号 ${result.account_id} · 北京时间 00:00–24:00${result.through_at ? ` · 记录截至 ${qualityMinute(result.through_at)}` : ""}`;
+      $("presenceTimelineStatus").textContent = `${result.day} · ${presenceAgentName(agent)} · ${result.source_key} / 账号 ${result.account_id} · 北京时间 00:00–24:00${result.through_at ? ` · 记录截至 ${qualityMinute(result.through_at)}` : ""}${result.day === presenceState.oldestAvailableDay ? " · 最早日期为部分保留，04:00前已过期。" : ""}`;
       $("presenceTimelineBar").innerHTML = presenceState.segments.map((segment) => `<button type="button" class="presence-segment presence-${segment.status}" style="left:${segment.start_minute * 100 / 1440}%;width:${(segment.end_minute - segment.start_minute) * 100 / 1440}%" data-presence-minute="${segment.start_minute}" title="${presenceClock(segment.start_minute)}–${presenceClock(segment.end_minute)} ${escapeHtml(presenceStatusLabels[segment.status])}" aria-label="${presenceClock(segment.start_minute)}–${presenceClock(segment.end_minute)} ${escapeHtml(presenceStatusLabels[segment.status])}"></button>`).join("");
       $("presenceHourTicks").innerHTML = Array.from({ length: 25 }, (_, hour) => `<span style="left:${hour * 100 / 24}%">${String(hour).padStart(2, "0")}</span>`).join("");
       const counts = result.status_minutes || {};
@@ -1678,7 +1687,7 @@
       }
       if (reset) {
         $("qualityPresenceDay").value = ""; $("presenceCheckTime").value = "09:00"; $("presenceStatusFilter").value = "";
-        presenceState.rangeDay = presenceState.oldestAvailableDay = presenceState.expiredDay = "";
+        presenceState.rangeDay = presenceState.oldestAvailableDay = presenceState.retentionCutoffAt = presenceState.expiredDay = "";
       }
     };
     const startQualityPresence = () => {

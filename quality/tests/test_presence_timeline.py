@@ -214,7 +214,56 @@ def test_reversed_period_is_rejected():
         build_timeline(DAY, END, [period(4, 2)], [])
 
 
-@pytest.mark.parametrize("status", ["missing", "not_monitored", "future", "away", None])
+@pytest.mark.parametrize("status", ["missing", "not_monitored", "future", "expired", "away", None])
 def test_only_observed_presence_statuses_are_accepted_as_samples(status):
     with pytest.raises(ValueError, match="availability_status"):
         build_timeline(DAY, END, [], [sample(1, status)])
+
+
+def test_oldest_retained_day_marks_only_minutes_before_four_expired():
+    result = build_timeline(DAY, END, [period(0)],
+                            [sample(239, "offline"), sample(240, "online"), sample(241, "unknown")],
+                            retention_cutoff=START + 240 * MINUTE)
+    assert expand(result)[:243] == ["expired"] * 240 + ["online", "unknown", "missing"]
+    assert result["status_minutes"]["expired"] == 240
+    assert result["status_minutes"]["offline"] == 0
+    assert result["status_minutes"]["missing"] == 1198
+    assert sum(result["status_minutes"].values()) == 1440
+    assert result["segments"][0]["end_at"] == "2026-10-16T04:00:00+08:00"
+
+
+@pytest.mark.parametrize("periods", [[], [period(300)]])
+def test_expired_minutes_are_distinct_from_missing_and_unmonitored_minutes(periods):
+    result = build_timeline(DAY, END, periods, [], retention_cutoff=START + 240 * MINUTE)
+    assert expand(result)[:240] == ["expired"] * 240
+    assert expand(result)[240] == "not_monitored"
+    assert result["status_minutes"]["expired"] == 240
+
+
+@pytest.mark.parametrize("cutoff,expired", [(START - MINUTE, 0), (START, 0), (END, 1440), (END + MINUTE, 1440)])
+def test_retention_cutoff_is_clipped_to_the_requested_day(cutoff, expired):
+    result = build_timeline(DAY, END, [period(0)], [], retention_cutoff=cutoff)
+    assert result["status_minutes"]["expired"] == expired
+    assert result["status_minutes"]["missing"] == 1440 - expired
+    assert len(result["segments"]) == 1
+
+
+def test_future_still_has_precedence_over_expiry_and_observed_samples():
+    result = build_timeline(DAY, START + 2 * MINUTE, [period(0)], [sample(2, "offline")],
+                            retention_cutoff=START + 3 * MINUTE)
+    assert expand(result)[:4] == ["expired", "expired", "future", "future"]
+    assert result["status_minutes"]["expired"] == 2
+    assert result["status_minutes"]["future"] == 1438
+
+
+def test_retention_cutoff_in_other_timezone_is_compared_as_an_instant():
+    cutoff = (START + 240 * MINUTE).astimezone(timezone(timedelta(hours=-5)))
+    result = build_timeline(DAY, END, [], [], retention_cutoff=cutoff)
+    assert result["status_minutes"]["expired"] == 240
+    assert result["segments"][1]["start_minute"] == 240
+
+
+@pytest.mark.parametrize("cutoff", [START.replace(tzinfo=None), START + timedelta(seconds=1), "2026-10-16T04:00:00+08:00"])
+def test_retention_cutoff_requires_an_aware_minute_boundary(cutoff):
+    with pytest.raises(ValueError, match="retention_cutoff"):
+        build_timeline(DAY, END, [], [], retention_cutoff=cutoff)

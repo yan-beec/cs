@@ -11,7 +11,7 @@ import logging
 from zoneinfo import ZoneInfo
 
 from .config import PresenceSettings
-from .retention import CLEANUP_BATCH_SIZE, CLEANUP_HOUR, CLEANUP_MAX_BATCHES, retention_metadata
+from .retention import CLEANUP_BATCH_SIZE, CLEANUP_MAX_BATCHES, retention_metadata
 
 logger = logging.getLogger(__name__)
 BEIJING = ZoneInfo("Asia/Shanghai")
@@ -44,6 +44,7 @@ class PresenceRuntime:
         self.cleanup_deleted_samples = 0
         self.cleanup_deleted_periods = 0
         self.cleanup_last_success_at = None
+        self.cleanup_cutoff_at = None
         self._collector_pressure = False
 
     def state(self):
@@ -55,7 +56,8 @@ class PresenceRuntime:
                             "batches": self.cleanup_batches,
                             "deleted_samples": self.cleanup_deleted_samples,
                             "deleted_periods": self.cleanup_deleted_periods,
-                            "last_success_at": self.cleanup_last_success_at}}
+                            "last_success_at": self.cleanup_last_success_at,
+                            "cutoff_at": self.cleanup_cutoff_at}}
 
     def _status(self, value):
         if value != self.status and value not in {"ready", "disabled", "connecting"}:
@@ -161,7 +163,9 @@ class PresenceRuntime:
             raise
         except Exception as error:
             logger.warning("Archive presence observation unavailable: %s", type(error).__name__)
-        self._collector_pressure = len(self.pending) > 1 or observed_status == "capacity_exceeded"
+        # An oversized upstream roster does not consume DB capacity and must
+        # not indefinitely block cleanup of already persisted observations.
+        self._collector_pressure = len(self.pending) > 1
         try:
             await self._flush()
         except asyncio.CancelledError:
@@ -176,20 +180,11 @@ class PresenceRuntime:
         await self._maybe_cleanup(datetime.now(timezone.utc))
 
     async def _maybe_cleanup(self, now):
-        """Use one idle collector slot for one fixed-size daily retention batch."""
+        """Use one idle slot; the DB owns schedule, cutoff and daily budget."""
         if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("Presence cleanup requires a timezone-aware datetime")
-        local_now = now.astimezone(BEIJING)
-        if self.cleanup_day != local_now.date():
-            self.cleanup_day = local_now.date()
-            self.cleanup_batches = 0
-            self.cleanup_deleted_samples = 0
-            self.cleanup_deleted_periods = 0
-            self.cleanup_status = "waiting"
         if not self.enabled:
             self.cleanup_status = "disabled"
-            return
-        if local_now.hour < CLEANUP_HOUR or self.cleanup_status in {"completed", "limited"}:
             return
         if self.pending or self._collector_pressure:
             self.cleanup_status = "deferred"
@@ -209,6 +204,14 @@ class PresenceRuntime:
             if any(type(count) is not int or not 0 <= count <= CLEANUP_BATCH_SIZE
                    for count in (deleted_samples, deleted_periods)):
                 raise ValueError("Presence cleanup returned an invalid batch count")
+            if result.get("cleanup_status") not in {"waiting", "pending", "completed", "limited"}:
+                raise ValueError("Presence cleanup returned an invalid state")
+            batches = result["batches"]
+            totals = (result["total_deleted_samples"], result["total_deleted_periods"])
+            if type(batches) is not int or not 0 <= batches <= CLEANUP_MAX_BATCHES or any(
+                type(count) is not int or not 0 <= count <= batches * CLEANUP_BATCH_SIZE for count in totals
+            ) or type(result["cleanup_day"]) is not date:
+                raise ValueError("Presence cleanup returned an invalid durable budget")
         except asyncio.CancelledError:
             self.cleanup_status = "cancelled"
             raise
@@ -219,16 +222,12 @@ class PresenceRuntime:
             self.cleanup_status = "failed"
             logger.warning("Archive presence cleanup unavailable: %s", type(error).__name__)
             return
-        self.cleanup_batches += 1
-        self.cleanup_deleted_samples += deleted_samples
-        self.cleanup_deleted_periods += deleted_periods
-        self.cleanup_last_success_at = now.astimezone(timezone.utc).isoformat()
-        if deleted_samples < CLEANUP_BATCH_SIZE and deleted_periods < CLEANUP_BATCH_SIZE:
-            self.cleanup_status = "completed"
-        elif self.cleanup_batches >= CLEANUP_MAX_BATCHES:
-            self.cleanup_status = "limited"
-        else:
-            self.cleanup_status = "pending"
+        self.cleanup_day = result["cleanup_day"]
+        self.cleanup_batches = batches
+        self.cleanup_deleted_samples, self.cleanup_deleted_periods = totals
+        self.cleanup_last_success_at = result["last_success_at"]
+        self.cleanup_cutoff_at = result["cutoff_at"]
+        self.cleanup_status = result["cleanup_status"]
 
     async def _run(self):
         loop = asyncio.get_running_loop()

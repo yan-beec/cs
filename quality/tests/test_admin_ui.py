@@ -83,7 +83,7 @@ const respond = (index, payload, status = 200, headers = {}) => respondTo(reques
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const timelinePayload = (overrides = {}) => {
  const segments = overrides.segments || [{status:'online',start_minute:0,end_minute:1440}];
- const status_minutes = {online:0,busy:0,offline:0,unknown:0,missing:0,not_monitored:0,future:0};
+ const status_minutes = {online:0,busy:0,offline:0,unknown:0,missing:0,not_monitored:0,future:0,expired:0};
  for (const segment of segments) if (Object.hasOwn(status_minutes,segment.status)) status_minutes[segment.status] += segment.end_minute-segment.start_minute;
  return {status:'ready',day:'2026-10-16',timezone:'Asia/Shanghai',source_key:'cw',account_id:1,
   agent:{agent_id:1,agent_name:'Agent',agent_name_source:'chatwoot'},through_at:'2026-10-16T01:15:59Z',
@@ -453,23 +453,27 @@ ui.renderPresenceTimeline(timelinePayload({segments:[{status:'<img onerror=evil>
 assert.equal(node('presenceTimelineBar').innerHTML.includes('<img'),false);
 assert.equal(node('presenceTimelineBar').innerHTML.includes('presence-unknown'),true);
 """,
-    "presence_retention_uses_45_beijing_calendar_days_and_clears_expired_midnight_history": r"""
-for (const [instant,oldest] of [['2027-01-01T00:00:00Z','2026-11-18'],['2028-03-01T00:00:00Z','2028-01-17']]) {
+    "presence_retention_uses_four_am_minus_45_days_and_clears_history_only_at_four": r"""
+for (const [instant,oldest] of [['2027-01-01T00:00:00Z','2026-11-17'],['2028-03-01T00:00:00Z','2028-01-16'],['2026-10-15T19:59:59Z','2026-08-31'],['2026-10-15T20:00:00Z','2026-09-01']]) {
  browserNow=Date.parse(instant); ui.updatePresenceDateRange(); assert.equal(node('qualityPresenceDay').min,oldest);
 }
 browserNow=Date.parse('2026-10-16T15:59:00Z');
-ui.state.token='session'; ui.state.view='presence'; node('qualityPresenceDay').value='2026-09-02'; ui.startQualityPresence();
-assert.equal(node('qualityPresenceDay').min,'2026-09-02'); assert.equal(node('qualityPresenceDay').max,'2026-10-16');
-assert.equal(node('presenceRetentionNote').textContent.includes('45 个自然日'),true); assert.equal(node('presenceRetentionNote').textContent.includes('04:00'),true);
+ui.state.token='session'; ui.state.view='presence'; node('qualityPresenceDay').value='2026-09-01'; ui.startQualityPresence();
+assert.equal(node('qualityPresenceDay').min,'2026-09-01'); assert.equal(node('qualityPresenceDay').max,'2026-10-16');
+assert.equal(node('presenceRetentionNote').textContent.includes('实际采样时间保留45天'),true); assert.equal(node('presenceRetentionNote').textContent.includes('04:00'),true);
+assert.equal(node('presenceRetentionNote').textContent.includes('最早日期为部分保留'),true);
 assert.equal(dailyRequests.length,1,'the oldest available day is included');
 respondTo(presenceRequests,0,{status:'ready',source_key:'cw',account_id:1,agents:[{agent_id:1,agent_name:'CURRENT STATUS',availability_status:'online'}]});
-respondTo(dailyRequests,0,{status:'ready',day:'2026-09-02',source_key:'cw',account_id:1,retention_days:45,oldest_available_day:'2026-09-02',cleanup_hour:4,agents:[{agent_id:2,agent_name:'OLD HISTORICAL'}]}); await tick();
-respondTo(timelineRequests,0,timelinePayload({day:'2026-09-02'})); await tick(); ui.locatePresenceMinute(615);
+respondTo(dailyRequests,0,{status:'ready',day:'2026-09-01',source_key:'cw',account_id:1,retention_days:45,oldest_available_day:'2026-09-01',retention_cutoff_at:'2026-08-31T20:00:00+00:00',cleanup_hour:4,agents:[{agent_id:2,agent_name:'OLD HISTORICAL'}]}); await tick();
+respondTo(timelineRequests,0,timelinePayload({day:'2026-09-01'})); await tick(); ui.locatePresenceMinute(615);
 assert.equal(ui.presenceState.selectedMinute,615); assert.equal(node('presenceAgent').innerHTML.includes('OLD HISTORICAL'),true);
 [...timers.values()][0].callback();
 assert.equal(dailyRequests.length,2); assert.equal(timelineRequests.length,2);
 browserNow=Date.parse('2026-10-16T16:00:00Z'); [...timers.values()][0].callback();
-assert.equal(node('qualityPresenceDay').min,'2026-09-03'); assert.equal(node('qualityPresenceDay').max,'2026-10-17');
+assert.equal(node('qualityPresenceDay').min,'2026-09-01'); assert.equal(node('qualityPresenceDay').max,'2026-10-17');
+assert.equal(dailyRequests[1].options.signal.aborted,false,'midnight does not move the cutoff');
+browserNow=Date.parse('2026-10-16T20:00:00Z'); [...timers.values()][0].callback();
+assert.equal(node('qualityPresenceDay').min,'2026-09-02'); assert.equal(node('qualityPresenceDay').max,'2026-10-17');
 assert.equal(dailyRequests[1].options.signal.aborted,true); assert.equal(timelineRequests[1].options.signal.aborted,true);
 assert.equal(dailyRequests.length,2); assert.equal(timelineRequests.length,2,'expired days make no new history requests');
 assert.equal(ui.presenceState.dailyRoster.length,0); assert.equal(ui.presenceState.roster.length,0); assert.equal(node('presenceAgent').value,'');
@@ -477,9 +481,37 @@ assert.equal(ui.presenceState.timeline,null); assert.equal(ui.presenceState.sele
 for (const id of ['qualityPresenceDailyStatus','presenceTimelineStatus','presencePoint']) assert.equal(node(id).textContent.includes('记录已超出45天保留期'),true,id);
 assert.equal(node('qualityPresenceAgents').innerHTML.includes('CURRENT STATUS'),true,'current status remains available');
 respondTo(dailyRequests,1,{status:'ready',agents:[{agent_id:2,agent_name:'LATE HISTORICAL'}]});
-respondTo(timelineRequests,1,timelinePayload({day:'2026-09-02',agent:{agent_id:1,agent_name:'LATE TIMELINE'}})); await tick();
+respondTo(timelineRequests,1,timelinePayload({day:'2026-09-01',agent:{agent_id:1,agent_name:'LATE TIMELINE'}})); await tick();
 assert.equal(ui.presenceState.timeline,null); assert.equal(node('presenceAgent').innerHTML.includes('LATE'),false);
 node('presenceLocate').handlers.click(); assert.equal(node('presencePoint').textContent.includes('记录已超出45天保留期'),true);
+""",
+    "presence_oldest_day_keeps_expired_minutes_distinct_and_can_locate_or_filter_them": r"""
+ui.state.token='session'; ui.state.view='presence'; node('qualityPresenceDay').value='2026-09-01';
+ui.renderPresenceTimeline(timelinePayload({day:'2026-09-01',retention_cutoff_at:'2026-08-31T20:00:00+00:00',oldest_available_day:'2026-09-01',
+ segments:[{status:'expired',start_minute:0,end_minute:240},{status:'online',start_minute:240,end_minute:1440}]}));
+assert.equal(ui.presenceState.segments[0].status,'expired');
+assert.equal(node('presenceTimelineBar').innerHTML.includes('presence-expired'),true);
+assert.equal(node('presenceTimelineSummary').textContent.includes('已过期 240 分钟'),true);
+assert.equal(node('presenceTimelineStatus').textContent.includes('最早日期为部分保留'),true);
+ui.locatePresenceMinute(239);
+assert.equal(node('presencePoint').textContent.includes('03:59 · 已过期'),true);
+assert.equal(node('presencePoint').textContent.includes('记录已超出45天保留期'),true);
+node('presenceStatusFilter').value='expired'; node('presenceStatusFilter').handlers.change();
+assert.equal(node('presenceIntervals').innerHTML.includes('<td>已过期</td>'),true);
+assert.equal(node('presenceIntervals').innerHTML.includes('<td>在线</td>'),false);
+ui.locatePresenceMinute(240);
+assert.equal(node('presencePoint').textContent.includes('04:00 · 在线'),true);
+assert.equal(node('presencePoint').textContent.includes('已过期'),false);
+ui.renderQualityPresenceDaily({status:'ready',oldest_available_day:'2026-09-01',retention_cutoff_at:'2026-08-31T20:00:00+00:00',agents:[]},'2026-09-01');
+assert.equal(node('qualityPresenceDailyStatus').textContent.includes('仅统计04:00起的分钟'),true);
+""",
+    "presence_server_cutoff_is_authoritative_when_browser_clock_is_ahead": r"""
+browserNow=Date.parse('2026-10-16T21:00:00Z'); ui.updatePresenceDateRange();
+assert.equal(node('qualityPresenceDay').min,'2026-09-02');
+ui.updatePresenceDateRange({oldest_available_day:'2026-09-01',retention_cutoff_at:'2026-08-31T20:00:00+00:00'});
+assert.equal(node('qualityPresenceDay').min,'2026-09-01');
+ui.updatePresenceDateRange();
+assert.equal(node('qualityPresenceDay').min,'2026-09-01');
 """,
     "presence_expired_api_responses_clear_both_history_panels_and_never_become_missing_or_offline": r"""
 ui.state.token='session'; ui.state.view='presence';
@@ -525,7 +557,7 @@ assert.equal(node('presenceAgent').innerHTML.includes('NEW DAY HISTORY'),true); 
 assert.equal(node('presenceTimelineStatus').textContent.includes('OLD DAY'),false);
 """,
     "presence_out_of_range_input_and_resume_cannot_request_or_relabel_expired_history": r"""
-ui.state.token='session'; ui.state.view='presence'; node('qualityPresenceDay').value='2026-09-01'; ui.startQualityPresence();
+ui.state.token='session'; ui.state.view='presence'; node('qualityPresenceDay').value='2026-08-31'; ui.startQualityPresence();
 assert.equal(presenceRequests.length,1); assert.equal(dailyRequests.length,0); assert.equal(timelineRequests.length,0);
 assert.equal(node('qualityPresenceDailyStatus').textContent.includes('记录已超出45天保留期'),true);
 node('presenceCheckTime').value='10:15'; node('presenceLocate').handlers.click();

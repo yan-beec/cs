@@ -9,7 +9,7 @@ UTC = timezone.utc
 MINUTE = timedelta(minutes=1)
 MINUTES_PER_DAY = 1440
 SAMPLE_STATUSES = ("online", "busy", "offline", "unknown")
-TIMELINE_STATUSES = SAMPLE_STATUSES + ("missing", "not_monitored", "future")
+TIMELINE_STATUSES = SAMPLE_STATUSES + ("missing", "not_monitored", "future", "expired")
 
 
 def _utc(value, field, *, minute_aligned=False):
@@ -21,12 +21,14 @@ def _utc(value, field, *, minute_aligned=False):
     return value
 
 
-def build_timeline(day, now, periods, samples):
+def build_timeline(day, now, periods, samples, retention_cutoff=None):
     """Return all 1440 minutes of a Beijing day, grouped by adjacent status.
 
     Membership periods include their start and exclude their end. A sample is
     evidence for its own minute only, including when a period is unavailable.
     The current unfinished minute and every later minute always remain future.
+    If supplied, the retention cutoff hides completed older minutes as expired,
+    including samples still physically present while bounded cleanup catches up.
     Timestamps in the result use Beijing time; minute 1440 is next-day midnight.
     """
     if type(day) is not date:
@@ -36,6 +38,8 @@ def build_timeline(day, now, periods, samples):
     end = start + timedelta(minutes=MINUTES_PER_DAY)
     through = max(start, min(end, now_utc.replace(second=0, microsecond=0)))
     completed_minutes = (through - start) // MINUTE
+    cutoff = None if retention_cutoff is None else _utc(
+        retention_cutoff, "retention_cutoff", minute_aligned=True)
 
     # Union periods with a difference array, so overlapping periods never count
     # a minute twice and work remains bounded even with many period rows.
@@ -76,6 +80,10 @@ def build_timeline(day, now, periods, samples):
         observed[index] = status
         if index < completed_minutes:
             minutes[index] = status
+
+    if cutoff is not None:
+        expired_minutes = max(0, min(completed_minutes, (cutoff - start) // MINUTE))
+        minutes[:expired_minutes] = ["expired"] * expired_minutes
 
     def timestamp(index):
         return (start + index * MINUTE).astimezone(BEIJING).isoformat()

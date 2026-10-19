@@ -61,8 +61,8 @@ class PresenceDatabaseTest(unittest.TestCase):
         self.assertEqual([rows["1"][key] for key in ("expected_minutes", "sampled_minutes", "online_minutes",
             "busy_minutes", "offline_minutes", "unknown_minutes", "missing_minutes")], [4, 3, 1, 1, 0, 1, 1])
         self.assertEqual([rows["2"][key] for key in ("expected_minutes", "sampled_minutes", "offline_minutes", "missing_minutes")], [3, 2, 2, 1])
-        self.assertEqual(rows["1"]["first_seen_at"], (BASE+timedelta(seconds=10)).isoformat())
-        self.assertEqual(rows["1"]["last_sampled_at"], (BASE+timedelta(minutes=2, seconds=10)).isoformat())
+        self.assertEqual(datetime.fromisoformat(rows["1"]["first_seen_at"]), BASE+timedelta(seconds=10))
+        self.assertEqual(datetime.fromisoformat(rows["1"]["last_sampled_at"]), BASE+timedelta(minutes=2, seconds=10))
         self.assertEqual(rows["1"]["agent_name_source"], "chatwoot")
         self.assertEqual(result["through_at"], (BASE+timedelta(minutes=4)).isoformat())
         self.assertEqual(result["status"], "ready")
@@ -173,7 +173,7 @@ class PresenceDatabaseTest(unittest.TestCase):
         self.assertEqual(result["agent"]["agent_name"], "A")
         self.assertEqual(result["sample_count"], 3)
         self.assertEqual(result["status_minutes"], {"online": 1, "busy": 1, "offline": 0,
-            "unknown": 1, "missing": 1, "not_monitored": 0, "future": 1436})
+            "unknown": 1, "missing": 1, "not_monitored": 0, "future": 1436, "expired": 0})
         for status in ("online", "busy", "offline", "unknown", "missing"):
             self.assertEqual(result["status_minutes"][status], daily[status+"_minutes"])
         self.assertEqual(result["segments"][0]["start_at"], "2026-10-16T00:00:00+08:00")

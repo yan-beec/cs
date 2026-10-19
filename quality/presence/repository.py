@@ -9,7 +9,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
-from .retention import CLEANUP_BATCH_SIZE, retention_metadata
+from .retention import CLEANUP_BATCH_SIZE, CLEANUP_MAX_BATCHES, retention_metadata
 
 
 UTC = timezone.utc
@@ -168,6 +168,7 @@ class PresenceRepository:
                     "day": day.isoformat(), "timezone": "Asia/Shanghai", "status": "expired",
                     "monitoring_started_at": None, "through_at": through.isoformat(),
                     "agents": [], "agent_count": 0, "agents_truncated": False}
+        retained_start = max(start, datetime.fromisoformat(retention["retention_cutoff_at"]))
         with self.pool.connection() as connection:
             with connection.transaction():
                 connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
@@ -200,15 +201,16 @@ class PresenceRepository:
                     LEFT JOIN sampled s USING(agent_id) WHERE r.source_key=%s AND r.account_id=%s
                         AND (COALESCE(e.expected_minutes,0)>0 OR COALESCE(s.sampled_minutes,0)>0)
                     ORDER BY r.agent_name NULLS LAST,r.agent_id LIMIT 200
-                """, (through, through, start, source, account, through, through, start,
-                      source, account, start, through, source, account)).fetchall()
+                """, (through, through, retained_start, source, account, through, through, retained_start,
+                      source, account, retained_start, through, source, account)).fetchall()
         count = rows[0]["agent_count"] if rows else 0
         agents = [_serialize({key: value for key, value in row.items() if key != "agent_count"}) for row in rows]
         return {**retention, "source_key": source, "account_id": account, "day": day.isoformat(), "timezone": "Asia/Shanghai",
             "status": "ready" if monitor else "not_started",
             "monitoring_started_at": monitor["started_at"].isoformat() if monitor else None,
             "through_at": through.isoformat(), "agents": agents, "agent_count": count,
-            "agents_truncated": count>MAX_AGENTS}
+            "agents_truncated": count>MAX_AGENTS,
+            "expired_minutes": int((min(end, retained_start)-start).total_seconds()//60)}
 
     def timeline(self, day, source_key, account_id, agent_id, now=None):
         """Read one agent and one Beijing day; never interpolate missing states."""
@@ -230,6 +232,7 @@ class PresenceRepository:
                 "through_at": through.isoformat(), **retention_metadata(now)}
         if day.isoformat() < base["oldest_available_day"]:
             return {**base, "status": "expired"}
+        retained_start = max(start, datetime.fromisoformat(base["retention_cutoff_at"]))
         with self.pool.connection() as connection:
             with connection.transaction():
                 connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
@@ -261,10 +264,11 @@ class PresenceRepository:
                 samples = connection.execute("""SELECT sampled_minute,availability_status
                     FROM archive.agent_presence_samples WHERE source_key=%s AND account_id=%s AND agent_id=%s
                         AND sampled_minute>=%s AND sampled_minute<%s
-                    ORDER BY sampled_minute LIMIT 1441""", (source, account, identifier, start, through)).fetchall()
+                    ORDER BY sampled_minute LIMIT 1441""", (source, account, identifier, retained_start, through)).fetchall()
         if len(periods)>1440 or len(samples)>1440:
             raise ValueError("Presence timeline exceeds its single-day observation boundary")
-        return {**base, **build_timeline(day, now, periods, samples), "status": "ready",
+        return {**base, **build_timeline(day, now, periods, samples,
+                                       retention_cutoff=datetime.fromisoformat(base["retention_cutoff_at"])), "status": "ready",
                 "agent": _serialize(agent), "sample_count": len(samples)}
 
     def cleanup(self, source_key, account_id):
@@ -273,10 +277,18 @@ class PresenceRepository:
         with self.pool.connection() as connection:
             with connection.transaction():
                 row = connection.execute(
-                    "SELECT deleted_samples,deleted_periods FROM ops.cleanup_presence_history(%s,%s)",
+                    "SELECT * FROM ops.run_presence_cleanup(%s,%s)",
                     (source, account),
                 ).fetchone()
         if row is None or any(type(row.get(key)) is not int or not 0 <= row[key] <= CLEANUP_BATCH_SIZE
                               for key in ("deleted_samples", "deleted_periods")):
             raise RuntimeError("Presence cleanup returned an invalid bounded batch")
-        return {"deleted_samples": row["deleted_samples"], "deleted_periods": row["deleted_periods"]}
+        if row.get("cleanup_status") not in {"waiting", "pending", "completed", "limited"} or (
+            type(row.get("cleanup_day")) is not date or type(row.get("batches")) is not int
+            or not 0 <= row["batches"] <= CLEANUP_MAX_BATCHES
+            or any(type(row.get(key)) is not int or not 0 <= row[key] <= row["batches"] * CLEANUP_BATCH_SIZE
+                   for key in ("total_deleted_samples", "total_deleted_periods"))
+        ):
+            raise RuntimeError("Presence cleanup returned an invalid bounded batch state")
+        return {**row, "cutoff_at": row["cutoff_at"].isoformat(),
+                "last_success_at": row["last_success_at"].isoformat() if row["last_success_at"] else None}
