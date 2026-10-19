@@ -24,8 +24,8 @@ const decode = value => value.replace(/&quot;/g, '"').replace(/&#039;/g, "'").re
 class Element {
   constructor(id) {
     this.id = id; this._html = ''; this.value = defaults[id] || ''; this.textContent = ''; this.disabled = false;
-    this.dataset = {}; this.handlers = {}; this.attributes = {}; this.style = {};
-    const classes = new Set();
+    this.dataset = {}; this.handlers = {}; this.attributes = {}; this.style = {}; this.checked = false;
+    const classes = new Set(id === 'presenceManagement' ? ['hidden'] : []);
     this.classList = {add: name => classes.add(name), remove: name => classes.delete(name), contains: name => classes.has(name), toggle(name, value) {value ? classes.add(name) : classes.delete(name);}};
   }
   set innerHTML(value) {this._html = value; if (['qualityAgent', 'qualityInbox', 'presenceAgent'].includes(this.id)) this.value = this.options[0]?.value || '';}
@@ -54,7 +54,7 @@ class BrowserFormData {
   [Symbol.iterator]() {return this.values[Symbol.iterator]();}
 }
 const requests = [], downloads = [], confirmations = [], confirmationAnswers = [];
-const overviewRequests = [], presenceRequests = [], dailyRequests = [], timelineRequests = [], roundRequests = [], timers = new Map(), documentEvents = {};
+const overviewRequests = [], presenceRequests = [], dailyRequests = [], timelineRequests = [], managementRequests = [], removalRequests = [], roundRequests = [], timers = new Map(), documentEvents = {};
 let nextTimer = 1;
 let browserNow = Date.parse('2026-10-16T08:00:00Z');
 class BrowserDate extends Date {
@@ -76,7 +76,7 @@ const context = vm.createContext({
  setInterval(callback, milliseconds) {const id=nextTimer++; timers.set(id,{callback,milliseconds}); return id;}, clearInterval(id) {timers.delete(id);},
  fetch: (url, options) => new Promise((resolve, reject) => {
    const path = new URL(url,'http://localhost').pathname;
-   const queue = /\/customers\/[^/]+\/rounds$/.test(path) ? roundRequests : path.endsWith('/presence/timeline') ? timelineRequests : path.endsWith('/presence/daily') ? dailyRequests : path.endsWith('/presence') ? presenceRequests : path.endsWith('/overview') ? overviewRequests : requests;
+   const queue = /\/customers\/[^/]+\/rounds$/.test(path) ? roundRequests : /\/presence\/agents\/[^/]+$/.test(path) ? removalRequests : path.endsWith('/presence/agents') ? managementRequests : path.endsWith('/presence/timeline') ? timelineRequests : path.endsWith('/presence/daily') ? dailyRequests : path.endsWith('/presence') ? presenceRequests : path.endsWith('/overview') ? overviewRequests : requests;
    queue.push({url, options, resolve, reject});
  }),
  console
@@ -101,7 +101,7 @@ globalThis.ui = {state, qualityState, presenceState, showCurrentPage, collectQua
  qualityRequest, loadQuality, downloadQualityEvent, changeQualityMode, closeQualityDetail, applyQualityFilters,
  setQualityFiltersCollapsed, loadQualityRoundDirectory, renderQualityRoundDirectory, renderQualityList,
  exportQuality, cancelQualityExport, updateQualityExportButtons, qualityExportFilename,
- loadQualityOverview, loadQualityPresence, loadQualityPresenceDaily, startQualityPresence, stopQualityPresence, qualityBeijingDay, qualityMinute, presenceRequest, mergePresenceRoster, loadPresenceTimeline, renderPresenceTimeline, renderPresenceIntervals, locatePresenceMinute, presenceAgentValue, updatePresenceDateRange, ensurePresenceDay, renderQualityPresenceDaily};
+ loadQualityOverview, loadQualityPresence, loadQualityPresenceDaily, startQualityPresence, stopQualityPresence, qualityBeijingDay, qualityMinute, presenceRequest, mergePresenceRoster, loadPresenceTimeline, renderPresenceTimeline, renderPresenceIntervals, locatePresenceMinute, presenceAgentValue, updatePresenceDateRange, ensurePresenceDay, renderQualityPresenceDaily, loadPresenceManagement, renderPresenceManagement, removePresenceAgent};
 """
 
 CASES = {
@@ -434,7 +434,7 @@ respond(0,{enabled:false,ready:false}); await tick();
 assert.equal(ui.qualityState.ready,false);
 context.window.location.hash = '#presence'; ui.showCurrentPage();
 assert.equal(ui.state.view,'presence'); assert.equal(ui.state.route,'#presence');
-assert.equal(node('pageTitle').textContent,'客服状态监管');
+assert.equal(node('pageTitle').textContent,'客服状态');
 assert.equal(node('qualityPage').classList.contains('hidden'),true); assert.equal(node('presencePage').classList.contains('hidden'),false);
 assert.equal(timers.size,1); assert.equal(presenceRequests.length,1); assert.equal(dailyRequests.length,1);
 respondTo(presenceRequests,0,{status:'ready',source_key:'cw',account_id:1,agents:[{agent_id:1,agent_name:'Agent',availability_status:'online'}]}); await tick();
@@ -447,6 +447,87 @@ respondTo(timelineRequests,0,timelinePayload({agent:{agent_id:1,agent_name:'PRIV
 respondTo(dailyRequests,0,{status:'ready',agents:[{agent_id:1,agent_name:'PRIVATE LATE'}]}); await tick();
 assert.equal(node('presenceTimelineStatus').textContent.includes('PRIVATE'),false); assert.equal(node('qualityPresenceDaily').innerHTML.includes('PRIVATE'),false);
 assert.equal(presenceRequests.length,1); assert.equal(dailyRequests.length,1);
+""",
+    "presence_management_pages_and_removes_without_stale_daily_resurrection": r"""
+ui.state.token='session'; ui.state.view='presence'; node('qualityPresenceDay').value='2026-10-16';
+const old={source_key:'cw',account_id:1,agent_id:'7',agent_name:'<Retired>',removed_at:'2026-10-15T00:00:00Z'};
+const live={source_key:'cw',account_id:1,agent_id:'8',agent_name:'Current'};
+const daily={status:'ready',source_key:'cw',account_id:1,day:'2026-10-16',agents:[{...old,online_minutes:6},live]};
+ui.presenceState.daily=daily; ui.presenceState.dailyRoster=daily.agents;
+node('presenceManageToggle').handlers.click();
+assert.equal(node('presenceManagement').classList.contains('hidden'),false);
+assert.equal(node('presenceManageToggle').attributes['aria-expanded'],'true');
+assert.equal(new URL(managementRequests[0].url).searchParams.get('page_size'),'50');
+respondTo(managementRequests,0,{status:'ready',agents:[old,live],total:2,page:1}); await tick();
+assert.equal(node('presenceManagementList').innerHTML.includes('&lt;Retired&gt;'),true);
+assert.equal(node('presenceManagementList').innerHTML.includes('<Retired>'),false);
+assert.equal(node('presenceManagementList').innerHTML.includes('已离开 Chatwoot 名单'),true);
+const pendingDaily=ui.loadQualityPresenceDaily();
+const removed=ui.removePresenceAgent(0); await ui.removePresenceAgent(0);
+assert.equal(removalRequests.length,1,'double clicking must not issue another deletion');
+assert.equal(dailyRequests[0].options.signal.aborted,true);
+const deletion=removalRequests[0]; assert.equal(deletion.options.method,'DELETE');
+assert.equal(deletion.options.headers.get('Authorization'),'Bearer session');
+assert.equal(new URL(deletion.url).pathname,'/admin/api/quality/presence/agents/7');
+assert.equal(new URL(deletion.url).searchParams.get('source_key'),'cw');
+assert.equal(new URL(deletion.url).searchParams.get('account_id'),'1');
+respondTo(removalRequests,0,{status:'ready',hidden_at:'2026-10-16T08:00:00Z'}); await tick();
+assert.equal(ui.presenceState.daily.agents.length,1); assert.equal(ui.presenceState.daily.agents[0].agent_id,'8');
+respondTo(dailyRequests,0,daily); await pendingDaily;
+assert.equal(ui.presenceState.daily.agents.length,1,'a pre-deletion response cannot bring the retired seat back');
+respondTo(dailyRequests,1,{...daily,agents:[live]}); await tick();
+respondTo(managementRequests,1,{status:'ready',agents:[live],total:1,page:1}); await removed;
+assert.equal(node('presenceManagementNotice').textContent.includes('历史记录保留'),true);
+assert.equal(node('qualityPresenceDaily').innerHTML.includes('Retired'),false);
+assert.equal(node('presenceAgent').innerHTML.includes('Retired'),false);
+assert.equal(node('presenceManagementNext').disabled,true);
+node('presenceManagementNext').handlers.click(); assert.equal(managementRequests.length,2);
+""",
+    "presence_management_history_opt_in_and_fresh_capture_restore": r"""
+ui.state.token='session'; ui.state.view='presence'; node('qualityPresenceDay').value='2026-10-16';
+const hidden={source_key:'cw',account_id:1,agent_id:'7',agent_name:'Hidden',hidden_at:'2026-10-16T07:59:00Z',online_minutes:6,sampled_minutes:6,expected_minutes:6};
+node('presenceManageToggle').handlers.click();
+respondTo(managementRequests,0,{status:'ready',agents:[],total:0}); await tick();
+const oldDaily=ui.loadQualityPresenceDaily();
+node('presenceIncludeHidden').checked=true; node('presenceIncludeHidden').handlers.change();
+assert.equal(dailyRequests[0].options.signal.aborted,true);
+assert.equal(new URL(dailyRequests[1].url).searchParams.get('include_hidden'),'true');
+assert.equal(new URL(managementRequests[1].url).searchParams.get('include_hidden'),'true');
+respondTo(dailyRequests,1,{status:'ready',day:'2026-10-16',agents:[hidden]});
+respondTo(managementRequests,1,{status:'ready',agents:[hidden],total:1}); await tick();
+respondTo(dailyRequests,0,{status:'ready',agents:[]}); await oldDaily;
+assert.equal(node('qualityPresenceDaily').innerHTML.includes('已删除 · 历史'),true);
+assert.equal(node('qualityPresenceDaily').innerHTML.includes('6 / 6 分钟'),true);
+assert.equal(node('presenceManagementList').innerHTML.includes('历史保留'),true);
+await ui.removePresenceAgent(0); assert.equal(removalRequests.length,0,'already hidden history cannot be deleted');
+const restored=ui.loadQualityPresenceDaily();
+respondTo(dailyRequests,2,{status:'ready',day:'2026-10-16',agents:[{...hidden,hidden_at:null,sampled_minutes:7,expected_minutes:7}]}); await restored;
+assert.equal(node('qualityPresenceDaily').innerHTML.includes('已删除 · 历史'),false);
+assert.equal(node('qualityPresenceDaily').innerHTML.includes('7 / 7 分钟'),true);
+const late=ui.loadPresenceManagement(); ui.stopQualityPresence(true); ui.state.view='quality';
+assert.equal(managementRequests[2].options.signal.aborted,true);
+respondTo(managementRequests,2,{status:'ready',agents:[{...hidden,agent_name:'PRIVATE LATE'}],total:1}); await late;
+assert.equal(node('presenceManagementList').innerHTML.includes('PRIVATE'),false);
+assert.equal(node('presenceManagement').classList.contains('hidden'),true);
+assert.equal(node('presenceIncludeHidden').checked,false);
+""",
+    "presence_management_pagination_and_failures_keep_current_reads_independent": r"""
+ui.state.token='session'; ui.state.view='presence'; node('qualityPresenceDay').value='2026-10-16';
+node('presenceManageToggle').handlers.click();
+respondTo(managementRequests,0,{status:'ready',agents:[{source_key:'cw',account_id:1,agent_id:1,agent_name:'First'}],total:51,page:1}); await tick();
+assert.equal(node('presenceManagementNext').disabled,false); node('presenceManagementNext').handlers.click();
+assert.equal(new URL(managementRequests[1].url).searchParams.get('page'),'2');
+respondTo(managementRequests,1,{status:'ready',agents:[{source_key:'cw',account_id:1,agent_id:51,agent_name:'Last'}],total:51,page:2}); await tick();
+assert.equal(node('presenceManagementPrev').disabled,false); assert.equal(node('presenceManagementNext').disabled,true);
+const failed=ui.removePresenceAgent(0); respondTo(removalRequests,0,{detail:'scope changed'},409); await tick();
+assert.equal(node('presenceManagementNotice').textContent.includes('scope changed'),true);
+respondTo(dailyRequests,0,{status:'ready',agents:[]}); await tick();
+respondTo(managementRequests,2,{status:'unavailable'}); await failed;
+assert.equal(node('presenceManagementStatus').textContent.includes('暂不可用'),true);
+const current=ui.loadQualityPresence();
+respondTo(presenceRequests,0,{status:'ready',source_key:'cw',account_id:1,agents:[{agent_id:1,agent_name:'CURRENT UNAFFECTED',availability_status:'online'}]}); await current;
+assert.equal(node('qualityPresenceAgents').innerHTML.includes('CURRENT UNAFFECTED'),true);
+assert.equal(ui.presenceState.current.status,'ready');
 """,
     "presence_roster_merges_current_and_historical_agents_by_full_scope": r"""
 ui.state.token = 'session'; ui.state.view = 'presence'; node('qualityPresenceDay').value = '2026-10-16';

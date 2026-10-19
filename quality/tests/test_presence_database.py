@@ -45,6 +45,67 @@ class PresenceDatabaseTest(unittest.TestCase):
         return self.admin.execute(sql.SQL("SELECT * FROM {} WHERE source_key=%s ORDER BY agent_id").format(
             sql.Identifier(*table.split("."))), (self.source,)).fetchall()
 
+    def test_manual_removal_hides_retired_roster_without_changing_history(self):
+        self.append(0, (1, "Retired", "online"), (2, "Current", "busy"))
+        self.append(1, (2, "Current", "online"))
+        now = BASE+timedelta(minutes=3)
+        day = date(2026, 10, 16)
+        before = self.writer.daily(day, self.source, 1, now)["agents"]
+        periods = self.rows("ops.agent_presence_periods")
+        samples = self.rows("archive.agent_presence_samples")
+        result = self.writer.remove_agent(self.source, 1, 1, now)
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual([a["agent_id"] for a in self.writer.daily(day, self.source, 1, now)["agents"]], ["2"])
+        history = self.writer.daily(day, self.source, 1, now, include_hidden=True)["agents"]
+        for old in before:
+            restored = next(a for a in history if a["agent_id"] == old["agent_id"])
+            self.assertEqual({k: v for k, v in restored.items() if k != "hidden_at"}, {k: v for k, v in old.items() if k != "hidden_at"})
+        self.assertEqual(self.rows("ops.agent_presence_periods"), periods)
+        self.assertEqual(self.rows("archive.agent_presence_samples"), samples)
+        self.assertEqual(self.writer.timeline(day, self.source, 1, 1, now)["status_minutes"]["online"], 1)
+        self.append(4, (2, "Current", "online"))
+        self.assertEqual([a["agent_id"] for a in self.writer.list_agents(self.source, 1)["agents"]], ["2"])
+        self.assertEqual(self.writer.list_agents(self.source, 1, include_hidden=True)["total"], 2)
+
+    def test_current_seat_restores_only_after_new_observation_with_all_old_samples(self):
+        self.append(0, (1, "Current", "online"))
+        first_seen = self.rows("ops.agent_presence_registry")[0]["first_seen_at"]
+        removed_at = BASE+timedelta(minutes=1, seconds=45)
+        self.writer.remove_agent(self.source, 1, 1, removed_at)
+        # A buffered successful observation predating the click must stay hidden.
+        delayed = self.append(1, (1, "Current", "busy"))
+        self.assertEqual(delayed["agents"], [])
+        duplicate = self.append(1, (1, "Cached", "offline"), at=BASE+timedelta(minutes=1, seconds=59))
+        self.assertTrue(duplicate["duplicate"])
+        self.assertEqual(self.writer.list_agents(self.source, 1)["total"], 0)
+        self.append(2, (1, "Current renamed", "offline"))
+        registry = self.rows("ops.agent_presence_registry")[0]
+        self.assertIsNone(registry["hidden_at"])
+        self.assertEqual(registry["first_seen_at"], first_seen)
+        self.assertEqual(len(self.rows("ops.agent_presence_periods")), 1)
+        daily = self.writer.daily(date(2026, 10, 16), self.source, 1, BASE+timedelta(minutes=3))["agents"][0]
+        self.assertEqual((daily["sampled_minutes"], daily["online_minutes"], daily["busy_minutes"], daily["offline_minutes"], daily["missing_minutes"]), (3, 1, 1, 1, 0))
+
+    def test_management_scopes_pagination_and_idempotent_removal(self):
+        self.append(0, *((i, f"Agent {i:03}", "online") for i in range(1, 55)))
+        self.append(0, (1, "Other account", "online"), account=2)
+        self.append(0, (1, "Other source", "online"), source=self.source+"-other")
+        first = self.writer.list_agents(self.source, 1, page_size=50)
+        second = self.writer.list_agents(self.source, 1, page=2, page_size=50)
+        self.assertEqual((first["total"], len(first["agents"]), len(second["agents"])), (54, 50, 4))
+        deleted = self.writer.remove_agent(self.source, 1, 1, BASE+timedelta(minutes=2))
+        again = self.writer.remove_agent(self.source, 1, 1, BASE+timedelta(minutes=3))
+        self.assertEqual(deleted["hidden_at"], again["hidden_at"])
+        self.assertEqual(self.writer.list_agents(self.source, 1)["total"], 53)
+        self.assertEqual(self.writer.list_agents(self.source, 2)["total"], 1)
+        self.assertEqual(self.writer.list_agents(self.source+"-other", 1)["total"], 1)
+        self.assertEqual(self.writer.remove_agent(self.source, 1, 999)["status"], "not_found")
+        for role in ("archive_reader", "archive_ingest", "archive_quality", "archive_assignment"):
+            with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                with self.admin.transaction():
+                    self.admin.execute("SET LOCAL ROLE " + role)
+                    self.admin.execute("UPDATE ops.agent_presence_registry SET hidden_at=now() WHERE FALSE")
+
     def test_sampling_deduplicates_original_minute_and_separates_unknown_from_missing(self):
         first = self.append(0, (1, "A", "online"))
         self.assertEqual(first["inserted_samples"], 1)

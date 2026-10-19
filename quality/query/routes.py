@@ -97,8 +97,33 @@ async def presence():
 
 
 @router.get("/presence/daily")
-async def presence_daily(day: date | None = None):
-    return await get_query_runtime().presence_daily(day)
+async def presence_daily(day: date | None = None, include_hidden: bool = False):
+    return await get_query_runtime().presence_daily(day, **({"include_hidden": True} if include_hidden else {}))
+
+
+@router.get("/presence/agents")
+async def presence_agents(
+    page: int = Query(1, ge=1, le=100000), page_size: int = Query(50, ge=1, le=100),
+    include_hidden: bool = False,
+):
+    return await get_query_runtime().presence_agents(page, page_size, include_hidden)
+
+
+@router.delete("/presence/agents/{agent_id}")
+async def presence_remove_agent(
+    agent_id: int, source_key: str = Query(..., min_length=1, max_length=128),
+    account_id: int = Query(..., ge=1, le=2**63-1),
+):
+    if not 0<agent_id<=2**63-1 or source_key != source_key.strip() or "\x00" in source_key:
+        raise HTTPException(status_code=422, detail="坐席标识或来源无效。")
+    result = await get_query_runtime().presence_remove_agent(source_key, account_id, agent_id)
+    if result["status"] == "not_found":
+        raise HTTPException(status_code=404, detail="本地坐席不存在，请刷新名单。")
+    if result["status"] == "scope_changed":
+        raise HTTPException(status_code=409, detail="Chatwoot 来源或账号已变更，请刷新名单后重试。")
+    if result["status"] != "ready":
+        raise HTTPException(status_code=503, detail="坐席管理暂不可用，请确认状态采集及数据库迁移后重试。")
+    return result
 
 
 @router.get("/presence/timeline")

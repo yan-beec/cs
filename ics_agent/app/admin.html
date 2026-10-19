@@ -739,6 +739,10 @@
     .quality-presence-seat > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; overflow-wrap: anywhere; }
     .quality-presence-daily { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
     .quality-presence-day { max-width: 180px; }
+    .presence-history-option { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-soft); }
+    .presence-history-option input { width: auto; margin: 0; }
+    .presence-management { margin: 12px 0; padding: 12px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface-soft); }
+    .presence-management .quality-form-actions { margin-top: 10px; }
     .presence-controls { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; }
     .presence-agent-field { flex: 1; min-width: 220px; max-width: 520px; }
     .presence-time-field { width: 145px; }
@@ -1037,7 +1041,7 @@
             </button>
             <button id="presenceNav" class="nav-item" type="button">
               <span class="nav-icon" aria-hidden="true">勤</span>
-              <span>客服状态监管<small>当前状态 · 每日时长 · 分钟核对</small></span>
+              <span>客服状态<small>当前状态 · 每日时长 · 分钟核对</small></span>
             </button>
             <button id="logsNav" class="nav-item" type="button">
               <span class="nav-icon" aria-hidden="true">志</span>
@@ -1233,16 +1237,18 @@
             </div>
           </section>
 
-          <section id="presencePage" class="hidden" aria-label="客服状态监管">
-            <div class="workspace-heading"><div><span class="eyebrow">Agent Availability</span><h3>客服状态监管</h3><p>当前配置 Chatwoot 实例的客服状态与每日记录，所有时间均为北京时间（UTC+8）。</p></div><span class="tag">每分钟刷新</span></div>
+          <section id="presencePage" class="hidden" aria-label="客服状态">
+            <div class="workspace-heading"><div><span class="eyebrow">Agent Availability</span><h3>客服状态</h3><p>当前配置 Chatwoot 实例的客服状态与每日记录，所有时间均为北京时间（UTC+8）。</p></div><span class="tag">每分钟刷新</span></div>
             <div class="quality-stack">
               <section class="panel" aria-label="当前客服状态">
                 <div class="panel-header"><div class="panel-heading"><h3>当前客服状态</h3><p id="qualityPresenceStatus" class="hint" role="status">等待读取当前状态。</p><p id="qualityPresenceCollectorStatus" class="hint" role="status">等待确认历史采集状态。</p></div><span id="qualityPresenceTag" class="tag amber">状态未知</span></div>
                 <div class="panel-body"><div id="qualityPresenceAgents" class="quality-presence-grid"><div class="hint">正在获取坐席名单。</div></div></div>
               </section>
               <section class="panel" aria-label="每日状态时长">
-                <div class="panel-header"><div class="panel-heading"><h3>每日状态时长</h3><p>历史从启用后累计；后台持续采集，不依赖本页面。缺采样不计为离线。</p></div><label class="quality-field quality-presence-day">日期（北京时间）<input id="qualityPresenceDay" type="date" aria-label="客服每日统计日期"></label></div>
-                <div class="panel-body"><p id="presenceRetentionNote" class="hint">状态历史按实际采样时间保留45天，北京时间每天04:00分批清理；最早日期为部分保留。</p><p id="qualityPresenceDailyStatus" class="hint" role="status">等待读取每日统计。</p><p id="qualityPresenceDailyNotice" class="hint quality-data-warning hidden" role="status"></p><div id="qualityPresenceDaily" class="table-wrap quality-table"><div class="quality-empty">选择日期查看各客服在线、忙碌、离线和未知分钟。</div></div></div>
+                <div class="panel-header"><div class="panel-heading"><h3>每日状态时长</h3><p>历史从启用后累计；后台持续采集，不依赖本页面。缺采样不计为离线。</p></div><div class="toolbar-actions"><label class="quality-field quality-presence-day">日期（北京时间）<input id="qualityPresenceDay" type="date" aria-label="客服每日统计日期"></label><button id="presenceManageToggle" class="button secondary" type="button" aria-expanded="false" aria-controls="presenceManagement">坐席管理</button></div></div>
+                <div class="panel-body"><label class="presence-history-option"><input id="presenceIncludeHidden" type="checkbox">查看已删除坐席历史</label>
+                  <section id="presenceManagement" class="presence-management hidden" aria-label="坐席管理"><strong>坐席管理</strong><p class="hint">删除仅从本地名单移除，历史记录保留。Chatwoot 中仍存在的坐席会在下次采集时自动恢复。</p><p id="presenceManagementStatus" class="hint" role="status">打开后读取本地坐席名单。</p><p id="presenceManagementNotice" class="hint" role="status"></p><div id="presenceManagementList" class="table-wrap quality-table"></div><div class="quality-form-actions"><span id="presenceManagementPageInfo" class="hint"></span><div class="toolbar-actions"><button id="presenceManagementPrev" class="button tertiary" type="button" disabled>上一页坐席</button><button id="presenceManagementNext" class="button tertiary" type="button" disabled>下一页坐席</button></div></div></section>
+                  <p id="presenceRetentionNote" class="hint">状态历史按实际采样时间保留45天，北京时间每天04:00分批清理；最早日期为部分保留。</p><p id="qualityPresenceDailyStatus" class="hint" role="status">等待读取每日统计。</p><p id="qualityPresenceDailyNotice" class="hint quality-data-warning hidden" role="status"></p><div id="qualityPresenceDaily" class="table-wrap quality-table"><div class="quality-empty">选择日期查看各客服在线、忙碌、离线和未知分钟。</div></div></div>
               </section>
               <section class="panel" aria-label="全天分钟核对">
                 <div class="panel-header"><div class="panel-heading"><h3>全天分钟核对</h3><p>状态按每分钟观测记录，时间段用于核对，不代表秒级上下线时间。</p><p id="presenceTimelineStatus" class="hint" role="status">选择客服查看当天 00:00–24:00。</p></div></div>
@@ -1398,6 +1404,7 @@
       daily: null, dailyVersion: 0, dailyLoading: false, dailyRequestedDay: "", dailyRoster: [],
       roster: [], timeline: null, segments: [], timelineVersion: 0, timelineLoading: false,
       timelineRequestedKey: "", timelineKey: "", page: 1, pageSize: 50, selectedMinute: null,
+      management: null, managementPage: 1, managementVersion: 0, managementLoading: false, deleting: false,
       rangeDay: "", oldestAvailableDay: "", retentionCutoffAt: "", expiredDay: ""
     };
     const isPresenceCurrent = (generation, token) => state.view === "presence" && !!token && state.token === token && presenceState.generation === generation;
@@ -1405,12 +1412,12 @@
       presenceState.controllers.get(slot)?.abort();
       presenceState.controllers.delete(slot);
     };
-    const presenceRequest = async (slot, path) => {
+    const presenceRequest = async (slot, path, options = {}) => {
       cancelPresenceRequest(slot);
       const controller = new AbortController(), generation = presenceState.generation, token = state.token;
       presenceState.controllers.set(slot, controller);
       try {
-        const result = await api(`/admin/api/quality${path}`, { signal: controller.signal });
+        const result = await api(`/admin/api/quality${path}`, { ...options, signal: controller.signal });
         if (controller.signal.aborted || !isPresenceCurrent(generation, token) || presenceState.controllers.get(slot) !== controller) throw new DOMException("监管请求已取消", "AbortError");
         return result;
       } catch (error) {
@@ -1703,23 +1710,26 @@
         const sampled = qualityCount(agent.sampled_minutes), expected = qualityCount(agent.expected_minutes), missing = qualityCount(agent.missing_minutes);
         const coverage = expected ? `${(sampled * 100 / expected).toFixed(1)}%` : "—";
         const name = agent.agent_name_source === "chatwoot" && typeof agent.agent_name === "string" && agent.agent_name.trim() || presenceAgentName(agent);
-        return `<tr><td>${escapeHtml(name)}<span class="quality-secondary">Chatwoot ID ${escapeHtml(agent.agent_id)} · ${escapeHtml(agent.source_key)} / ${escapeHtml(agent.account_id)}</span></td><td>${qualityCount(agent.online_minutes)}</td><td>${qualityCount(agent.busy_minutes)}</td><td>${qualityCount(agent.offline_minutes)}</td><td>${qualityCount(agent.unknown_minutes)}</td><td>${sampled} / ${expected} 分钟 · ${coverage}<span class="quality-secondary">缺口 ${missing} 分钟，不计为离线</span></td><td>${escapeHtml(qualityMinute(agent.last_sampled_at || agent.last_sample_at))}</td></tr>`;
+        return `<tr><td>${escapeHtml(name)}${agent.hidden_at ? qualityTag("已删除 · 历史") : ""}<span class="quality-secondary">Chatwoot ID ${escapeHtml(agent.agent_id)} · ${escapeHtml(agent.source_key)} / ${escapeHtml(agent.account_id)}</span></td><td>${qualityCount(agent.online_minutes)}</td><td>${qualityCount(agent.busy_minutes)}</td><td>${qualityCount(agent.offline_minutes)}</td><td>${qualityCount(agent.unknown_minutes)}</td><td>${sampled} / ${expected} 分钟 · ${coverage}<span class="quality-secondary">缺口 ${missing} 分钟，不计为离线</span></td><td>${escapeHtml(qualityMinute(agent.last_sampled_at || agent.last_sample_at))}</td></tr>`;
       }).join("")}</tbody></table>` : '<div class="quality-empty">该日暂无采样记录，不能据此认定坐席离线。</div>';
     };
     const loadQualityPresenceDaily = async () => {
-      if (!qualityPresenceVisible() || !ensurePresenceDay()) return;
-      const day = $("qualityPresenceDay").value;
-      if (!day || presenceState.dailyLoading && presenceState.dailyRequestedDay === day) return;
+      if (!qualityPresenceVisible() || presenceState.deleting || !ensurePresenceDay()) return;
+      const day = $("qualityPresenceDay").value, includeHidden = !!$("presenceIncludeHidden").checked;
+      if (!day || presenceState.dailyLoading && presenceState.dailyRequestedDay === day && presenceState.dailyRequestedHidden === includeHidden) return;
       const version = ++presenceState.dailyVersion, generation = presenceState.generation, token = state.token;
       presenceState.dailyLoading = true;
       presenceState.dailyRequestedDay = day;
+      presenceState.dailyRequestedHidden = includeHidden;
       $("qualityPresenceDailyStatus").textContent = `正在读取 ${day} 的每日采样统计...`;
       $("qualityPresenceDailyNotice").textContent = "";
       $("qualityPresenceDailyNotice").classList.add("hidden");
       $("qualityPresenceDaily").innerHTML = '<div class="quality-empty">正在读取每日统计...</div>';
       try {
-        const result = await presenceRequest("presenceDaily", `/presence/daily?${new URLSearchParams({ day })}`);
-        if (!isPresenceCurrent(generation, token) || version !== presenceState.dailyVersion || day !== $("qualityPresenceDay").value || !qualityPresenceVisible()) return;
+        const params = new URLSearchParams({ day });
+        if (includeHidden) params.set("include_hidden", "true");
+        const result = await presenceRequest("presenceDaily", `/presence/daily?${params}`);
+        if (!isPresenceCurrent(generation, token) || version !== presenceState.dailyVersion || day !== $("qualityPresenceDay").value || includeHidden !== !!$("presenceIncludeHidden").checked || !qualityPresenceVisible()) return;
         if (!ensurePresenceDay(result)) return;
         renderQualityPresenceDaily(result, day);
         presenceState.daily = result;
@@ -1730,6 +1740,72 @@
         renderQualityPresenceDaily({ status: "unavailable" }, day);
       } finally {
         if (isPresenceCurrent(generation, token) && version === presenceState.dailyVersion) presenceState.dailyLoading = false;
+      }
+    };
+    const renderPresenceManagement = () => {
+      const result = presenceState.management, agents = result?.agents || [];
+      const total = qualityCount(result?.total), page = presenceState.managementPage;
+      $("presenceManagementStatus").textContent = `本地名单共 ${total} 位坐席。删除不会修改 Chatwoot 账号、状态或历史统计。`;
+      $("presenceManagementList").innerHTML = agents.length ? `<table><thead><tr><th>坐席</th><th>名单状态</th><th>最近采集（北京时间）</th><th>操作</th></tr></thead><tbody>${agents.map((agent, index) => `<tr><td>${escapeHtml(presenceAgentName(agent))}<span class="quality-secondary">ID ${escapeHtml(agent.agent_id)} · ${escapeHtml(agent.source_key)} / 账号 ${escapeHtml(agent.account_id)}</span></td><td>${agent.hidden_at ? "已从本地删除" : agent.removed_at ? "已离开 Chatwoot 名单" : "最近采集在册"}</td><td>${escapeHtml(qualityMinute(agent.last_seen_at))}</td><td>${agent.hidden_at ? '<span class="hint">历史保留</span>' : `<button class="button danger" type="button" data-presence-remove="${index}"${presenceState.deleting ? " disabled" : ""}>删除坐席</button>`}</td></tr>`).join("")}</tbody></table>` : '<div class="quality-empty">暂无本地坐席。可勾选“查看已删除坐席历史”查看已移除的名单。</div>';
+      $("presenceManagementPageInfo").textContent = `第 ${page} / ${Math.max(1, Math.ceil(total / 50))} 页 · 共 ${total} 位`;
+      $("presenceManagementPrev").disabled = presenceState.deleting || page <= 1;
+      $("presenceManagementNext").disabled = presenceState.deleting || page * 50 >= total;
+    };
+    const loadPresenceManagement = async () => {
+      if (!qualityPresenceVisible() || $("presenceManagement").classList.contains("hidden") || presenceState.deleting) return;
+      const version = ++presenceState.managementVersion, generation = presenceState.generation, token = state.token;
+      const page = presenceState.managementPage, includeHidden = !!$("presenceIncludeHidden").checked;
+      presenceState.managementLoading = true;
+      $("presenceManagementStatus").textContent = "正在读取本地坐席名单...";
+      try {
+        const params = new URLSearchParams({ page, page_size: 50 });
+        if (includeHidden) params.set("include_hidden", "true");
+        const result = await presenceRequest("management", `/presence/agents?${params}`);
+        if (!isPresenceCurrent(generation, token) || version !== presenceState.managementVersion || includeHidden !== !!$("presenceIncludeHidden").checked) return;
+        if (result.status !== "ready") throw new Error(result.status === "disabled" ? "请先启用后台状态采集，再管理本地坐席。" : "坐席管理暂不可用，请检查状态采集及数据库迁移。");
+        presenceState.management = result;
+        renderPresenceManagement();
+      } catch (error) {
+        if (error.name === "AbortError" || !isPresenceCurrent(generation, token) || version !== presenceState.managementVersion) return;
+        presenceState.management = null;
+        $("presenceManagementStatus").textContent = error.message;
+        $("presenceManagementList").innerHTML = '<div class="quality-empty">暂时无法读取本地名单。</div>';
+        $("presenceManagementPrev").disabled = $("presenceManagementNext").disabled = true;
+      } finally {
+        if (isPresenceCurrent(generation, token) && version === presenceState.managementVersion) presenceState.managementLoading = false;
+      }
+    };
+    const removePresenceAgent = async (index) => {
+      const agent = presenceState.management?.agents?.[index];
+      if (!qualityPresenceVisible() || presenceState.deleting || presenceState.managementLoading || !agent || agent.hidden_at) return;
+      const generation = presenceState.generation, token = state.token;
+      presenceState.deleting = true;
+      cancelPresenceRequest("presenceDaily"); presenceState.dailyVersion++; presenceState.dailyLoading = false;
+      cancelPresenceRequest("management"); presenceState.managementVersion++; presenceState.managementLoading = false;
+      renderPresenceManagement();
+      $("presenceManagementNotice").textContent = `正在从本地名单删除 ${presenceAgentName(agent)}...`;
+      try {
+        const params = new URLSearchParams({ source_key: agent.source_key, account_id: agent.account_id });
+        const result = await presenceRequest("agentRemoval", `/presence/agents/${encodeURIComponent(agent.agent_id)}?${params}`, { method: "DELETE" });
+        if (!isPresenceCurrent(generation, token)) return;
+        if (presenceState.daily?.status === "ready") {
+          const same = (row) => presenceAgentValue({ source_key: presenceState.daily.source_key, account_id: presenceState.daily.account_id, ...row }) === presenceAgentValue(agent);
+          const includeHidden = !!$("presenceIncludeHidden").checked;
+          presenceState.daily = { ...presenceState.daily, agents: (presenceState.daily.agents || []).flatMap((row) => same(row) ? includeHidden ? [{ ...row, hidden_at: result.hidden_at }] : [] : [row]) };
+          presenceState.dailyRoster = presenceRosterRows(presenceState.daily);
+          renderQualityPresenceDaily(presenceState.daily, $("qualityPresenceDay").value);
+          mergePresenceRoster();
+        }
+        if (!$("presenceIncludeHidden").checked && presenceState.management.agents.length === 1 && presenceState.managementPage > 1) presenceState.managementPage--;
+        $("presenceManagementNotice").textContent = `已从本地名单删除 ${presenceAgentName(agent)}，历史记录保留；Chatwoot 中仍存在的坐席将在下次采集时自动恢复。`;
+      } catch (error) {
+        if (error.name !== "AbortError" && isPresenceCurrent(generation, token)) $("presenceManagementNotice").textContent = error.message;
+      } finally {
+        if (isPresenceCurrent(generation, token)) {
+          presenceState.deleting = false;
+          await loadQualityPresenceDaily();
+          await loadPresenceManagement();
+        }
       }
     };
     const presenceStatusLabels = { online: "在线", busy: "忙碌", offline: "离线", unknown: "未知（已采样）", missing: "缺采样", not_monitored: "未监管", future: "未结束 / 未来", expired: "已过期" };
@@ -1836,11 +1912,17 @@
       presenceState.generation++;
       for (const controller of presenceState.controllers.values()) controller.abort();
       presenceState.controllers.clear();
-      presenceState.currentVersion++; presenceState.dailyVersion++; presenceState.timelineVersion++;
-      presenceState.currentLoading = presenceState.dailyLoading = presenceState.timelineLoading = false;
+      presenceState.currentVersion++; presenceState.dailyVersion++; presenceState.timelineVersion++; presenceState.managementVersion++;
+      presenceState.currentLoading = presenceState.dailyLoading = presenceState.timelineLoading = presenceState.managementLoading = presenceState.deleting = false;
       if (clear) {
         presenceState.current = presenceState.daily = null;
         presenceState.roster = []; presenceState.currentRoster = []; presenceState.dailyRoster = [];
+        presenceState.management = null; presenceState.managementPage = 1;
+        $("presenceManagement").classList.add("hidden");
+        $("presenceManageToggle").setAttribute("aria-expanded", "false");
+        $("presenceManagementList").innerHTML = "";
+        $("presenceManagementNotice").textContent = "";
+        $("presenceIncludeHidden").checked = false;
         $("qualityPresenceStatus").textContent = "等待读取当前状态。";
         $("qualityPresenceCollectorStatus").textContent = "等待确认历史采集状态。";
         $("qualityPresenceTag").textContent = "状态未知";
@@ -1867,6 +1949,7 @@
       const refresh = () => {
         if (!qualityPresenceVisible()) { stopQualityPresence(); return; }
         loadQualityPresence(); loadQualityPresenceDaily(); loadPresenceTimeline();
+        if (!presenceState.managementLoading) loadPresenceManagement();
       };
       presenceState.timer = setInterval(refresh, 60000);
       refresh();
@@ -2576,9 +2659,9 @@
         document.title = "对话归档 - 零新智能客服";
         loadQuality();
       } else if (view === "presence") {
-        $("pageTitle").textContent = "客服状态监管";
+        $("pageTitle").textContent = "客服状态";
         $("pageContext").textContent = "当前状态 · 每日时长 · 分钟核对";
-        document.title = "客服状态监管 - 零新智能客服";
+        document.title = "客服状态 - 零新智能客服";
         startQualityPresence();
       } else {
         $("pageTitle").textContent = `${currentChannelName()} · 内容管理`;
@@ -2945,6 +3028,26 @@
       return loadQualityPresenceDaily();
     });
     $("presenceAgent").addEventListener("change", loadPresenceTimeline);
+    $("presenceManageToggle").addEventListener("click", () => {
+      const open = $("presenceManagement").classList.contains("hidden");
+      $("presenceManagement").classList.toggle("hidden", !open);
+      $("presenceManageToggle").setAttribute("aria-expanded", String(open));
+      if (open) loadPresenceManagement();
+    });
+    $("presenceIncludeHidden").addEventListener("change", () => {
+      presenceState.managementPage = 1;
+      loadQualityPresenceDaily(); loadPresenceManagement();
+    });
+    $("presenceManagementPrev").addEventListener("click", () => {
+      if (!presenceState.deleting && presenceState.managementPage > 1) { presenceState.managementPage--; loadPresenceManagement(); }
+    });
+    $("presenceManagementNext").addEventListener("click", () => {
+      if (!presenceState.deleting && presenceState.managementPage * 50 < qualityCount(presenceState.management?.total)) { presenceState.managementPage++; loadPresenceManagement(); }
+    });
+    $("presenceManagementList").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-presence-remove]");
+      if (button) removePresenceAgent(Number(button.dataset.presenceRemove));
+    });
     $("presenceCheckTime").addEventListener("change", () => locatePresenceMinute());
     $("presenceLocate").addEventListener("click", () => locatePresenceMinute());
     $("presenceStatusFilter").addEventListener("change", () => { presenceState.page = 1; renderPresenceIntervals(); });

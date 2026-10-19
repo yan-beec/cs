@@ -93,11 +93,12 @@ class PresenceRepository:
                 pg_has_role(current_user,'archive_owner','MEMBER') AS owner,
                 has_table_privilege(current_user,'archive.agent_presence_samples','INSERT') AS appends,
                 has_table_privilege(current_user,'archive.agent_presence_samples','UPDATE,DELETE,TRUNCATE') AS mutates,
-                has_table_privilege(current_user,'archive.events','SELECT,INSERT,UPDATE,DELETE,TRUNCATE') AS chat_access
+                has_table_privilege(current_user,'archive.events','SELECT,INSERT,UPDATE,DELETE,TRUNCATE') AS chat_access,
+                has_column_privilege(current_user,'ops.agent_presence_registry','hidden_at','UPDATE') AS manages_roster
                 FROM pg_roles r WHERE r.rolname=current_user""").fetchone()
             if (not row or row["role"] != "archive_presence" or row["rolsuper"] or row["owner"]
-                    or not row["appends"] or row["mutates"] or row["chat_access"]):
-                raise RuntimeError("Presence persistence requires its restricted role and migration 004")
+                    or not row["appends"] or row["mutates"] or row["chat_access"] or not row["manages_roster"]):
+                raise RuntimeError("Presence persistence requires its restricted role and migrations 004 through 007")
 
     def close(self):
         self.pool.close()
@@ -106,7 +107,8 @@ class PresenceRepository:
     def _roster(connection, source, account):
         return [_serialize(row) for row in connection.execute("""SELECT source_key,account_id,agent_id,
             agent_name,agent_name_source,first_seen_at,last_seen_at,removed_at
-            FROM ops.agent_presence_registry WHERE source_key=%s AND account_id=%s AND removed_at IS NULL
+            FROM ops.agent_presence_registry WHERE source_key=%s AND account_id=%s
+                AND removed_at IS NULL AND hidden_at IS NULL
             ORDER BY agent_id LIMIT 200""", (source, account)).fetchall()]
 
     def append(self, snapshot):
@@ -133,7 +135,9 @@ class PresenceRepository:
                         SELECT %s,%s,a.agent_id,%s,%s,a.agent_name,a.agent_name_source
                         FROM jsonb_to_recordset(%s) a(agent_id text,agent_name text,agent_name_source text)
                         ON CONFLICT(source_key,account_id,agent_id) DO UPDATE SET last_seen_at=EXCLUDED.last_seen_at,
-                            agent_name=EXCLUDED.agent_name,agent_name_source=EXCLUDED.agent_name_source,removed_at=NULL""",
+                            agent_name=EXCLUDED.agent_name,agent_name_source=EXCLUDED.agent_name_source,removed_at=NULL,
+                            hidden_at=CASE WHEN EXCLUDED.last_seen_at>ops.agent_presence_registry.hidden_at
+                                THEN NULL ELSE ops.agent_presence_registry.hidden_at END""",
                         (source, account, at, at, observed))
                     connection.execute("""INSERT INTO ops.agent_presence_periods(source_key,account_id,agent_id,started_minute)
                         SELECT %s,%s,a.agent_id,%s FROM jsonb_to_recordset(%s) a(agent_id text)
@@ -153,7 +157,43 @@ class PresenceRepository:
             "monitoring_started_at": monitor["started_at"].isoformat(), "inserted_samples": inserted,
             "duplicate": duplicate, "agents": roster}
 
-    def daily(self, day, source_key, account_id, now=None):
+    def list_agents(self, source_key, account_id, page=1, page_size=50, include_hidden=False):
+        source, account = _scope(source_key, account_id)
+        if type(page) is not int or page<1 or type(page_size) is not int or not 1<=page_size<=100:
+            raise ValueError("Invalid presence roster page")
+        with self.pool.connection() as connection:
+            with connection.transaction():
+                connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+                total = connection.execute("""SELECT count(*) AS total FROM ops.agent_presence_registry
+                    WHERE source_key=%s AND account_id=%s AND (%s OR hidden_at IS NULL)""",
+                    (source, account, include_hidden)).fetchone()["total"]
+                rows = connection.execute("""SELECT source_key,account_id,agent_id,agent_name,agent_name_source,
+                        first_seen_at,last_seen_at,removed_at,hidden_at
+                    FROM ops.agent_presence_registry
+                    WHERE source_key=%s AND account_id=%s AND (%s OR hidden_at IS NULL)
+                    ORDER BY agent_name NULLS LAST,agent_id LIMIT %s OFFSET %s""",
+                    (source, account, include_hidden, page_size, (page-1)*page_size)).fetchall()
+        return {"status": "ready", "source_key": source, "account_id": account,
+                "agents": [_serialize(row) for row in rows], "total": total,
+                "page": page, "page_size": page_size}
+
+    def remove_agent(self, source_key, account_id, agent_id, now=None):
+        source, account = _scope(source_key, account_id)
+        identifier = str(_positive_id(agent_id))
+        at = _time(now or datetime.now(UTC))
+        with self.pool.connection() as connection:
+            with connection.transaction():
+                # Serialize with append without closing genuine membership periods.
+                connection.execute("""SELECT started_at FROM ops.agent_presence_monitor
+                    WHERE source_key=%s AND account_id=%s FOR UPDATE""", (source, account))
+                row = connection.execute("""UPDATE ops.agent_presence_registry
+                    SET hidden_at=COALESCE(hidden_at,greatest(%s,last_seen_at))
+                    WHERE source_key=%s AND account_id=%s AND agent_id=%s
+                    RETURNING source_key,account_id,agent_id,hidden_at""",
+                    (at, source, account, identifier)).fetchone()
+        return {"status": "ready" if row else "not_found", **(_serialize(row) if row else {})}
+
+    def daily(self, day, source_key, account_id, now=None, *, include_hidden=False):
         source, account = _scope(source_key, account_id)
         now = _time(now or datetime.now(UTC))
         day = day or now.astimezone(BEIJING).date()
@@ -191,7 +231,7 @@ class PresenceRepository:
                             AND sampled_minute>=%s AND sampled_minute<%s GROUP BY agent_id
                     )
                     SELECT r.source_key,r.account_id,r.agent_id,r.agent_name,r.agent_name_source,
-                        r.first_seen_at,r.last_seen_at,r.removed_at,
+                        r.first_seen_at,r.last_seen_at,r.removed_at,r.hidden_at,
                         COALESCE(e.expected_minutes,0) AS expected_minutes,COALESCE(s.sampled_minutes,0) AS sampled_minutes,
                         COALESCE(s.online_minutes,0) AS online_minutes,COALESCE(s.busy_minutes,0) AS busy_minutes,
                         COALESCE(s.offline_minutes,0) AS offline_minutes,COALESCE(s.unknown_minutes,0) AS unknown_minutes,
@@ -199,10 +239,11 @@ class PresenceRepository:
                         s.last_sampled_at,count(*) OVER() AS agent_count
                     FROM ops.agent_presence_registry r LEFT JOIN expected e USING(agent_id)
                     LEFT JOIN sampled s USING(agent_id) WHERE r.source_key=%s AND r.account_id=%s
+                        AND (%s OR r.hidden_at IS NULL)
                         AND (COALESCE(e.expected_minutes,0)>0 OR COALESCE(s.sampled_minutes,0)>0)
                     ORDER BY r.agent_name NULLS LAST,r.agent_id LIMIT 200
                 """, (through, through, retained_start, source, account, through, through, retained_start,
-                      source, account, retained_start, through, source, account)).fetchall()
+                      source, account, retained_start, through, source, account, include_hidden)).fetchall()
         count = rows[0]["agent_count"] if rows else 0
         agents = [_serialize({key: value for key, value in row.items() if key != "agent_count"}) for row in rows]
         return {**retention, "source_key": source, "account_id": account, "day": day.isoformat(), "timezone": "Asia/Shanghai",

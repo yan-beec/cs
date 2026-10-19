@@ -168,10 +168,20 @@ class QueryRuntime:
 
         return {**await self.directory_presence(), "collector": get_presence_runtime().state()}
 
-    async def presence_daily(self, day=None):
+    async def presence_daily(self, day=None, *, include_hidden=False):
         from quality.presence.runtime import get_presence_runtime
 
-        return await get_presence_runtime().daily(day)
+        return await get_presence_runtime().daily(day, **({"include_hidden": True} if include_hidden else {}))
+
+    async def presence_agents(self, page=1, page_size=50, include_hidden=False):
+        from quality.presence.runtime import get_presence_runtime
+
+        return await get_presence_runtime().agents(page, page_size, include_hidden)
+
+    async def presence_remove_agent(self, source_key, account_id, agent_id):
+        from quality.presence.runtime import get_presence_runtime
+
+        return await get_presence_runtime().remove_agent(source_key, account_id, agent_id)
 
     async def presence_timeline(self, day, agent_id):
         from quality.presence.runtime import get_presence_runtime

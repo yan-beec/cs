@@ -223,3 +223,57 @@ def test_timeline_uses_existing_presence_worker_and_preserves_agent_day_scope():
         runtime._execute.side_effect = PresenceBusy()
         assert (await runtime.timeline(date(2026, 10, 16), 7))["status"] == "unavailable"
     asyncio.run(check())
+
+
+def test_management_uses_existing_worker_rejects_changed_scope_and_never_calls_chatwoot():
+    async def check():
+        runtime = collector()
+        runtime.executor = Mock()
+        runtime.query_runtime.get_directory = Mock(return_value=SimpleNamespace(configured=True, account_id=1))
+        runtime._execute.side_effect = None
+        runtime._execute.return_value = {"status": "ready", "agents": [], "total": 0}
+        assert (await runtime.agents(2, 50, True))["status"] == "ready"
+        assert runtime._execute.call_args.args[1:] == ("list_agents", "local", 1)
+        assert runtime._execute.call_args.kwargs == {"page": 2, "page_size": 50, "include_hidden": True}
+        runtime._execute.reset_mock()
+        assert (await runtime.remove_agent("other", 1, 7))["status"] == "scope_changed"
+        assert (await runtime.remove_agent("local", 2, 7))["status"] == "scope_changed"
+        runtime._execute.assert_not_called()
+        await runtime.remove_agent("local", 1, 7)
+        assert runtime._execute.call_args.args[1:] == ("remove_agent", "local", 1, 7)
+        assert runtime._execute.call_args.kwargs["now"].tzinfo is not None
+        runtime.query_runtime.directory_presence.assert_not_awaited()
+        await runtime.daily(date(2026, 10, 16), include_hidden=True)
+        assert runtime._execute.call_args.kwargs == {"include_hidden": True}
+        runtime._execute.side_effect = PresenceBusy()
+        assert (await runtime.agents())["status"] == "unavailable"
+        assert (await runtime.remove_agent("local", 1, 7))["status"] == "unavailable"
+    asyncio.run(check())
+
+
+def test_management_routes_validate_scope_authentication_and_map_write_failures(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from ics_agent.app.core.auth import require_admin
+    from quality.query import routes
+    runtime = Mock(presence_agents=AsyncMock(return_value={"status": "ready", "agents": [], "total": 0}),
+                   presence_remove_agent=AsyncMock(return_value={"status": "ready", "hidden_at": "2026-10-16T00:00:00Z"}))
+    monkeypatch.setattr(routes, "get_query_runtime", lambda: runtime)
+    app = FastAPI()
+    app.include_router(routes.router)
+    with TestClient(app) as browser:
+        path = "/admin/api/quality/presence/agents"
+        assert browser.get(path).status_code == 401
+        assert browser.delete(path+"/7?source_key=local&account_id=1").status_code == 401
+        app.dependency_overrides[require_admin] = lambda: object()
+        assert browser.get(path+"?page=2&page_size=10&include_hidden=true").status_code == 200
+        runtime.presence_agents.assert_awaited_once_with(2, 10, True)
+        for suffix in ("/0?source_key=local&account_id=1", "/7", "/7?source_key=local&account_id=0", "/9223372036854775808?source_key=local&account_id=1"):
+            assert browser.delete(path+suffix).status_code == 422
+        runtime.presence_remove_agent.assert_not_awaited()
+        scoped = path+"/7?source_key=local&account_id=1"
+        assert browser.delete(scoped).status_code == 200
+        runtime.presence_remove_agent.assert_awaited_once_with("local", 1, 7)
+        for status, code in (("not_found", 404), ("scope_changed", 409), ("unavailable", 503), ("disabled", 503)):
+            runtime.presence_remove_agent.return_value = {"status": status}
+            assert browser.delete(scoped).status_code == code

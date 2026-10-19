@@ -307,7 +307,15 @@ BEGIN
         IF has_function_privilege(target_table,'ops.cleanup_presence_history(text,bigint)','EXECUTE') THEN
             RAISE EXCEPTION 'FAIL: unrelated runtime role may execute presence cleanup: %', target_table;
         END IF;
+        IF has_column_privilege(target_table,'ops.agent_presence_registry','hidden_at','UPDATE') THEN
+            RAISE EXCEPTION 'FAIL: unrelated runtime role may manage the presence roster: %', target_table;
+        END IF;
     END LOOP;
+    IF NOT has_column_privilege(current_user,'ops.agent_presence_registry','hidden_at','UPDATE')
+        OR has_column_privilege(current_user,'ops.agent_presence_registry','first_seen_at','UPDATE')
+        OR has_table_privilege(current_user,'ops.agent_presence_registry','DELETE,TRUNCATE') THEN
+        RAISE EXCEPTION 'FAIL: presence roster management must hide seats without deleting their history';
+    END IF;
     IF NOT EXISTS (SELECT 1 FROM ops.cleanup_presence_history(current_setting('quality.verify_source'),1)
         WHERE deleted_samples=0 AND deleted_periods=0) THEN
         RAISE EXCEPTION 'FAIL: empty scoped presence cleanup returned unexpected counts';

@@ -1,6 +1,6 @@
-# 对话归档与客服状态监管服务器更新手册
+# 对话归档与客服状态服务器更新手册
 
-本文用于已有 ICS 服务器增加或更新“对话归档”和“客服状态监管”。沿用 [服务器同步更新操作手册](server-sync-update.md) 的 Windows 开发端 → Ubuntu 服务器流程，补齐独立归档库、数据库迁移、账户 Webhook、接收器、解析进程、后台页面及状态保留期配置。
+本文用于已有 ICS 服务器增加或更新“对话归档”和“客服状态”。沿用 [服务器同步更新操作手册](server-sync-update.md) 的 Windows 开发端 → Ubuntu 服务器流程，补齐独立归档库、数据库迁移、账户 Webhook、接收器、解析进程、后台页面及状态保留期配置。
 
 **按第一节至第十一节顺序执行；第二节和第四节的源码来源选择对应的 A 或 B，不需要执行两套。** 已有归档数据库与首次增加归档数据库使用同一迁移入口，但初始化处理不同，见第八节。日后更新可使用第十二节清单；异常与回退见第十三、十四节。
 
@@ -78,7 +78,7 @@ if ($LASTEXITCODE -ne 0) { throw 'ICS 或归档模块测试失败，停止发布
 Get-ChildItem quality\database\migrations\*.sql | Select-Object Name
 ```
 
-数据库集成测试有专用测试库和显式开关要求；未启用时出现 `skipped`，不能计为数据库联调通过。不要把测试库配置改成生产库后运行测试。应确认发布文件包含 `001_capture.sql` 至 `006_presence_retention_state.sql`，并记录这次实际执行的测试结果。
+数据库集成测试有专用测试库和显式开关要求；未启用时出现 `skipped`，不能计为数据库联调通过。不要把测试库配置改成生产库后运行测试。应确认发布文件包含 `001_capture.sql` 至 `007_presence_agent_management.sql`，并记录这次实际执行的测试结果。
 
 Windows 到 Linux 发布还要检查 Shell 脚本换行。当前 `.gitattributes` 没有统一 Shell/SQL 的 LF 规则，显式用 `bash` 调用也不能修复脚本正文中的 CRLF。下面只检查，不改写文件：
 
@@ -288,7 +288,7 @@ sha256sum "$HOME/cs-archive-update.tar.gz"
   test -f "$archive_source_dir/deploy/server/sync-code.sh"
   test -f "$archive_source_dir/deploy/server/release.sh"
   test -f "$archive_source_dir/docker-compose.archive.yml"
-  test -f "$archive_source_dir/quality/database/migrations/006_presence_retention_state.sql"
+  test -f "$archive_source_dir/quality/database/migrations/007_presence_agent_management.sql"
   printf '%s\n' "$archive_source_dir" > /opt/cs/deployment-records/archive-source-dir.txt
   sha256sum "$HOME/cs-archive-update.tar.gz" > /opt/cs/deployment-records/archive-package.sha256
   printf '新版源码目录：%s\n' "$archive_source_dir"
@@ -317,7 +317,7 @@ git -C /opt/cs-src log -1 --oneline
 expected_archive_commit='粘贴第2.3节记录的完整SHA'
 actual_archive_commit=$(git -C /opt/cs-src rev-parse HEAD)
 test "$actual_archive_commit" = "$expected_archive_commit" || { echo '源码 SHA 不一致，停止发布。'; exit 1; }
-test -f /opt/cs-src/quality/database/migrations/006_presence_retention_state.sql
+test -f /opt/cs-src/quality/database/migrations/007_presence_agent_management.sql
 printf '%s\n' /opt/cs-src > /opt/cs/deployment-records/archive-source-dir.txt
 printf '%s\n' "$actual_archive_commit" > /opt/cs/deployment-records/archive-new-source-commit.txt
 ```
@@ -335,7 +335,7 @@ printf '%s\n' "$actual_archive_commit" > /opt/cs/deployment-records/archive-new-
   bash "$archive_source_dir/deploy/server/sync-code.sh" "$archive_source_dir" /opt/cs
   cmp -s /opt/cs/Dockerfile "$archive_source_dir/deploy/server/Dockerfile.backend-only"
   test -f /opt/cs/docker-compose.archive.yml
-  test -f /opt/cs/quality/database/migrations/006_presence_retention_state.sql
+  test -f /opt/cs/quality/database/migrations/007_presence_agent_management.sql
   test -f /opt/cs/database/channels.json
   printf '%s\n' '代码同步完成，服务器原配置与数据目录保留。'
 )
@@ -533,7 +533,7 @@ docker compose --project-directory /opt/cs --env-file .env \
 
 第一次启动 `archive-postgres` 且归档数据卷为空时，PostgreSQL 镜像创建独立数据库和 `archive_admin`，自动执行挂载的 `deploy/archive/init/01-archive-roles.sh`，创建 `archive_owner`、采集/只读/质检角色以及 `archive`、`ops`、`quality` schema。
 
-初始化脚本只创建身份、schema 和默认权限，**不会创建完整业务表**；必须继续运行 001–006 迁移。原 `postgres` 容器和主数据库卷不参与此初始化。
+初始化脚本只创建身份、schema 和默认权限，**不会创建完整业务表**；必须继续运行 001–007 迁移。原 `postgres` 容器和主数据库卷不参与此初始化。
 
 ### 8.2 已有归档卷如何处理
 
@@ -566,8 +566,11 @@ bash quality/deploy/migrate.sh /opt/cs
 | `004_agent_presence` | 状态样本、坐席登记、监管范围及区间，独立 presence 角色 |
 | `005_presence_retention` | 状态历史受限过期清理基础与索引；保留原文件 |
 | `006_presence_retention_state` | 实际采样时间至少 45 天、数据库每日 04:00 截止点、持久化每日清理预算 |
+| `007_presence_agent_management` | 本地坐席删除标记与受限权限；保留历史，新采集发现现有坐席时自动恢复 |
 
-已应用且校验值一致的版本显示跳过。出现 `checksum differs` 时恢复原已应用文件并新增后续迁移，不改历史校验值。每个 SQL 自身为事务，但 001–006 整个过程不是一个总事务；中途失败可能已有前面版本提交，修复后重跑会继续核对和执行。
+本次坐席管理更新必须先执行 `007_presence_agent_management`，再启动更新后的 ICS；已运行至 006 的服务器仍需执行本节迁移，不能只替换后台页面。
+
+已应用且校验值一致的版本显示跳过。出现 `checksum differs` 时恢复原已应用文件并新增后续迁移，不改历史校验值。每个 SQL 自身为事务，但 001–007 整个过程不是一个总事务；中途失败可能已有前面版本提交，修复后重跑会继续核对和执行。
 
 迁移失败时保持应用进程停止，不继续构建启动；保留完整非密钥错误用于排查。迁移验证中的测试记录在事务回滚，不作为真实业务采集记录。脚本验证 ingest、reader、quality，以及已配置的 presence 密码登录；assignment 的真实同步还需第十一节业务验收。
 
@@ -584,7 +587,7 @@ compose=(docker compose --project-directory /opt/cs --env-file .env \
     -c "SELECT version,applied_at FROM ops.schema_migrations ORDER BY version;"'
 ```
 
-应包含完整 001–006。迁移历史用运维账号读取；不要假定 `archive_reader` 有迁移历史权限。每次新终端重新定义 `compose` 数组；下文数组写法仅适用于 Bash。
+应包含完整 001–007。迁移历史用运维账号读取；不要假定 `archive_reader` 有迁移历史权限。每次新终端重新定义 `compose` 数组；下文数组写法仅适用于 Bash。
 
 启用分配同步时再验证 assignment 的 TCP 密码认证，密码由容器已有环境引用，不出现在命令文本或输出中：
 
@@ -779,15 +782,17 @@ SQL
 
 列表导出涵盖已应用筛选选中的全部结果分页；轮次或用户被选中后导出其完整已归档消息范围，详情导出独立于列表分页。筛选结果、用户完整历史和本轮导出均只生成一个“聊天记录”工作表，包含客户、发送时间（北京时间）、发送人、发送人类型、聊天内容、会话 ID、消息 ID、消息标记和附件；首行支持筛选并冻结，正文自动换行。文件不包含说明、筛选参数或用户/轮次概况。正文为逻辑消息最新观察内容，编辑/删除历史在页面版本及原始事件中查；附件仅显示文件名和原始链接。
 
-### 11.5 验证客服状态监管
+### 11.5 验证客服状态
 
-进入“系统管理 → 客服状态监管”（`#presence`），确认当前来源、账号及坐席名单正确，采集后台启用；等待至少一个完整分钟再检查：
+进入“系统管理 → 客服状态”（`#presence`），确认当前来源、账号及坐席名单正确，采集后台启用；等待至少一个完整分钟再检查：
 
 1. `collector.last_saved_at` 持续推进，而不仅是当前目录刷新时间变化。
 2. 每日统计、单坐席全天分钟时间轴出现已结束分钟的观察；当前/未来时间单独显示。
 3. 在测试坐席上切换在线、忙碌、离线，按后续分钟观察核对，而不是要求切换瞬间反映到历史。
 4. 缺采样、未监控、未知与离线区分；关闭浏览器后采集继续运行。
 5. 按第十节检查数据库清理状态；尚未到每日 04:00 或无过期记录时，不人为造生产旧数据。
+6. 打开“每日状态时长 → 坐席管理”，删除已离开 Chatwoot 的旧坐席，确认默认名单不再显示；勾选“查看已删除坐席历史”，核对原有统计和时间轴仍可查看。
+7. 使用测试坐席验证误删：本地删除后等待下一次新的后台分钟采集，确认 Chatwoot 仍在册的坐席自动恢复、原历史分钟不丢失。删除操作不修改 Chatwoot，当前实时坐席仍按 Chatwoot 名单展示；历史继续遵循45天保留期。
 
 只读检查已保存样本：
 
@@ -803,7 +808,7 @@ SQL
 
 使用原测试渠道复查自动回复、转人工/分配、解决会话、原管理后台、FAQ/知识库查询及已启用的提醒功能；核对原模型、提示词、渠道映射未被替换。与发布前健康基线比较，确认原业务仍可使用后结束维护。
 
-记录发布 SHA 或更新包 SHA256、备份目录、001–006迁移记录、三个进程版本、健康状态、真实消息和页面验收结果、维护开始/结束时间及已接受的漏收窗口。不要保存 Token、Secret、原始客户内容到普通发布记录。
+记录发布 SHA 或更新包 SHA256、备份目录、001–007迁移记录、三个进程版本、健康状态、真实消息和页面验收结果、维护开始/结束时间及已接受的漏收窗口。不要保存 Token、Secret、原始客户内容到普通发布记录。
 
 ## 十二、后续常规更新与只改配置
 

@@ -246,13 +246,41 @@ class PresenceRuntime:
                 next_tick = loop.time() + self.PERIOD_SECONDS
             await asyncio.sleep(max(0, next_tick - loop.time()))
 
-    async def daily(self, day: date | None = None):
-        return await self._history("daily", day)
+    async def daily(self, day: date | None = None, *, include_hidden=False):
+        return await self._history("daily", day, **({"include_hidden": True} if include_hidden else {}))
+
+    async def agents(self, page=1, page_size=50, include_hidden=False):
+        return await self._management("list_agents", page=page, page_size=page_size, include_hidden=include_hidden)
+
+    async def remove_agent(self, source_key, account_id, agent_id):
+        return await self._management("remove_agent", agent_id,
+                                      expected_scope=(source_key, account_id), now=datetime.now(timezone.utc))
+
+    async def _management(self, method, *args, expected_scope=None, **kwargs):
+        base = {"agents": [], "collector": self.state()}
+        if not self.enabled:
+            return {**base, "status": "disabled"}
+        if self.query_runtime is None or self.executor is None:
+            return {**base, "status": "unavailable"}
+        try:
+            directory = self.query_runtime.get_directory()
+            if not directory.configured:
+                return {**base, "status": "unconfigured"}
+            scope = (self.settings.source_key, directory.account_id)
+            if expected_scope is not None and tuple(map(str, expected_scope)) != tuple(map(str, scope)):
+                return {**base, "status": "scope_changed"}
+            result = await self._execute(self._repository_call, method, *scope, *args, **kwargs)
+            return {**base, **result}
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.warning("Archive presence roster management unavailable: %s", type(error).__name__)
+            return {**base, "status": "unavailable"}
 
     async def timeline(self, day: date | None, agent_id: int):
         return await self._history("timeline", day, agent_id)
 
-    async def _history(self, method, day, *scope):
+    async def _history(self, method, day, *scope, **kwargs):
         now = datetime.now(timezone.utc)
         day = day or now.astimezone(BEIJING).date()
         metadata = retention_metadata(now)
@@ -270,7 +298,7 @@ class PresenceRuntime:
                 return {**base, "status": "unconfigured"}
             result = await self._execute(self._repository_call, method, day,
                                          self.settings.source_key, directory.account_id, *scope,
-                                         now)
+                                         now, **kwargs)
             return {**base, **result, "collector": self.state()}
         except asyncio.CancelledError:
             raise
