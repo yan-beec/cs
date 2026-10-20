@@ -191,6 +191,11 @@ docker compose version
 ```bash
 # 与通用发布入口共用锁；保留当前会话，直到验收或回退结束。
 exec 9>"$statistics_target/.deployment.lock"
+```
+
+上面只打开锁文件，执行后仍应留在服务器提示符。再单独执行下面一条；不要把 `exec` 和 `flock` 拼成同一行，否则会替换当前 Shell 并导致 SSH 断开。
+
+```bash
 flock -n 9 || { echo '已有发布进行中，停止。'; exit 1; }
 ```
 
@@ -676,6 +681,11 @@ printf '备份完成，记录目录：%s\n' "$statistics_record"
 
 ```bash
 set -euo pipefail
+```
+
+再单独载入本次发布记录，将占位目录替换为实际值：
+
+```bash
 source "$HOME/cs-backups/statistics-实际时间戳/session.sh"
 ```
 
@@ -687,6 +697,11 @@ source "$HOME/cs-backups/statistics-实际时间戳/session.sh"
 
 ```bash
 exec 9>"$statistics_target/.deployment.lock"
+```
+
+保持两条命令分开执行，不要合并成 `exec ... flock ...`：
+
+```bash
 flock -n 9
 ```
 
@@ -930,7 +945,7 @@ fi
 
 #### 6.2.5 补齐缺失迁移
 
-整块执行本次增量迁移。已有角色的密码输入只在单次迁移进程中移除，避免重设已有密码。
+整块执行本次增量迁移。已有角色的密码输入只在单次迁移进程中移除，避免重设已有密码。迁移过程的输出写入私有日志，终端只显示执行完成、跳过或失败提示。
 
 ```bash
 if test "$statistics_needs_migration" -eq 1; then
@@ -946,12 +961,25 @@ if test "$statistics_needs_migration" -eq 1; then
     printf '迁移失败，保持ICS/worker停止，检查私有日志：%s/migration.log\n' "$statistics_record"
     exit 1
   fi
+  printf 'PASS: 缺失迁移执行完成。日志：%s/migration.log\n' "$statistics_record"
 else
   printf '%s\n' '001-009已齐全，跳过应用迁移，继续验证。'
 fi
 ```
 
-继续条件：迁移成功，或提示 001–009 已齐全；失败时保持停止，查看本步提示的私有日志。
+继续条件：显示 `PASS: 缺失迁移执行完成`，或提示 001–009 已齐全；失败时保持停止，查看本步提示的私有日志。此时还没有完成结构和权限验证，继续第 6.2.6 步。
+
+##### 查看迁移日志（需要核对执行过程时）
+
+需要补迁移时，单独执行下面这一步查看日志末尾；版本原本齐全时不读取迁移日志。日志中的 `Applying ...` 表示开始执行对应版本，已应用且未改动的版本会显示 `unchanged migration skipped`。
+
+```bash
+if test "$statistics_needs_migration" -eq 1; then
+  tail -n 40 "$statistics_record/migration.log"
+fi
+```
+
+继续条件：没有报错；不要为了查看结果而重复执行迁移命令，最终以第 6.2.6–6.2.8 步验证为准。
 
 #### 6.2.6 验证结构、权限和现有密码登录
 
@@ -967,9 +995,10 @@ if ! "${statistics_compose[@]}" exec -T archive-postgres sh -c '
   printf '验证失败，不启动新版应用；检查私有日志：%s/migration-verify.log\n' "$statistics_record"
   exit 1
 fi
+printf '%s\n' 'PASS: 归档结构、权限及现有密码登录验证通过。'
 ```
 
-继续条件：没有失败提示；验证日志末尾有 `PASS: capture schema, append-only evidence, task permissions and account authentication.`。
+继续条件：终端显示 `PASS: 归档结构、权限及现有密码登录验证通过`；验证日志末尾有 `PASS: capture schema, append-only evidence, task permissions and account authentication.`。
 
 #### 6.2.7 保存迁移后的校验记录
 
@@ -1062,7 +1091,19 @@ sha256sum -c "$statistics_record/config-before.sha256"
 "${statistics_compose[@]}" up -d --no-deps --no-build --pull never --force-recreate ics-agent
 ```
 
-继续条件：ICS 创建并启动成功；接下来按第 7.1 节等待健康。
+继续条件：ICS 创建并启动成功。再单独执行下面的只读检查，确认这次操作确实更新了目标容器。
+
+```bash
+statistics_updated_container=$("${statistics_compose[@]}" ps -aq ics-agent)
+if test -n "$statistics_updated_container"; then
+  docker inspect -f 'Created={{.Created}} StartedAt={{.State.StartedAt}} Status={{.State.Status}}' \
+    "$statistics_updated_container" || printf '%s\n' '读取容器信息失败，先核对上方错误。'
+else
+  printf '%s\n' '未找到ICS容器，先核对发布会话和Compose项目参数。'
+fi
+```
+
+继续条件：`Created` 是本次重新创建的时间，且 `Status=running`。时间为 UTC，北京时间加 8 小时。若仍是旧容器的创建时间或状态为 `exited`，不要进入健康检查等待；先核对上一步的实际输出、原发布参数和日志。
 
 #### 6.3.3 按原状态恢复 worker
 
@@ -1087,26 +1128,86 @@ receiver、worker 与 ICS 沿用同一个镜像标签：构建更新标签，不
 
 #### 7.1.1 等待 ICS 健康
 
-本步会自动重试，等待模型预热和应用就绪；整块执行。
+本步只查询容器状态和健康接口，不重启容器。下面分步检查，失败立即显示原因，不因检查失败退出 SSH。健康检查不依赖前面会话中的 Compose 数组，可以在新 SSH 会话中执行；继续第 7.1.2 节前，仍须按第四节恢复发布参数。
+
+##### 7.1.1.1 找到 ICS 容器
+
+按原项目名查找，包含已经停止的容器。项目名不是 `cs` 时修改本步对应值。
+
+```bash
+statistics_health_project=${statistics_project:-cs}
+statistics_health_container=$(docker ps -aq \
+  --filter "label=com.docker.compose.project=$statistics_health_project" \
+  --filter 'label=com.docker.compose.service=ics-agent')
+printf 'ICS容器ID：%s\n' "$statistics_health_container"
+```
+
+继续条件：恰好显示一个容器 ID。为空或显示多个时停止，不进入下一步。
+
+##### 7.1.1.2 检查容器是否正在运行
+
+查看状态、退出码和内存终止标记，不输出完整容器配置。
+
+```bash
+if test -n "${statistics_health_container:-}"; then
+  docker inspect -f 'Status={{.State.Status}} ExitCode={{.State.ExitCode}} OOMKilled={{.State.OOMKilled}} StartedAt={{.State.StartedAt}} FinishedAt={{.State.FinishedAt}}' \
+    "$statistics_health_container" || printf '%s\n' '读取容器状态失败，先处理上方错误。'
+else
+  printf '%s\n' '缺少容器ID，先完成第7.1.1.1步。'
+fi
+```
+
+继续条件：`Status=running`。`exited`、`dead` 或 `restarting` 时先查看下面的日志，不反复等待健康接口。退出码 137 表示进程被强制终止，需结合 `OOMKilled` 和日志判断原因。确认第 6.3.2 步已更新容器，不直接启动旧镜像绕过迁移后的应用更新。
+
+##### 7.1.1.3 检查一次健康接口
+
+单次 HTTP 请求超时为 3 秒，失败直接显示原因。若日志显示应用仍在正常初始化，等初始化完成后再执行本步；本步不会重复启动应用。
 
 ```bash
 statistics_healthy=0
-for statistics_attempt in $(seq 1 60); do
-  if "${statistics_compose[@]}" exec -T ics-agent python -c '
+if test -n "${statistics_health_container:-}" && docker exec "$statistics_health_container" python -c '
 import os, urllib.request
 port = os.environ.get("PORT", "3001")
 with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=3) as r:
     assert r.status == 200
-' >/dev/null 2>&1; then
-    statistics_healthy=1
-    break
-  fi
-  sleep 5
-done
-test "$statistics_healthy" -eq 1 || { echo 'ICS健康检查超时，停止验收并检查日志或回退。'; exit 1; }
+'; then
+  statistics_healthy=1
+  printf '%s\n' 'PASS: ICS健康接口返回200，可以继续验收。'
+else
+  printf '%s\n' '健康检查未通过，请先检查上方错误和启动日志，暂不继续验收。'
+fi
 ```
 
-继续条件：没有健康检查超时提示。
+继续条件：明确显示 `PASS: ICS健康接口返回200`。
+
+##### 健康检查未通过时：查看容器日志
+
+本步只查看日志，不重新创建或重启容器。
+
+```bash
+if test -n "${statistics_health_container:-}"; then
+  docker logs --tail 80 "$statistics_health_container" || printf '%s\n' '读取容器日志失败，先处理上方错误。'
+else
+  printf '%s\n' '缺少容器ID，先完成第7.1.1.1步。'
+fi
+```
+
+`ics_agent.app.serve` 会把应用日志另存为文件，容器日志为空时不能视为启动正常。继续查看下面的应用日志。
+
+##### 健康检查未通过时：查看应用日志
+
+沿用原日志目录；原部署设置过其他位置时使用原路径。注意日志时间，旧业务日志不代表新容器已经启动。
+
+```bash
+statistics_health_log="${statistics_target:-/opt/cs}/log/uvicorn-admin.stderr.log"
+if test -r "$statistics_health_log"; then
+  tail -n 80 "$statistics_health_log"
+else
+  printf '应用日志不存在或不可读：%s\n' "$statistics_health_log"
+fi
+```
+
+处理启动或退出原因后，再检查一次健康接口。容器持续退出时，不把等待预热当作恢复措施。健康检查成功后才继续第 7.1.2 节。
 
 #### 7.1.2 查看服务和配置状态
 
@@ -1226,7 +1327,17 @@ set -euo pipefail
 umask 077
 source "$HOME/cs-backups/statistics-实际时间戳/session.sh"
 cd "$statistics_target"
+```
+
+单独打开锁文件：
+
+```bash
 exec 9>"$statistics_target/.deployment.lock"
+```
+
+再单独获取锁，不与上一条合并：
+
+```bash
 flock -n 9 || { echo '发布锁仍被占用，请先结束原发布会话。'; exit 1; }
 ```
 
