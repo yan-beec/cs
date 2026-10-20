@@ -443,7 +443,7 @@ class QueryDatabaseTest(unittest.TestCase):
 
     def test_customer_history_exposes_chatwoot_contact_profile_and_backfills_old_projection(self):
         incoming = event(1)
-        profile = {"id": 42, "type": "contact", "name": "客户甲",
+        profile = {"id": 42, "type": "contact", "name": "客户甲", "identifier": "h5-user-42",
                    "phone_number": "+86 13800000000",
                    "additional_attributes": {"description": "VIP 联系人备注"}}
         incoming["payload"]["sender"] = dict(profile)
@@ -452,7 +452,7 @@ class QueryDatabaseTest(unittest.TestCase):
         self.drain()
         customer = self.reader.list_customers(ArchiveFilters(source_key=self.source, account_id=1))["items"][0]
         history = self.reader.customer_history(customer["customer_id"])
-        expected = {"chatwoot_user_id": "42", "phone_number": "+86 13800000000", "contact_note": "VIP 联系人备注"}
+        expected = {"h5_user_id": "h5-user-42", "chatwoot_user_id": "42", "phone_number": "+86 13800000000", "contact_note": "VIP 联系人备注"}
         for key, value in expected.items():
             self.assertEqual(history["customer"][key], value)
         round_id = self.reader.list_rounds(ArchiveFilters(source_key=self.source, account_id=1))["items"][0]["round_id"]
@@ -461,7 +461,7 @@ class QueryDatabaseTest(unittest.TestCase):
             self.assertEqual(detail["round"][key], value)
         # Simulate a pre-profile projection. The read path can recover contact
         # information from immutable snapshots without a migration or replay.
-        self.admin.execute("UPDATE ops.customer_index SET data=data-'chatwoot_user_id'-'phone_number'-'contact_note' WHERE customer_id=%s",
+        self.admin.execute("UPDATE ops.customer_index SET data=data-'h5_user_id'-'chatwoot_user_id'-'phone_number'-'contact_note' WHERE customer_id=%s",
                            (customer["customer_id"],))
         recovered = self.reader.customer_history(customer["customer_id"])["customer"]
         for key, value in expected.items():

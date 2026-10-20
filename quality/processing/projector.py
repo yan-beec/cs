@@ -110,6 +110,10 @@ def contact_profile(contact):
     contact = obj(contact)
     additional = obj(contact.get("additional_attributes"))
     custom = obj(contact.get("custom_attributes"))
+    h5_user_id = text(contact.get("identifier") or contact.get("userId") or contact.get("user_id")
+                      or contact.get("h5_user_id") or additional.get("app_user_id")
+                      or additional.get("userId") or additional.get("user_id")
+                      or custom.get("app_user_id") or custom.get("userId") or custom.get("user_id"))
     phone = text(contact.get("phone_number") or contact.get("phone") or
                  additional.get("phone_number") or custom.get("phone_number"))
     note = None
@@ -121,7 +125,8 @@ def contact_profile(contact):
                 break
         if note is not None:
             break
-    return {"chatwoot_user_id": text(contact.get("id") or contact.get("user_id")),
+    return {"h5_user_id": h5_user_id,
+            "chatwoot_user_id": text(contact.get("id") or contact.get("user_id")),
             "phone_number": phone, "contact_note": note}
 
 

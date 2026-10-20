@@ -61,12 +61,14 @@ class ProcessingProjectionTest(unittest.TestCase):
     def test_contact_profile_keeps_chatwoot_user_phone_and_note(self):
         incoming = event(1)
         incoming["payload"]["sender"].update(
+            identifier="h5-user-42",
             phone_number="+86 13800000000",
             additional_attributes={"description": "VIP 联系人备注"},
             custom_attributes={"app_user_id": "visitor-42"},
         )
         result = project(incoming)
         self.assertEqual(result.customer["contact_id"], "42")
+        self.assertEqual(result.customer["data"]["h5_user_id"], "h5-user-42")
         self.assertEqual(result.customer["data"]["chatwoot_user_id"], "42")
         self.assertEqual(result.customer["data"]["phone_number"], "+86 13800000000")
         self.assertEqual(result.customer["data"]["contact_note"], "VIP 联系人备注")

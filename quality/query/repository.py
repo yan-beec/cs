@@ -226,13 +226,17 @@ def _contact_profile(value):
         return {}
     additional = value.get("additional_attributes") if isinstance(value.get("additional_attributes"), dict) else {}
     custom = value.get("custom_attributes") if isinstance(value.get("custom_attributes"), dict) else {}
+    h5_user_id = next((source.get(key) for source in (value, additional, custom)
+                       for key in ("identifier", "userId", "user_id", "h5_user_id", "app_user_id")
+                       if isinstance(source, dict) and source.get(key) not in (None, "")), None)
     phone = next((value.get(key) for source in (value, additional, custom)
                   for key in ("phone_number", "phone")
                   if isinstance(source, dict) and source.get(key) not in (None, "")), None)
     note = next((source.get(key) for source in (value, additional, custom)
                  for key in ("description", "note", "notes", "contact_note", "contact_notes")
                  if isinstance(source, dict) and isinstance(source.get(key), str) and source.get(key).strip()), None)
-    return {"chatwoot_user_id": str(value.get("id") or value.get("user_id")) if value.get("id") or value.get("user_id") else None,
+    return {"h5_user_id": str(h5_user_id) if h5_user_id is not None else None,
+            "chatwoot_user_id": str(value.get("id") or value.get("user_id")) if value.get("id") or value.get("user_id") else None,
             "phone_number": str(phone) if phone is not None else None,
             "contact_note": note}
 
@@ -486,7 +490,7 @@ class QueryRepository:
     def _customer_profile(self, connection, customer: dict, customer_profile=None):
         """Fill contact fields for new and pre-profile customer projections."""
         data = customer.get("data") if isinstance(customer.get("data"), dict) else {}
-        profile = {key: data.get(key) for key in ("chatwoot_user_id", "phone_number", "contact_note")}
+        profile = {key: data.get(key) for key in ("h5_user_id", "chatwoot_user_id", "phone_number", "contact_note")}
         if not profile["chatwoot_user_id"] and customer.get("contact_id"):
             profile["chatwoot_user_id"] = str(customer["contact_id"])
         candidates = [customer_profile] if customer_profile is not None else []

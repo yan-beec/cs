@@ -1676,7 +1676,7 @@ async def _has_available_handoff_agent(
 async def _select_handoff_agent(
     event: ChatwootWebhookEvent,
 ) -> str | None:
-    """从在线坐席中按轮询游标预留一个容量未满的坐席。"""
+    """从在线坐席中优先预留上次成功分配的坐席，否则轮询未满员坐席。"""
     loaded = await _load_handoff_agents(event)
     if loaded is None:
         return None

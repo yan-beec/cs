@@ -336,19 +336,181 @@ class HandoffRepositoryPostgresTest(unittest.TestCase):
                 (self.account_id, conversation_id),
             ).fetchone()[0]
 
-    def _prepare_assignment_round(self, *, trigger="101", agent="10", at=None):
+    def _prepare_assignment_round(
+        self, *, trigger="101", agent="10", at=None, conversation_id="1"
+    ):
         at = at or datetime(2026, 10, 18, 8, tzinfo=timezone.utc)
         control = self.repository.record_user_message(
-            account_id=self.account_id, conversation_id="1", thread_id="unused",
+            account_id=self.account_id, conversation_id=conversation_id, thread_id="unused",
             message_id=trigger, chatwoot_status="pending", message_at=at,
         )
-        self.assertEqual(self._reserve("1", agents=[agent]), agent)
+        self.assertEqual(self._reserve(conversation_id, agents=[agent]), agent)
         control, _ = self.repository.request_handoff(
-            account_id=self.account_id, conversation_id="1", thread_id=control.active_thread_id,
+            account_id=self.account_id, conversation_id=conversation_id, thread_id=control.active_thread_id,
             reason="explicit_keyword", message_id=trigger, chatwoot_status="pending",
         )
-        self.assertEqual(self._handoff_round(), control.active_thread_id)
+        self.assertEqual(self._handoff_round(conversation_id), control.active_thread_id)
         return control
+
+    def _completed_assignment(self, *, agent="10", trigger="101", at=None, conversation_id="1"):
+        control = self._prepare_assignment_round(
+            agent=agent, trigger=trigger, at=at, conversation_id=conversation_id,
+        )
+        self.repository.mark_handoff_action(
+            account_id=self.account_id, conversation_id=conversation_id,
+            action="assignment_applied", expected_round_id=control.active_thread_id,
+            expected_agent_id=agent,
+        )
+        self.repository.record_conversation_status(
+            account_id=self.account_id, conversation_id=conversation_id, status="resolved",
+            event_at=control.session_started_at + timedelta(minutes=1),
+        )
+        return control
+
+    def _next_assignment_round(self, *, at, trigger="301", conversation_id="1"):
+        return self.repository.record_user_message(
+            account_id=self.account_id, conversation_id=conversation_id, thread_id="unused",
+            message_id=trigger, chatwoot_status="pending", message_at=at,
+        )
+
+    def test_previous_agent_survives_resolution_restart_and_retry(self):
+        self._initialize()
+        first = self._completed_assignment()
+        self.repository = ConversationControlRepository(self.connections)
+        self.repository.ensure_table()
+        current = self._next_assignment_round(at=first.session_started_at + timedelta(minutes=2))
+        self.assertNotEqual(current.active_thread_id, first.active_thread_id)
+        self.assertIsNone(current.assigned_agent_id)
+        # The ordinary cursor would select 11 after the previous allocation to 10.
+        self.assertEqual(self._reserve("1"), "10")
+
+        def unexpected_load():
+            self.fail("A retry must reuse its reservation without selecting another agent.")
+
+        self.assertEqual(self._reserve("1", agents=["11"], loader=unexpected_load), "10")
+        self.assertEqual(self._active_reservations(), [("1", "10")])
+
+    def test_full_previous_agent_falls_back_to_round_robin(self):
+        self._initialize()
+        first = self._completed_assignment(agent="11")
+        self._next_assignment_round(at=first.session_started_at + timedelta(minutes=2))
+        opened = {"11": {f"old-{index}" for index in range(5)}}
+        self.assertEqual(self._reserve("1", opened=opened), "12")
+
+    def test_previous_agent_capacity_includes_other_scope_reservations(self):
+        self._initialize()
+        first = self._completed_assignment(agent="11")
+        self._next_assignment_round(at=first.session_started_at + timedelta(minutes=2))
+        self._prepare("2")
+        self.assertEqual(self._reserve("2", agents=["11"], scope="inbox-2"), "11")
+        opened = {"11": {f"old-{index}" for index in range(4)}}
+        self.assertEqual(self._reserve("1", opened=opened), "12")
+
+    def test_unavailable_previous_agent_does_not_prefer_an_older_online_agent(self):
+        self._initialize()
+        first = self._completed_assignment(agent="12")
+        self._completed_assignment(
+            agent="11", trigger="201", at=first.session_started_at + timedelta(minutes=2),
+        )
+        self._next_assignment_round(at=first.session_started_at + timedelta(minutes=4))
+        # Online/Inbox/Team filtering removed 11. Fall back to the cursor's 10,
+        # rather than finding the older, still-online allocation to 12.
+        self.assertEqual(self._reserve("1", agents=["10", "12"]), "10")
+
+    def test_latest_successful_round_wins_over_recording_and_delivery_time(self):
+        self._initialize()
+        first = self._completed_assignment(agent="12")
+        self._completed_assignment(
+            agent="11", trigger="201", at=first.session_started_at + timedelta(minutes=2),
+        )
+        with self.connections.acquire() as connection:
+            connection.execute(
+                f"UPDATE {ASSIGNMENT_OUTBOX_TABLE} SET delivered_at=CURRENT_TIMESTAMP"
+            )
+            connection.execute(
+                f"UPDATE {ASSIGNMENT_OUTBOX_TABLE} SET recorded_at=%s WHERE business_round_id=%s",
+                (first.session_started_at + timedelta(days=10), first.active_thread_id),
+            )
+        self._next_assignment_round(at=first.session_started_at + timedelta(minutes=4))
+        self.assertEqual(self._reserve("1"), "11")
+
+    def test_unsuccessful_handoff_does_not_replace_the_previous_successful_agent(self):
+        self._initialize()
+        first = self._completed_assignment(agent="12")
+        self._prepare_assignment_round(
+            agent="10", trigger="201", at=first.session_started_at + timedelta(minutes=2),
+        )
+        self.repository.record_conversation_status(
+            account_id=self.account_id, conversation_id="1", status="resolved",
+            event_at=first.session_started_at + timedelta(minutes=3),
+        )
+        self._next_assignment_round(at=first.session_started_at + timedelta(minutes=4))
+        self.assertEqual(self._reserve("1"), "12")
+
+    def test_ai_only_round_does_not_clear_the_previous_successful_agent(self):
+        self._initialize()
+        first = self._completed_assignment()
+        self._next_assignment_round(
+            at=first.session_started_at + timedelta(minutes=2), trigger="201",
+        )
+        self.repository.record_conversation_status(
+            account_id=self.account_id, conversation_id="1", status="resolved",
+            event_at=first.session_started_at + timedelta(minutes=3),
+        )
+        self._next_assignment_round(at=first.session_started_at + timedelta(minutes=4))
+        self.assertEqual(self._reserve("1"), "10")
+
+    def test_assignment_history_is_scoped_to_account_conversation_and_earlier_rounds(self):
+        self._initialize()
+        first = self._completed_assignment(agent="11")
+        current = self._next_assignment_round(at=first.session_started_at + timedelta(minutes=4))
+        foreign_account = self.account_id + "-other"
+        self.repository.record_user_message(
+            account_id=foreign_account, conversation_id="1", thread_id="unused",
+            message_id="999", chatwoot_status="pending", message_at=current.session_started_at,
+        )
+        self._next_assignment_round(at=current.session_started_at, conversation_id="2")
+        snapshots = [
+            (foreign_account, "1", "foreign-account", "10", timedelta(minutes=-1)),
+            (self.account_id, "2", "foreign-conversation", "12", timedelta(minutes=-1)),
+            (self.account_id, "1", current.active_thread_id, "12", timedelta()),
+            (self.account_id, "1", "future-round", "10", timedelta(minutes=1)),
+        ]
+        with self.connections.acquire() as connection:
+            for account_id, conversation_id, round_id, agent_id, offset in snapshots:
+                connection.execute(
+                    f"""INSERT INTO {ASSIGNMENT_OUTBOX_TABLE}
+                        (account_id, conversation_id, business_round_id, agent_id,
+                         trigger_message_id, session_started_at, evidence_kind)
+                        VALUES (%s,%s,%s,%s,'999',%s,'assignment_applied')""",
+                    (account_id, conversation_id, round_id, agent_id,
+                     current.session_started_at + offset),
+                )
+        self.assertEqual(self._reserve("1"), "11")
+
+    def test_concurrent_returning_customers_respect_capacity_and_fall_back(self):
+        self._initialize()
+        count = 8
+        for index in range(count):
+            conversation_id = str(index + 1)
+            first = self._completed_assignment(conversation_id=conversation_id)
+            self._next_assignment_round(
+                at=first.session_started_at + timedelta(minutes=2), conversation_id=conversation_id,
+            )
+        gate = threading.Barrier(count)
+
+        def reserve(index):
+            gate.wait(timeout=10)
+            return self._reserve(
+                str(index + 1), agents=["10", "11"], scope=f"inbox-{index % 3}", capacity=2,
+            )
+
+        with ThreadPoolExecutor(max_workers=count) as executor:
+            results = list(executor.map(reserve, range(count)))
+        self.assertEqual(results.count("10"), 2)
+        self.assertEqual(results.count("11"), 2)
+        self.assertEqual(results.count(None), 4)
+        self.assertEqual(len(self._active_reservations()), 4)
 
     def test_first_handoff_insert_records_its_round_and_release_clears_proof(self):
         self._initialize()

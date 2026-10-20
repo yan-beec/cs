@@ -237,11 +237,13 @@ assert.equal(node('qualityReviewRound').value,'r3');
     "customer_history_shows_chatwoot_contact_profile": r"""
 ui.state.token='session'; ui.state.view='quality'; ui.qualityState.ready=true;
 const opened=ui.openQualityDetail('customer','c1');
-respond(0,{customer:{customer_id:'c1',display_name:'客户甲',contact_id:'42',chatwoot_user_id:'42',
+respond(0,{customer:{customer_id:'c1',display_name:'客户甲',contact_id:'42',chatwoot_user_id:'42',h5_user_id:'h5-user-42',
   phone_number:'+86 13800000000',contact_note:'VIP 联系人备注',business_user_id:'visitor-42',round_count:2,message_count:8},
   messages:[],total:0,page:1}); await opened;
 const meta=node('qualityDetailMeta').innerHTML;
-for (const value of ['Chatwoot 用户 ID','42','手机号','+86 13800000000','联系人备注','VIP 联系人备注']) assert.equal(meta.includes(value),true,value);
+for (const value of ['Chatwoot 用户 ID','42','H5 用户 ID（userId）','h5-user-42','手机号','+86 13800000000','联系人备注','VIP 联系人备注']) assert.equal(meta.includes(value),true,value);
+assert.equal(meta.includes('业务用户'),false);
+assert.equal((meta.match(/<span>/g) || []).length, 8);
 """,
     "failed_review_save_preserves_draft_and_blocks_export_of_unsaved_changes": r"""
 ui.state.token='session'; ui.state.view='quality'; ui.qualityState.ready=true;
@@ -1208,12 +1210,9 @@ for (const [index, item] of items.entries()) {
  const meta = node('qualityDetailMeta').innerHTML;
  const expectedReception = ['纯 AI 接待','纯 AI 接待','人工介入','人工介入','人工介入','待确认'][index];
  assert.equal(meta.includes(`接待分类：${expectedReception}`), true, item.round_id);
- assert.equal(meta.includes(`状态：${item.status === 'active' ? '未结束' : '已解决'}`), true);
+ assert.equal(meta.includes('状态：'), false);
  assert.equal(/尚未定型|暂未人工接入|仅 AI 接待|进行中/.test(meta), false);
- if (item.handoff_result) {
-  assert.equal(meta.includes(`转接结果：${item.handoff_result === 'requested' ? '已申请' : '已确认接管'}`), true);
-  assert.equal(meta.includes(`转接结果：${item.handoff_result === 'requested' ? '已确认接管' : '已申请'}`), false);
- }
+ assert.equal(meta.includes('转接结果：'), false);
 }
 for (const reception of ['ai_only','human']) {
  node('qualityReception').value = reception;
@@ -1252,27 +1251,16 @@ for (const [index, item] of items.entries()) {
  respond(index + 1, {round:item,messages:[{message_id:'999',sender_role:'agent',sender_name:'Different timeline author',is_private:true,round_id:item.round_id}],total:1,page:1}); await detail;
  const meta = node('qualityDetailMeta').innerHTML;
  assert.equal(meta.includes(`<span>本轮责任坐席：${responsibleCells[index]}</span>`), true, item.round_id);
- assert.equal(meta.includes('坐席参与及分配记录（非责任依据）'), true);
- assert.equal(meta.includes('Original A（历史分配（非责任））'), true);
- assert.equal(meta.includes('Actual B（公开回复 1 条）'), true);
- assert.equal(meta.includes('Private note author（有内部备注）'), true);
+ assert.equal(meta.includes('坐席参与及分配记录（非责任依据）'), false);
+ assert.equal(meta.includes('Original A（历史分配（非责任））'), false);
+ assert.equal(meta.includes('Actual B（公开回复 1 条）'), false);
+ assert.equal(meta.includes('Private note author（有内部备注）'), false);
  assert.equal(meta.includes('Different timeline author'), false, 'the page must not recompute responsibility from timeline messages');
- if (item.responsibility_basis === 'ics_assignment') {
-  assert.equal(meta.includes('责任依据：本轮 ICS 原始分配'), true);
-  assert.equal(meta.includes(`ICS 原始分配时间：${ui.qualityTime(item.responsible_assigned_at)}`), true);
-  assert.equal(meta.includes(`分配事件 ID：${item.responsibility_event_id ?? '待确认'}`), true);
-  assert.equal(meta.includes(`触发消息 ID：${item.responsibility_trigger_message_id ?? '待确认'}`), true);
-  if (index === 0) assert.equal(meta.includes('ICS 轮次标识：&lt;external-round&gt;'), true);
- } else {
-  assert.equal(meta.includes('ICS 原始分配时间：'), false); assert.equal(meta.includes('分配事件 ID：'), false);
-  if (item.responsibility_basis === 'assignment_unobserved') assert.equal(meta.includes('责任依据：未记录 ICS 分配'), true);
-  if (item.responsibility_basis === 'assignment_conflict') assert.equal(meta.includes('责任依据：ICS 分配记录冲突，待确认'), true);
- }
- if (item.last_public_agent_id) {
-  assert.equal(meta.includes('实际最后人工回复人（非责任依据）：Actual B'), true);
-  assert.equal(meta.includes(`实际最后人工回复时间：${ui.qualityTime(item.last_public_reply_at)}`), true);
-  assert.equal(meta.includes('实际最后人工回复消息 ID：703'), true);
- } else assert.equal(meta.includes('实际最后人工回复人（非责任依据）：'), false);
+ assert.equal(meta.includes('责任依据：'), false);
+ assert.equal(meta.includes('ICS 原始分配时间：'), false);
+ assert.equal(meta.includes('实际最后人工回复人（非责任依据）：'), false);
+ assert.equal(meta.includes('实际最后人工回复时间：'), false);
+ assert.equal(meta.includes('实际最后人工回复消息 ID：'), false);
  assert.equal(meta.includes('Stale identity'), false); assert.equal(meta.includes('Untrusted identity'), false);
  assert.equal(meta.includes('Conflicting identity'), false); assert.equal(meta.includes('Old reply owner'), false);
  assert.equal(meta.includes('old-evidence'), false); assert.equal(meta.includes('<Original A>'), false);
@@ -1314,11 +1302,10 @@ const detail = ui.openQualityDetail('round','original');
 respond(1,{round:items[0],messages:[message],total:1,page:1}); await detail;
 const metadata = node('qualityDetailMeta').innerHTML;
 assert.equal(metadata.includes('<span>本轮责任坐席：beec</span>'),true);
-assert.equal(metadata.includes('<span>轮内最后分配（非责任）：QQ</span>'),true);
-assert.equal(metadata.includes('实际最后人工回复人（非责任依据）：QQ'),true);
-assert.equal(metadata.includes('beec（历史分配（非责任））'),true);
-assert.equal(metadata.includes('QQ（公开回复 1 条，历史分配（非责任））'),true);
-assert.equal(metadata.includes('责任依据：本轮 ICS 原始分配'),true);
+assert.equal(metadata.includes('轮内最后分配（非责任）：'),false);
+assert.equal(metadata.includes('实际最后人工回复人（非责任依据）：'),false);
+assert.equal(metadata.includes('历史分配（非责任）'),false);
+assert.equal(metadata.includes('责任依据：本轮 ICS 原始分配'),false);
 assert.equal(node('qualityTimeline').innerHTML.includes('<strong>&lt;Archived QQ&gt;</strong>'),true);
 assert.equal(node('qualityTimeline').innerHTML.includes('原始内容 &lt;内容&gt; &amp; unchanged'),true);
 assert.equal(node('qualityTimeline').innerHTML.includes('<strong>QQ</strong>'),false);
@@ -1381,10 +1368,10 @@ for (const [index, replyName] of ['<Actual B>','Later C'].entries()) {
  respond(listIndex + 1, {round:item,messages:[message],total:1,page:1}); await detail;
  const meta = node('qualityDetailMeta').innerHTML;
  assert.equal(meta.includes('<span>本轮责任坐席：Original A</span>'), true);
- assert.equal(meta.includes('责任依据：本轮 ICS 原始分配'), true);
+ assert.equal(meta.includes('责任依据：本轮 ICS 原始分配'), false);
  const safeName = replyName === '<Actual B>' ? '&lt;Actual B&gt;' : replyName;
- assert.equal(meta.includes(`实际最后人工回复人（非责任依据）：${safeName}`), true);
- assert.equal(meta.includes(`实际最后人工回复消息 ID：${message.message_id}`), true);
+ assert.equal(meta.includes(`实际最后人工回复人（非责任依据）：${safeName}`), false);
+ assert.equal(meta.includes(`实际最后人工回复消息 ID：${message.message_id}`), false);
  const timeline = node('qualityTimeline').innerHTML;
  assert.equal(timeline.includes(`<strong>${safeName}</strong>`), true);
  assert.equal(timeline.includes(`这是 ${safeName} 的原始回复：&lt;内容&gt; &amp; 原文\n第二行`), true);
@@ -1561,13 +1548,13 @@ for (const [index, item] of items.entries()) {
  const detail = ui.openQualityDetail('round',item.round_id);
  respond(index + 1, {round:item,messages:[],total:0,page:1}); await detail;
  const meta = node('qualityDetailMeta').innerHTML;
- assert.equal(meta.includes('服务评价：'), index >= 3);
- assert.equal(meta.includes('评价反馈：'), index === 3);
+ assert.equal(meta.includes('服务评价：'), false);
+ assert.equal(meta.includes('评价反馈：'), false);
  assert.equal(meta.includes('must not show'), false);
  assert.equal(/未邀约|未评价|待评价|评价状态未知|无文字反馈/.test(meta), false);
  if (index === 3) {
-  assert.equal(meta.includes('服务评价：5 分'), true);
-  assert.equal(meta.includes('&lt;script&gt;feedback&lt;/script&gt;\n第二行'), true);
+  assert.equal(meta.includes('服务评价：5 分'), false);
+  assert.equal(meta.includes('&lt;script&gt;feedback&lt;/script&gt;\n第二行'), false);
   assert.equal(meta.includes('<script>'), false);
  }
 }

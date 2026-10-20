@@ -243,6 +243,38 @@ done
 
 继续条件：所有原配置文件可读，完整调用参数已保存；不要打印完整配置或容器环境。
 
+#### 3.7.1 确认归档覆盖文件包含 worker
+
+`ics-agent` 通常只由基础 Compose 文件定义，不能只根据 ICS 容器标签判断归档覆盖文件是否已加入。若下面检查找不到 `quality-worker`，从现有 worker 容器的标签取得它实际使用的 Compose 文件并重建调用数组；此处只读取标签和服务列表，不启动或停止容器。
+
+```bash
+statistics_has_worker=0
+while IFS= read -r statistics_service; do
+  if test "$statistics_service" = quality-worker; then statistics_has_worker=1; fi
+done < <("${statistics_compose[@]}" --profile quality-query config --services)
+if test "$statistics_has_worker" -ne 1; then
+  statistics_worker_container=$(docker ps -aq \
+    --filter "label=com.docker.compose.project=$statistics_project" \
+    --filter 'label=com.docker.compose.service=quality-worker' --format '{{.ID}}')
+  test -n "$statistics_worker_container"
+  test "$(printf '%s\n' "$statistics_worker_container" | wc -l)" -eq 1
+  statistics_worker_config_list=$(docker inspect -f \
+    '{{index .Config.Labels "com.docker.compose.project.config_files"}}' \
+    "$statistics_worker_container")
+  test -n "$statistics_worker_config_list" && test "$statistics_worker_config_list" != '<no value>'
+  IFS=',' read -r -a statistics_config_files <<< "$statistics_worker_config_list"
+  statistics_compose=(docker compose --project-directory "$statistics_target" \
+    --env-file "$statistics_target/.env" -p "$statistics_project")
+  for statistics_config in "${statistics_config_files[@]}"; do
+    test -f "$statistics_config" && test -r "$statistics_config"
+    statistics_compose+=(-f "$statistics_config")
+  done
+fi
+"${statistics_compose[@]}" --profile quality-query config --services | grep -qx 'quality-worker'
+```
+
+继续条件：最后一条命令成功；随后才能执行第 3.8 节和第 4.9 节。若找不到现有 worker 容器或覆盖文件，停止核对，不把 worker 状态误记为停止。
+
 ### 3.8 查看现有服务状态
 
 先验证组合配置，再查看服务列表。
@@ -774,6 +806,10 @@ test ! -L "$statistics_target/statistics"
 只创建并同步 `statistics/` 代码目录。 使用内容比较，不清理整个运行目录；本步权限设置仅作用于应用代码。
 
 ```bash
+test "${statistics_target:-}" = /opt/cs
+test "${statistics_source:-}" = /opt/cs-src
+test -d "$statistics_source/statistics"
+test -d "$statistics_target"
 (
   umask 022
   mkdir -p "$statistics_target/statistics"

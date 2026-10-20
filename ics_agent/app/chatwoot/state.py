@@ -360,6 +360,11 @@ class ConversationControlRepository:
                         f"ON {ASSIGNMENT_OUTBOX_TABLE} (recorded_at, account_id, conversation_id) "
                         "WHERE delivered_at IS NULL AND delivery_error_code IS NULL"
                     )
+                    cursor.execute(
+                        f"CREATE INDEX IF NOT EXISTS {ASSIGNMENT_OUTBOX_TABLE}_history_idx "
+                        f"ON {ASSIGNMENT_OUTBOX_TABLE} "
+                        "(account_id, conversation_id, session_started_at DESC)"
+                    )
                     # Upgrade only a still-open, successful current assignment.
                     # Ended/released rows cannot establish historical ownership.
                     self._record_assignment_snapshot(cursor, backfill=True)
@@ -879,9 +884,10 @@ class ConversationControlRepository:
         max_active_conversations: int = 5,
         assigned_team_id: str | None = None,
     ) -> str | None:
-        """在一个接管范围内按轮询顺序预留一个坐席。
+        """优先预留最近一次成功分配的可用坐席，否则按轮询顺序选择。
 
         游标按 Inbox/Team 分开，容量按账号内坐席的全部 open 会话计算。
+        历史仅取同一账号、同一会话的较早轮次，仍须符合当前候选范围和容量。
         在账号事务锁内获取最新负载，并将未完成转接的预留按会话去重。
         释放预留也获取同一把锁，防止旧负载快照漏掉刚完成的转接。
         """
@@ -989,6 +995,34 @@ class ConversationControlRepository:
                     if last_agent_id in candidates:
                         start = (candidates.index(last_agent_id) + 1) % len(candidates)
                     ordered = candidates[start:] + candidates[:start]
+
+                    # 只认已经成功分配的历史，不将旧预留或当前 assignee 当作
+                    # 上轮坐席。先找到最近一轮，再检查其是否在线且符合范围；
+                    # 该坐席不可用时直接轮询，不继续追溯更早的在线坐席。
+                    cursor.execute(
+                        f"""
+                        SELECT snapshot.agent_id
+                        FROM {ASSIGNMENT_OUTBOX_TABLE} AS snapshot
+                        JOIN {CONVERSATION_CONTROL_TABLE} AS control
+                          ON control.account_id = snapshot.account_id
+                         AND control.conversation_id = snapshot.conversation_id
+                        WHERE snapshot.account_id = %s
+                          AND snapshot.conversation_id = %s
+                          AND snapshot.business_round_id <> control.active_thread_id
+                          AND snapshot.session_started_at < control.session_started_at
+                        ORDER BY snapshot.session_started_at DESC,
+                                 snapshot.business_round_id DESC
+                        LIMIT 1
+                        """.strip(),
+                        (account_id, conversation_id),
+                    )
+                    previous_assignment = cursor.fetchone()
+                    previous_agent_id = (
+                        str(previous_assignment[0]) if previous_assignment else None
+                    )
+                    if previous_agent_id in candidates:
+                        ordered.remove(previous_agent_id)
+                        ordered.insert(0, previous_agent_id)
 
                     cursor.execute(
                         f"""

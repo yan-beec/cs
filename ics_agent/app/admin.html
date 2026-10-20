@@ -926,7 +926,9 @@
     .quality-reader-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
     .quality-reader-info { flex-shrink: 0; max-height: 30%; overflow: auto; padding: 8px 14px; border-bottom: 1px solid var(--line); }
     .quality-reader-info summary { color: var(--muted); cursor: pointer; font-size: 10px; }
-    .quality-reader-info .quality-meta { gap: 5px 16px; margin: 8px 0 0; font-size: 10px; }
+    .quality-reader-info .quality-meta { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; margin: 8px 0 0; font-size: 10px; }
+    .quality-reader-info .quality-meta > span { display: block; padding: 4px 0; border-bottom: 1px solid var(--line); }
+    .quality-reader-info .quality-meta > span:last-child { border-bottom: 0; }
     .quality-review { flex-shrink: 0; padding: 7px 12px; border-bottom: 1px solid var(--blue-line); background: #f5f8ff; }
     .quality-review-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
     .quality-review-toolbar strong { font-size: 11px; }
@@ -1264,7 +1266,7 @@
                 <div class="panel-header"><div class="panel-heading"><h3 id="qualityDetailTitle">对话详情</h3><p id="qualityDetailHint">完整归档时间线</p></div><div class="toolbar-actions"><button id="qualityExportDetail" class="button secondary hidden" type="button" disabled>导出本轮（Excel）</button><button id="qualityCustomerHistory" class="button secondary hidden" type="button">客户完整历史</button><button id="qualityCloseDetail" class="button tertiary" type="button" aria-label="关闭聊天窗口（Esc）">关闭 ×</button></div></div>
                 <div class="quality-reader">
                   <nav class="quality-round-sidebar" aria-label="客户对话轮次"><div class="quality-round-heading"><strong>对话轮次</strong><span id="qualityRoundCount" class="hint"></span></div><button id="qualityAllHistory" class="quality-round-item" type="button" aria-current="true">全部聊天记录</button><div id="qualityRoundList" class="quality-round-list"><div class="hint">选择客户后读取轮次。</div></div><div class="quality-round-pages"><button id="qualityRoundPrev" class="button tertiary" type="button" disabled>上一页</button><span id="qualityRoundPageInfo"></span><button id="qualityRoundNext" class="button tertiary" type="button" disabled>下一页</button></div></nav>
-                  <div class="quality-reader-main"><section id="qualityReview" class="quality-review" aria-label="本轮质检备注"><div class="quality-review-toolbar"><strong>本轮质检</strong><select id="qualityReviewRound" aria-label="质检备注所属轮次" disabled><option value="">请选择轮次</option></select><label class="quality-review-verdict" for="qualityReviewAiVerdict">AI质检<select id="qualityReviewAiVerdict" disabled><option value="pending">待定</option><option value="passed">合格</option><option value="failed">不合格</option></select></label><label class="quality-review-verdict" for="qualityReviewHumanVerdict">人工质检<select id="qualityReviewHumanVerdict" disabled><option value="pending">待定</option><option value="passed">合格</option><option value="failed">不合格</option></select></label><button id="qualityReviewSave" class="button primary" type="button" disabled>保存备注</button><button id="qualityReviewReload" class="button tertiary" type="button" disabled>重新读取</button></div><textarea id="qualityReviewRemark" rows="2" maxlength="5000" aria-label="本轮质检备注" placeholder="填写本轮对话的质检备注，最多5000字" disabled></textarea><p id="qualityReviewStatus" class="hint" role="status">选择轮次后填写，保存后长期保留并随聊天记录导出。</p></section><details class="quality-reader-info"><summary>对话资料、责任坐席及评价</summary><div id="qualityDetailMeta" class="quality-meta"></div></details><div id="qualityChatScroll" class="quality-chat-scroll"><div id="qualityTimeline" class="quality-timeline" aria-live="polite"></div>
+                  <div class="quality-reader-main"><section id="qualityReview" class="quality-review" aria-label="本轮质检备注"><div class="quality-review-toolbar"><strong>本轮质检</strong><select id="qualityReviewRound" aria-label="质检备注所属轮次" disabled><option value="">请选择轮次</option></select><label class="quality-review-verdict" for="qualityReviewAiVerdict">AI质检<select id="qualityReviewAiVerdict" disabled><option value="pending">待定</option><option value="passed">合格</option><option value="failed">不合格</option></select></label><label class="quality-review-verdict" for="qualityReviewHumanVerdict">人工质检<select id="qualityReviewHumanVerdict" disabled><option value="pending">待定</option><option value="passed">合格</option><option value="failed">不合格</option></select></label><button id="qualityReviewSave" class="button primary" type="button" disabled>保存备注</button><button id="qualityReviewReload" class="button tertiary" type="button" disabled>重新读取</button></div><textarea id="qualityReviewRemark" rows="2" maxlength="5000" aria-label="本轮质检备注" placeholder="填写本轮对话的质检备注，最多5000字" disabled></textarea><p id="qualityReviewStatus" class="hint" role="status">选择轮次后填写，保存后长期保留并随聊天记录导出。</p></section><details class="quality-reader-info"><summary>对话资料详情</summary><div id="qualityDetailMeta" class="quality-meta"></div></details><div id="qualityChatScroll" class="quality-chat-scroll"><div id="qualityTimeline" class="quality-timeline" aria-live="polite"></div>
                   <section id="qualityVersions" class="quality-versions hidden" aria-label="消息版本"><div class="quality-message-header"><div><h4 id="qualityVersionsTitle">消息观察版本</h4><p class="hint">保留创建、编辑和删除时已收到的内容；缺少最初事件时不会将后续观察标为原文。</p></div><button id="qualityCloseVersions" class="button tertiary" type="button">收起版本</button></div><div id="qualityVersionList" class="quality-timeline"></div><div class="quality-form-actions"><span id="qualityVersionsPageInfo" class="hint">第 1 页</span><div class="toolbar-actions"><button id="qualityVersionsPrev" class="button tertiary" type="button" disabled>上一页版本</button><button id="qualityVersionsNext" class="button tertiary" type="button" disabled>下一页版本</button></div></div></section>
                   </div><div class="panel-footer quality-pagination"><span id="qualityDetailPageInfo" class="hint">第 1 页</span><div class="toolbar-actions"><button id="qualityDetailPrev" class="button tertiary" type="button" disabled>上一页消息</button><button id="qualityDetailNext" class="button tertiary" type="button" disabled>下一页消息</button></div></div></div>
                 </div>
@@ -2523,49 +2525,20 @@
         if (message) openQualityVersions(message);
       }));
     };
-    const qualityDetailMetadata = (item, type) => {
-      const fields = [["来源", item.source_key], ["账号", item.account_id]];
-      if (type === "customer") {
-        fields.push(["Chatwoot 用户 ID", item.chatwoot_user_id || item.contact_id || "未知"],
-          ["手机号", item.phone_number || "未记录"], ["联系人备注", item.contact_note || "无"],
-          ["业务用户", item.business_user_id || "未关联"], ["归档轮次", item.round_count ?? "未知"], ["归档消息", item.message_count ?? "未知"]);
-      } else {
-        fields.push(["Chatwoot 用户 ID", item.chatwoot_user_id || item.contact_id || "未知"],
-          ["手机号", item.phone_number || "未记录"], ["联系人备注", item.contact_note || "无"],
-          ["Chatwoot 收件箱", qualityInboxName(item)], ["ICS 业务渠道", qualityChannelName(item.channel_key)], ["开始", qualityTime(item.started_at)], ["最近消息", qualityTime(item.last_message_at)], ["状态", qualityStatusLabel(item.status)], ["接待分类", qualityReceptionLabel(item)]);
-        fields.push(["本轮责任坐席", qualityResponsibleAgentLabel(item)], ["责任依据", { ics_assignment: "本轮 ICS 原始分配", assignment_unobserved: "未记录 ICS 分配", assignment_conflict: "ICS 分配记录冲突，待确认" }[item.responsibility_basis] || "待确认"]);
-        if (item.responsibility_basis === "ics_assignment") {
-          fields.push(["ICS 原始分配时间", qualityTime(item.responsible_assigned_at)], ["分配事件 ID", item.responsibility_event_id ?? "待确认"], ["ICS 轮次标识", item.responsibility_external_round_id ?? "待确认"], ["触发消息 ID", item.responsibility_trigger_message_id ?? "待确认"]);
-        }
-        if (item.current_assignee_id !== null && item.current_assignee_id !== undefined && item.current_assignee_id !== "") {
-          const assigned = (item.agents || []).find((agent) => String(agent.agent_id) === String(item.current_assignee_id));
-          const assignedName = qualityUsableAgentName(item.current_assignee_name, item.current_assignee_id) || assigned?.agent_name;
-          fields.push(["轮内最后分配（非责任）", qualityAgentLabel(item, item.current_assignee_id, assignedName)]);
-        }
-        if (item.last_public_agent_id !== null && item.last_public_agent_id !== undefined || item.last_public_agent_name || item.last_public_reply_at || item.last_public_message_id !== null && item.last_public_message_id !== undefined) {
-          const lastAgent = qualityAgentLabel(item, item.last_public_agent_id, item.last_public_agent_name);
-          fields.push(["实际最后人工回复人（非责任依据）", lastAgent], ["实际最后人工回复时间", qualityTime(item.last_public_reply_at)], ["实际最后人工回复消息 ID", item.last_public_message_id ?? "待确认"]);
-        }
-        if (qualityRatingLabel(item) !== "—") fields.push(["服务评价", qualityRatingLabel(item)]);
-        if (qualityRatingFeedback(item)) fields.push(["评价反馈", qualityRatingFeedback(item)]);
-        if (item.resolved_at) fields.push(["解决", qualityTime(item.resolved_at)]);
-        if (item.ended_at) fields.push(["结束", qualityTime(item.ended_at)]);
-        const composition = { ai_only: "仅机器人回复", bot_only: "仅机器人回复", human_only: "仅真人回复", agent_only: "仅真人回复", mixed: "机器人与真人均回复", bot_and_human: "机器人与真人均回复", no_reply: "暂无公开回复", none: "暂无公开回复", unknown: "待确认" };
-        if (item.reply_composition) fields.push(["回复构成", composition[item.reply_composition] || "待确认"]);
-        if (typeof item.has_agent_reply === "boolean") fields.push(["本轮客服公开回复", item.has_agent_reply ? "已有回复" : "暂无回复"]);
-        if (item.takeover_inherited) fields.push(["接管状态", "沿用上一轮人工接管"]);
-        if ((item.agents || []).length) fields.push(["坐席参与及分配记录（非责任依据）", item.agents.map((agent) => {
-          const participation = [];
-          if (agent.replied) participation.push(`公开回复 ${agent.reply_count ?? 0} 条`);
-          if (agent.was_assigned) participation.push("历史分配（非责任）");
-          if (agent.noted) participation.push("有内部备注");
-          return `${qualityAgentLabel(item, agent.agent_id, agent.agent_name)}${participation.length ? `（${participation.join("，")}）` : ""}`;
-        }).join("、")]);
-        const handoff = item.handoff_result || item.handoff_status;
-        const handoffLabels = { requested: "已申请", assigned: "已分配", completed: "已确认接管", replied: "真人已回复", failed: "转接失败", no_agent: "暂无可接待坐席", pending: "等待处理", not_requested: "未申请", none: "未申请" };
-        if (handoff) fields.push(["转接结果", handoffLabels[handoff] || "待确认"]);
-      }
-      return fields.map(([label, value]) => `<span${label === "评价反馈" ? ' class="quality-rating-feedback"' : ""}>${escapeHtml(label)}：${escapeHtml(value ?? "未知")}</span>`).join("");
+    const qualityDetailMetadata = (item, type, latestRound = null) => {
+      const round = type === "customer" ? (latestRound || item.latest_round || {}) : item;
+      const composition = { ai_only: "仅机器人回复", bot_only: "仅机器人回复", human_only: "仅真人回复", agent_only: "仅真人回复", mixed: "机器人与真人均回复", bot_and_human: "机器人与真人均回复", no_reply: "暂无公开回复", none: "暂无公开回复", unknown: "待确认" };
+      const fields = [
+        ["Chatwoot 用户 ID", item.chatwoot_user_id || round.chatwoot_user_id || item.contact_id || round.contact_id || "未知"],
+        ["H5 用户 ID（userId）", item.h5_user_id || round.h5_user_id || "未记录"],
+        ["手机号", item.phone_number || round.phone_number || "未记录"],
+        ["联系人备注", item.contact_note || round.contact_note || "无"],
+        ["Chatwoot 收件箱", qualityInboxName(round)],
+        ["接待分类", qualityReceptionLabel(round)],
+        ["本轮责任坐席", qualityResponsibleAgentLabel(round)],
+        ["回复构成", composition[round.reply_composition] || "待确认"],
+      ];
+      return fields.map(([label, value]) => '<span>' + escapeHtml(label) + '：' + escapeHtml(value ?? '未知') + '</span>').join('');
     };
     const renderQualityRoundDirectory = () => {
       const directory = qualityState.roundDirectory;
@@ -2586,6 +2559,9 @@
       $("qualityRoundPageInfo").textContent = `${directory.page} / ${pages}`;
       $("qualityRoundPrev").disabled = directory.loading || directory.page <= 1;
       $("qualityRoundNext").disabled = directory.loading || directory.page >= pages;
+      if (detail?.type === "customer" && detail.item && directory.items.length) {
+        $("qualityDetailMeta").innerHTML = qualityDetailMetadata(detail.item, "customer", directory.items[0]);
+      }
       $("qualityRoundList").querySelectorAll("[data-quality-directory-round]").forEach((button) => button.addEventListener("click", () => {
         const item = directory.items[Number(button.dataset.qualityDirectoryRound)];
         if (item) openQualityDetail("round", item.round_id, true);
