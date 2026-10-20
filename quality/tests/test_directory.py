@@ -218,7 +218,7 @@ def test_runtime_directory_failure_does_not_disable_the_archive_or_other_queries
     asyncio.run(check())
 
 
-def test_rounds_detail_and_export_share_live_names_while_message_sender_stays_original():
+def test_rounds_use_live_names_while_export_keeps_archived_message_senders():
     async def check():
         runtime = QueryRuntime()
         runtime.ready = True
@@ -244,9 +244,14 @@ def test_rounds_detail_and_export_share_live_names_while_message_sender_stays_or
             assert detail["round"]["responsible_agent_name"] == "beec"
             assert detail["messages"] == [message] and message["sender_name"] == "Historical sender"
             assert row["responsible_agent_name"] == "分配坐席1"
+            # Chat exports use archived senders and have no live directory dependency.
+            runtime.directory.enrich = AsyncMock(side_effect=AssertionError("export must not refresh the directory"))
             with patch("quality.query.runtime.ExportRepository", return_value=exporter):
                 await runtime.export("rounds", ArchiveFilters())
-            assert exporter.create_export.call_args.kwargs["agent_names"] == {("local", "1", "1"): "beec"}
+            exporter.create_export.assert_called_once()
+            assert exporter.create_export.call_args.args[0] == "rounds"
+            assert "agent_names" not in exporter.create_export.call_args.kwargs
+            runtime.directory.enrich.assert_not_awaited()
             client.list_agents.assert_called_once()
             assert runtime.ready is True
         finally:

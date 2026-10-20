@@ -1,4 +1,4 @@
-"""Bounded archive queries. No writes and no access to the ICS business pool."""
+"""Bounded archive queries and restricted review saves, separate from the ICS pool."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any
 import uuid
 
+from psycopg.errors import SerializationFailure
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
@@ -16,6 +17,10 @@ from .service_metrics import RoundServiceMetrics
 
 
 OVERVIEW_AGENT_LIMIT = 200
+
+
+class ReviewConflict(RuntimeError):
+    """A newer review was saved after the browser loaded this round."""
 
 
 @dataclass(frozen=True)
@@ -39,6 +44,8 @@ class ArchiveFilters:
     message_scope: str = "all"
     has_attachment: bool | None = None
     status: str | None = None
+    ai_review_status: str | None = None
+    human_review_status: str | None = None
 
 
 def _literal_pattern(value: str) -> str:
@@ -104,6 +111,22 @@ def round_conditions(filters: ArchiveFilters) -> tuple[str, list]:
     if filters.reception_type:
         clauses.append("r.reception_type = %s")
         values.append(filters.reception_type)
+    review_terms = []
+    review_values = []
+    for field, verdict in (("ai_status", filters.ai_review_status), ("human_status", filters.human_review_status)):
+        if verdict is not None:
+            review_terms.append(f"review.{field} = %s")
+            review_values.append(verdict)
+    if review_terms:
+        # Match both verdicts on the same round's latest saved revision.
+        review_match = ("EXISTS (SELECT 1 FROM quality.current_round_reviews review "
+                        "WHERE review.round_id=r.round_id AND " + " AND ".join(review_terms) + ")")
+        if all(verdict == "pending" for verdict in review_values):
+            # Unsaved rounds display pending in the editor and exports too.
+            review_match = (f"({review_match} OR NOT EXISTS (SELECT 1 FROM quality.current_round_reviews review "
+                            "WHERE review.round_id=r.round_id))")
+        clauses.append(review_match)
+        values.extend(review_values)
     if filters.channel_key:
         clauses.append("r.channel_key IS NULL" if filters.channel_key == "unmapped" else "r.channel_key = %s")
         if filters.channel_key != "unmapped":
@@ -156,7 +179,7 @@ def customer_conditions(filters: ArchiveFilters) -> tuple[str, list]:
         values.extend([pattern, pattern, pattern, filters.customer_query])
     round_specific = any(value is not None for value in (
         filters.round_no, filters.reception_type, filters.agent_id if filters.agent_scope != "current" else None, filters.rating_status,
-        filters.rating, filters.status,
+        filters.rating, filters.status, filters.ai_review_status, filters.human_review_status,
     )) or (filters.time_field != "message_at" and bool(filters.start or filters.end))
     if round_specific:
         where, round_values = round_conditions(replace(filters, source_key=None, account_id=None, customer_query=None)
@@ -217,11 +240,14 @@ class QueryRepository:
                 SELECT r.rolsuper, pg_has_role(current_user, 'archive_owner', 'MEMBER') AS owner,
                     has_table_privilege(current_user, 'archive.events', 'INSERT,UPDATE,DELETE,TRUNCATE') AS writes,
                     has_table_privilege(current_user, 'ops.round_index', 'SELECT') AS reads,
-                    has_table_privilege(current_user, 'ops.round_index', 'INSERT,UPDATE,DELETE,TRUNCATE') AS projection_writes
+                    has_table_privilege(current_user, 'ops.round_index', 'INSERT,UPDATE,DELETE,TRUNCATE') AS projection_writes,
+                    has_table_privilege(current_user, 'quality.current_round_reviews', 'SELECT') AS review_reads,
+                    has_function_privilege(current_user, 'quality.save_round_review(text,text,text,text,text,bigint)', 'EXECUTE') AS review_saves
                 FROM pg_roles r WHERE r.rolname=current_user
             """).fetchone()
-            if not row or row["rolsuper"] or row["owner"] or row["writes"] or row["projection_writes"] or not row["reads"]:
-                raise RuntimeError("Archive queries require the restricted reader role and migration 002_query")
+            if (not row or row["rolsuper"] or row["owner"] or row["writes"] or row["projection_writes"]
+                    or not row["reads"] or not row["review_reads"] or not row["review_saves"]):
+                raise RuntimeError("Archive queries require the restricted reader role and migrations through 009_dual_round_reviews")
 
     @staticmethod
     def _agents(connection, items):
@@ -241,8 +267,10 @@ class QueryRepository:
         with self.pool.connection() as connection:
             total = connection.execute(f"SELECT count(*) AS total {join} WHERE {where}", values).fetchone()["total"]
             rows = connection.execute(f"""
-                SELECT r.*, c.display_name AS customer_name, c.contact_id, c.business_user_id
-                {join} WHERE {where} ORDER BY r.started_at DESC,r.round_id DESC LIMIT %s OFFSET %s
+                SELECT r.*, c.display_name AS customer_name, c.contact_id, c.business_user_id,
+                    to_jsonb(review) AS review
+                {join} LEFT JOIN quality.current_round_reviews review ON review.round_id=r.round_id
+                WHERE {where} ORDER BY r.started_at DESC,r.round_id DESC LIMIT %s OFFSET %s
             """, [*values, page_size, (page - 1) * page_size]).fetchall()
             items = self._agents(connection, [_flatten(row) for row in rows])
         return {"items": items, "total": total, "page": page, "page_size": page_size}
@@ -337,9 +365,11 @@ class QueryRepository:
         if not customers:
             return
         rows = connection.execute("""
-            SELECT DISTINCT ON (r.customer_id) r.* FROM ops.round_index r
-            WHERE r.customer_id=ANY(%s)
-            ORDER BY r.customer_id,r.started_at DESC,r.round_id DESC
+            SELECT latest.*,to_jsonb(review) AS review FROM (
+                SELECT DISTINCT ON (r.customer_id) r.* FROM ops.round_index r
+                WHERE r.customer_id=ANY(%s)
+                ORDER BY r.customer_id,r.started_at DESC,r.round_id DESC
+            ) latest LEFT JOIN quality.current_round_reviews review ON review.round_id=latest.round_id
         """, ([item["customer_id"] for item in customers],)).fetchall()
         rounds = {row["customer_id"]: _flatten(row) for row in rows}
         metrics = {row["round_id"]: RoundServiceMetrics(row) for row in rounds.values()}
@@ -363,8 +393,10 @@ class QueryRepository:
     def round_detail(self, round_id: str, page: int = 1, page_size: int = 100):
         with self.pool.connection() as connection:
             row = connection.execute("""
-                SELECT r.*,c.display_name AS customer_name,c.contact_id,c.business_user_id
+                SELECT r.*,c.display_name AS customer_name,c.contact_id,c.business_user_id,
+                    to_jsonb(review) AS review
                 FROM ops.round_index r LEFT JOIN ops.customer_index c ON c.customer_id=r.customer_id
+                LEFT JOIN quality.current_round_reviews review ON review.round_id=r.round_id
                 WHERE r.round_id=%s
             """, (round_id,)).fetchone()
             if row is None:
@@ -373,12 +405,50 @@ class QueryRepository:
             messages, total = self._messages(connection, "m.round_id=%s", [round_id], page, page_size)
         return {"round": round_item, "messages": messages, "total": total, "page": page, "page_size": page_size}
 
+    def round_review(self, round_id: str):
+        with self.pool.connection() as connection:
+            row = connection.execute("""
+                SELECT r.round_id,review.ai_status,review.human_status,review.remark,review.reviewer,
+                    review.reviewed_at,review.revision
+                FROM ops.round_index r LEFT JOIN quality.current_round_reviews review
+                    ON review.round_id=r.round_id WHERE r.round_id=%s
+            """, (round_id,)).fetchone()
+        if row is None:
+            return None
+        return {**dict(row), "ai_status": row["ai_status"] or "pending",
+                "human_status": row["human_status"] or "pending",
+                "remark": row["remark"] or "", "revision": row["revision"] or "0"}
+
+    def save_round_review(self, round_id: str, ai_status: str, human_status: str,
+                          remark: str, reviewer: str, revision: int):
+        try:
+            with self.pool.connection() as connection:
+                # Normal queries remain read-only. Only this transaction invokes
+                # the narrow append function; the reader cannot edit any table.
+                connection.execute("SET TRANSACTION READ WRITE")
+                row = connection.execute(
+                    "SELECT quality.save_round_review(%s,%s,%s,%s,%s,%s) AS review",
+                    (round_id, ai_status, human_status, remark, reviewer, revision),
+                ).fetchone()
+                return row["review"]
+        except SerializationFailure:
+            raise ReviewConflict() from None
+
     @staticmethod
     def _messages(connection, where: str, values: list, page: int, page_size: int):
         total = connection.execute(f"SELECT count(*) AS total FROM ops.message_index m WHERE {where}", values).fetchone()["total"]
         rows = connection.execute(f"""
-            SELECT m.*,r.round_no,r.channel_key FROM ops.message_index m
+            SELECT m.*,r.round_no,r.channel_key,
+                CASE WHEN rating.rating_key IS NOT NULL THEN jsonb_build_object(
+                    'rating',rating.rating,'feedback',rating.feedback,'status',rating.status,
+                    'rating_at',rating.data->>'source_time','round_id',rating.round_id
+                ) END AS visitor_rating
+            FROM ops.message_index m
             LEFT JOIN ops.round_index r ON r.round_id=m.round_id
+            LEFT JOIN ops.rating_index rating ON rating.source_key=m.source_key
+                AND rating.account_id=m.account_id AND rating.conversation_id=m.conversation_id
+                AND rating.rating_key='message:' || m.message_id::text
+                AND rating.invitation_message_id=m.message_id
             WHERE {where} ORDER BY m.sent_at ASC NULLS LAST,m.message_id ASC LIMIT %s OFFSET %s
         """, [*values, page_size, (page - 1) * page_size]).fetchall()
         return [_flatten(row) for row in rows], total
@@ -407,8 +477,10 @@ class QueryRepository:
                 "SELECT count(*) AS total FROM ops.round_index WHERE customer_id=%s", (customer_id,)
             ).fetchone()["total"]
             rows = connection.execute("""
-                SELECT r.*,c.display_name AS customer_name,c.contact_id,c.business_user_id
+                SELECT r.*,c.display_name AS customer_name,c.contact_id,c.business_user_id,
+                    to_jsonb(review) AS review
                 FROM ops.round_index r JOIN ops.customer_index c ON c.customer_id=r.customer_id
+                LEFT JOIN quality.current_round_reviews review ON review.round_id=r.round_id
                 WHERE r.customer_id=%s
                 ORDER BY r.started_at DESC,r.round_id DESC LIMIT %s OFFSET %s
             """, (customer_id, page_size, (page - 1) * page_size)).fetchall()

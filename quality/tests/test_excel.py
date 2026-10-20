@@ -83,9 +83,9 @@ def test_chat_export_is_one_filtered_sheet_with_no_metadata_and_single_pass(mode
     assert stats == {"customers": 0, "rounds": 0, "messages": 2, "message_rows": 2, "ratings": 0, "sheets": ["聊天记录"]}
     assert [customers.iterations, rounds.iterations, messages.iterations] == [0, 0, 1]
     sheet = workbook.active
-    assert list(next(sheet.values)) == ["客户", "发送时间（北京时间）", "发送人", "发送人类型", "聊天内容", "会话ID", "消息ID", "消息标记", "附件"]
-    assert sheet.max_row == 3 and sheet.max_column == 9
-    assert sheet.freeze_panes == "A2" and sheet.auto_filter.ref == "A1:I3"
+    assert list(next(sheet.values)) == ["客户", "发送时间（北京时间）", "发送人", "发送人类型", "聊天内容", "会话ID", "消息ID", "消息标记", "附件", "轮次", "AI质检", "人工质检", "质检备注"]
+    assert sheet.max_row == 3 and sheet.max_column == 13
+    assert sheet.freeze_panes == "A2" and sheet.auto_filter.ref == "A1:M3"
     assert sheet.column_dimensions["E"].width >= 80
     assert sheet["A1"].font.bold and sheet["A1"].fill.fgColor.rgb == "00234E70"
     assert sheet["E2"].alignment.wrap_text
@@ -137,7 +137,7 @@ def test_long_message_reconstructs_exact_text_with_emoji_illegal_characters_and_
     chunks = [row["聊天内容"] or "" for row in rows]
     assert all(len(chunk.encode("utf-16-le")) // 2 <= 32767 for chunk in chunks)
     assert _restore("".join(chunks)) == content
-    assert workbook.active.auto_filter.ref == f"A1:I{len(rows) + 1}"
+    assert workbook.active.auto_filter.ref == f"A1:M{len(rows) + 1}"
 
 
 @pytest.mark.parametrize("content", ["", "x" * 32767, "x" * 32768, "😀" * 16383 + "a", "😀" * 16384, "[ICS-ESC]" + r"literal\u0000", "C:\\folder\\file.txt\t正文\n换行\r回车"],
@@ -255,3 +255,19 @@ def test_unknown_mode_is_rejected_before_destination_is_written():
     with pytest.raises(ValueError, match="Unsupported"):
         excel.build_workbook(destination, {}, filters={}, exported_at=NOW, mode="invalid")
     assert destination.getvalue() == b""
+
+
+@pytest.mark.parametrize("ai_status", ["passed", "failed", "pending"])
+@pytest.mark.parametrize("human_status", ["passed", "failed", "pending"])
+def test_independent_ai_and_human_verdicts_share_the_chat_sheet(ai_status, human_status):
+    note = '=原文备注\n复核说明'
+    _, workbook, _ = _export({"messages": [_message(ai_review_status=ai_status,
+        human_review_status=human_status, review_remark=note), _message(round_id=None)]})
+    rows = _rows(workbook.active)
+    labels = {"passed": "合格", "failed": "不合格", "pending": "待定"}
+    assert rows[0]["AI质检"] == labels[ai_status]
+    assert rows[0]["人工质检"] == labels[human_status]
+    assert rows[0]["质检备注"] == note
+    assert rows[1]["AI质检"] is None and rows[1]["人工质检"] is None
+    assert workbook.active["M2"].data_type == "s"
+    assert workbook.active.auto_filter.ref == "A1:M3"

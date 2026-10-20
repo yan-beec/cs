@@ -13,6 +13,14 @@ cd -- "$project_directory"
     printf '%s\n' 'Missing quality database scripts; synchronize the complete release first.' >&2
     exit 1
 }
+[[ -d deploy/archive/init && -f deploy/archive/init/01-archive-roles.sh ]] || {
+    printf '%s\n' 'Missing archive initialization script; synchronize the complete release first.' >&2
+    exit 1
+}
+# Also cover in-place releases and older private checkouts. The initialization
+# script reads secrets from the environment; only this public code is exposed.
+chmod 644 -- deploy/archive/init/01-archive-roles.sh
+chmod 755 -- deploy/archive/init
 compose=(docker compose --project-directory "$project_directory" --env-file .env -f docker-compose.yml -f docker-compose.archive.yml)
 "${compose[@]}" config --quiet
 printf '%s\n' 'Starting archive database and waiting for it to become healthy...'

@@ -45,6 +45,7 @@ class Element {
 const node = id => {if (!nodes.has(id)) nodes.set(id, new Element(id)); return nodes.get(id);};
 const fields = {
  qualityCustomer: 'customer_query', qualityKeyword: 'keyword',
+ qualityAiReviewStatus: 'ai_review_status', qualityHumanReviewStatus: 'human_review_status',
  qualityReception: 'reception_type', qualityAgentScope: 'agent_scope', qualityConversation: 'conversation_id',
  qualityRoundNo: 'round_no', qualityTimeField: 'time_field', qualityStart: 'start',
  qualityEnd: 'end', qualityRatingStatus: 'rating_status', qualityRating: 'rating', qualityMessageScope: 'message_scope'
@@ -96,15 +97,155 @@ const timelinePayload = (overrides = {}) => {
 
 EXPORTS = """
 globalThis.ui = {state, qualityState, presenceState, showCurrentPage, collectQualityFilters, populateQualityFilters, qualityTime,
- qualitySafeLink, qualityAttachments, renderQualityTimeline, qualitySnapshotLabel, loadQualityList, qualityAgentLabel,
+ qualitySafeLink, qualityAttachments, renderQualityTimeline, refreshQualityRatings, qualitySnapshotLabel, loadQualityList, qualityAgentLabel,
  openQualityDetail, loadQualityDetail, openQualityVersions, loadQualityVersions, stopQuality, logout,
  qualityRequest, loadQuality, downloadQualityEvent, changeQualityMode, closeQualityDetail, applyQualityFilters,
  setQualityFiltersCollapsed, loadQualityRoundDirectory, renderQualityRoundDirectory, renderQualityList,
  exportQuality, cancelQualityExport, updateQualityExportButtons, qualityExportFilename,
+ setQualityReview, renderQualityReview, loadQualityReview, saveQualityReview,
  loadQualityOverview, loadQualityPresence, loadQualityPresenceDaily, startQualityPresence, stopQualityPresence, qualityBeijingDay, qualityMinute, presenceRequest, mergePresenceRoster, loadPresenceTimeline, renderPresenceTimeline, renderPresenceIntervals, locatePresenceMinute, presenceAgentValue, updatePresenceDateRange, ensurePresenceDay, renderQualityPresenceDaily, loadPresenceManagement, renderPresenceManagement, removePresenceAgent};
 """
 
 CASES = {
+    "review_lights_show_independent_verdicts_and_hide_pending_without_expanding_cards": r"""
+ui.qualityState.mode='customers';
+for (const ai of ['passed','failed','pending']) for (const human of ['passed','failed','pending']) {
+ ui.qualityState.items=[{customer_id:'c1',display_name:'Customer',
+  review:{ai_status:'failed',human_status:'failed'},
+  latest_round:{round_id:'r1',conversation_id:12,round_no:3,
+    review:{ai_status:ai,human_status:human,remark:'<img src=x onerror=evil()>'}}}];
+ ui.renderQualityList(); const html=node('qualityList').innerHTML;
+ const expected=[ai,human].filter(s=>s!=='pending');
+ assert.equal((html.match(/class="quality-review-dot"/g)||[]).length,expected.length);
+ for (const status of ['passed','failed']) assert.equal((html.match(new RegExp('data-review-status="'+status+'"','g'))||[]).length,expected.filter(s=>s===status).length);
+ assert.equal(html.includes('data-review-kind="ai"'),ai!=='pending');
+ assert.equal(html.includes('data-review-kind="human"'),human!=='pending');
+ assert.equal(html.includes('最近一轮质检结果'),expected.length>0);
+ assert.equal(html.includes('<img'),false);
+ assert.equal((html.match(/class="quality-customer-metric"/g)||[]).length,6);
+}
+ui.qualityState.items=[{customer_id:'c1',latest_round:{round_id:'r2'}}];
+ui.renderQualityList(); assert.equal(node('qualityList').innerHTML.includes('quality-review-dot'),false);
+ui.qualityState.items=[{customer_id:'c1'}];
+ui.renderQualityList(); assert.equal(node('qualityList').innerHTML.includes('quality-review-dot'),false);
+""",
+    "round_list_and_directory_show_their_own_review_lights": r"""
+const round={round_id:'r1',customer_id:'c1',conversation_id:12,round_no:1,
+ review:{ai_status:'passed',human_status:'failed'}};
+ui.qualityState.mode='rounds'; ui.qualityState.items=[round];
+ui.renderQualityList();
+assert.equal(node('qualityList').innerHTML.includes('aria-label="AI质检：合格"'),true);
+assert.equal(node('qualityList').innerHTML.includes('aria-label="人工质检：不合格"'),true);
+ui.qualityState.detail={type:'round',id:'r1',item:round};
+ui.qualityState.roundDirectory={items:[round,{...round,round_id:'r2',review:{ai_status:'pending',human_status:'pending',remark:'只有备注'}}],page:1,pageSize:50,total:2,loading:false};
+ui.renderQualityRoundDirectory();
+assert.equal((node('qualityRoundList').innerHTML.match(/class="quality-review-dot"/g)||[]).length,2);
+assert.equal(node('qualityRoundList').innerHTML.includes('data-review-kind="ai"'),true);
+assert.equal(node('qualityRoundList').innerHTML.includes('data-review-kind="human"'),true);
+""",
+    "review_filters_are_applied_to_lists_overview_summary_and_exports": r"""
+ui.state.token='session'; ui.state.view='quality'; ui.qualityState.ready=true;
+node('qualityAiReviewStatus').value='failed'; node('qualityHumanReviewStatus').value='passed';
+ui.applyQualityFilters({collapse:false});
+for (const request of [requests[0], overviewRequests[0]]) {
+ const params=new URL(request.url,'http://localhost').searchParams;
+ assert.equal(params.get('ai_review_status'),'failed');
+ assert.equal(params.get('human_review_status'),'passed');
+}
+ui.setQualityFiltersCollapsed(true);
+assert.equal(node('qualityFilterSummary').textContent.includes('AI质检：不合格'),true);
+assert.equal(node('qualityFilterSummary').textContent.includes('人工质检：合格'),true);
+respond(0,{items:[],total:0,page:1}); respondTo(overviewRequests,0,{}); await tick();
+node('qualityAiReviewStatus').value='passed'; // Unapplied changes cannot alter an export.
+const download=ui.exportQuality('list');
+const params=new URL(requests[1].url,'http://localhost').searchParams;
+assert.equal(params.get('ai_review_status'),'failed');
+assert.equal(params.get('human_review_status'),'passed');
+assert.equal(confirmations[0].includes('AI质检：不合格'),true);
+assert.equal(confirmations[0].includes('人工质检：合格'),true);
+respond(1,'xlsx bytes'); await download;
+node('qualityHumanReviewStatus').value='';
+assert.equal(ui.collectQualityFilters().has('human_review_status'),false);
+""",
+    "round_review_saves_and_reloads_the_selected_round": r"""
+ui.state.token='session'; ui.state.view='quality'; ui.qualityState.ready=true;
+const round={round_id:'r1',customer_id:'c1',conversation_id:12,round_no:1,review:{ai_status:'failed',human_status:'failed',remark:'原备注',revision:'7',reviewer:'admin',reviewed_at:'2026-10-19T08:00:00Z'}};
+ui.qualityState.items=[{customer_id:'c1',display_name:'Customer',latest_round:{...round}}];
+ui.renderQualityList();
+assert.equal((node('qualityList').innerHTML.match(/data-review-status="failed"/g)||[]).length,2);
+const opening=ui.openQualityDetail('round','r1');
+respond(0,{round,messages:[],total:0}); await opening;
+assert.equal(node('qualityReviewHumanVerdict').value,'failed');
+assert.equal(node('qualityReviewAiVerdict').value,'failed');
+assert.equal(node('qualityReviewRemark').value,'原备注');
+node('qualityReviewHumanVerdict').value='passed'; node('qualityReviewHumanVerdict').handlers.change();
+node('qualityReviewRemark').value='<img src=x onerror=evil()>\n复核通过'; node('qualityReviewRemark').handlers.input();
+const saving=ui.saveQualityReview(); await tick();
+assert.equal(requests[1].url.endsWith('/rounds/r1/review'),true);
+assert.equal(requests[1].options.method,'PUT');
+assert.equal(requests[1].options.headers.get('Content-Type'),'application/json');
+assert.deepEqual(JSON.parse(requests[1].options.body),{ai_status:'failed',human_status:'passed',remark:'<img src=x onerror=evil()>\n复核通过',revision:'7'});
+assert.equal(ui.closeQualityDetail(),false); // Do not cancel an in-flight save.
+const saved={ai_status:'failed',human_status:'passed',remark:'<img src=x onerror=evil()>\n复核通过',revision:'8',reviewer:'admin',reviewed_at:'2026-10-19T08:01:00Z'};
+respond(1,saved); await saving;
+assert.equal(ui.qualityState.review.dirty,false);
+assert.equal(node('qualityReviewStatus').textContent.includes('已保存'),true);
+assert.equal(node('qualityReviewRemark').value,saved.remark);
+assert.equal(ui.qualityState.detail.id,'r1','Saving must keep the current detail open');
+assert.equal((node('qualityList').innerHTML.match(/data-review-status="failed"/g)||[]).length,1);
+assert.equal((node('qualityList').innerHTML.match(/data-review-status="passed"/g)||[]).length,1);
+assert.equal(ui.qualityState.items[0].latest_round.review.revision,'8');
+ui.closeQualityDetail();
+const reopened=ui.openQualityDetail('round','r1'); respond(2,{round:{...round,review:saved},messages:[],total:0}); await reopened;
+assert.equal(node('qualityReviewRemark').value,saved.remark);
+assert.equal(node('qualityReviewHumanVerdict').value,'passed');
+assert.equal(node('qualityReviewAiVerdict').value,'failed');
+""",
+    "full_history_review_selection_ignores_stale_round_response": r"""
+ui.state.token='session'; ui.state.view='quality'; ui.qualityState.ready=true;
+ui.qualityState.detail={type:'customer',id:'c1',item:{customer_id:'c1'}};
+const rounds=[1,2,3].map(n=>({round_id:'r'+n,round_no:n,conversation_id:12}));
+ui.qualityState.roundDirectory={customerId:'c1',items:rounds,page:1,pageSize:50,total:3,loading:false};
+ui.renderQualityRoundDirectory();
+assert.equal(ui.qualityState.review.roundId,'r1');
+const old=ui.loadQualityReview(rounds[1]);
+const current=ui.loadQualityReview(rounds[2]);
+respond(1,{ai_status:'passed',human_status:'passed',remark:'第三轮',revision:'3'}); await current;
+respond(0,{ai_status:'failed',human_status:'failed',remark:'第二轮旧请求',revision:'2'}); await old;
+assert.equal(ui.qualityState.review.roundId,'r3');
+assert.equal(node('qualityReviewRemark').value,'第三轮');
+assert.equal(node('qualityReviewRound').value,'r3');
+""",
+    "failed_review_save_preserves_draft_and_blocks_export_of_unsaved_changes": r"""
+ui.state.token='session'; ui.state.view='quality'; ui.qualityState.ready=true;
+ui.qualityState.detail={type:'round',id:'r1',item:{round_id:'r1',round_no:1,conversation_id:12}};
+ui.setQualityReview(ui.qualityState.detail.item);
+node('qualityReviewAiVerdict').value='failed'; node('qualityReviewAiVerdict').handlers.change();
+node('qualityReviewHumanVerdict').value='failed'; node('qualityReviewHumanVerdict').handlers.change();
+node('qualityReviewRemark').value='不可丢失的输入'; node('qualityReviewRemark').handlers.input();
+const saving=ui.saveQualityReview(); respond(0,{detail:'本轮备注已在其他窗口更新，请重新读取后再保存。'},409); await saving;
+assert.equal(node('qualityReviewRemark').value,'不可丢失的输入');
+assert.equal(ui.qualityState.review.dirty,true);
+assert.equal(JSON.parse(requests[0].options.body).ai_status,'failed');
+assert.equal(JSON.parse(requests[0].options.body).human_status,'failed');
+assert.equal(node('qualityReviewAiVerdict').value,'failed');
+assert.equal(node('qualityReviewHumanVerdict').value,'failed');
+assert.equal(node('qualityReviewStatus').textContent.includes('其他窗口'),true);
+confirmationAnswers.push(false); assert.equal(ui.closeQualityDetail(),false);
+assert.equal(ui.qualityState.detail.id,'r1');
+await ui.exportQuality('detail'); assert.equal(requests.length,1);
+assert.equal(node('toast').textContent.includes('先保存'),true);
+""",
+    "message_pagination_does_not_overwrite_an_unsaved_review": r"""
+ui.state.token='session'; ui.state.view='quality'; ui.qualityState.ready=true;
+const round={round_id:'r1',conversation_id:12,round_no:1,review:{ai_status:'failed',human_status:'passed',remark:'已保存的备注',revision:'1'}};
+ui.qualityState.detail={type:'round',id:'r1',page:2,total:60,item:round};
+ui.setQualityReview(round);
+node('qualityReviewRemark').value='编辑中的新备注'; node('qualityReviewRemark').handlers.input();
+const loading=ui.loadQualityDetail(); respond(0,{round,messages:[],total:60,page:2}); await loading;
+assert.equal(node('qualityReviewRemark').value,'编辑中的新备注');
+assert.equal(ui.qualityState.review.dirty,true);
+""",
     "customer_cards_show_latest_round_service_metrics_and_keep_history_totals": r"""
 ui.qualityState.mode='customers'; ui.qualityState.total=1;
 ui.qualityState.items=[{customer_id:'c1',display_name:'Customer',contact_id:42,business_user_id:'U1',
@@ -234,6 +375,79 @@ assert.equal(html.includes('&lt;机器人回复&gt;'),true);
 assert.equal(html.indexOf('第一句') < html.indexOf('&lt;机器人回复&gt;'),true);
 assert.equal(html.includes('私密消息 / 内部备注'),true);
 assert.equal(html.includes('原文与版本'),true);
+""",
+    "chat_bubbles_show_current_visitor_score_feedback_and_pending_without_fabricating_scores": r"""
+ui.qualityState.detail={type:'customer'};
+ui.qualityState.messages=[
+ {message_id:1,content:'普通消息'},
+ {message_id:2,content:'请评价',is_rating:true,visitor_rating:{rating:2,feedback:'<img src=x onerror=evil()>\n等候太久'}},
+ {message_id:3,content:'另一轮评价',is_rating:true,visitor_rating:{rating:5,feedback:'已解决'}},
+ {message_id:4,is_rating:true,visitor_rating:{rating:null}},
+ {message_id:5,is_rating:true,visitor_rating:{rating:0}},
+ {message_id:6,is_rating:true,visitor_rating:{rating:6}},
+ {message_id:7,is_rating:true,visitor_rating:{rating:true}}
+];
+ui.renderQualityTimeline();
+const bubbles=node('qualityTimeline').innerHTML.split('<article').slice(1);
+assert.equal(bubbles[0].includes('quality-message-rating'),false);
+assert.equal(bubbles[1].includes('quality-message-rating low'),true);
+assert.equal(bubbles[1].includes('2 / 5 分'),true);
+assert.equal(bubbles[1].includes('★★☆☆☆'),true);
+assert.equal(bubbles[1].includes('低评分'),true);
+assert.equal(bubbles[1].includes('&lt;img src=x onerror=evil()&gt;\n等候太久'),true);
+assert.equal(bubbles[1].includes('<img'),false);
+assert.equal(bubbles[2].includes('5 / 5 分'),true);
+assert.equal(bubbles[2].includes('低评分'),false);
+for(const bubble of bubbles.slice(3)) {assert.equal(bubble.includes('待评价'),true); assert.equal(bubble.includes('/ 5 分'),false);}
+""",
+    "visitor_rating_refresh_keeps_original_messages_scroll_review_draft_and_versions": r"""
+ui.state.token='session'; ui.state.view='quality'; ui.qualityState.ready=true;
+const opening=ui.openQualityDetail('customer','c1');
+const original={source_key:'cw',account_id:1,conversation_id:7,message_id:500,round_id:'r1',round_no:1,
+ content:'原始评价邀请',is_rating:true,visitor_rating:{rating:null}};
+respond(0,{customer:{customer_id:'c1'},messages:[original],total:1,page:1}); await opening;
+assert.equal(timers.size,1); const timer=[...timers.values()][0]; assert.equal(timer.milliseconds,15000);
+ui.qualityState.review={roundId:'r1',dirty:true,remark:'未保存备注',aiStatus:'failed'};
+ui.qualityState.versions={message:original}; node('qualityVersionList').innerHTML='原文版本保持展开';
+node('qualityChatScroll').scrollTop=233;
+const draft=ui.qualityState.review;
+const refreshing=timer.callback();
+assert.equal(new URL(requests[1].url).searchParams.get('page'),'1');
+await timer.callback(); assert.equal(requests.length,2,'overlapping refresh is skipped');
+respond(1,{messages:[{...original,content:'后续变更正文',visitor_rating:{rating:2,feedback:'等待太久'}}]}); await refreshing;
+assert.equal(node('qualityTimeline').innerHTML.includes('2 / 5 分'),true);
+assert.equal(ui.qualityState.messages[0].content,'原始评价邀请');
+assert.equal(node('qualityChatScroll').scrollTop,233);
+assert.equal(ui.qualityState.review,draft); assert.equal(ui.qualityState.review.dirty,true);
+assert.equal(ui.qualityState.versions.message,original);
+assert.equal(node('qualityVersionList').innerHTML,'原文版本保持展开');
+const failed=timer.callback(); respond(2,{detail:'temporary failure'},503); await failed;
+assert.equal(node('qualityTimeline').innerHTML.includes('2 / 5 分'),true);
+context.document.hidden=true; documentEvents.visibilitychange(); assert.equal(timers.size,0);
+context.document.hidden=false; documentEvents.visibilitychange(); assert.equal(timers.size,1);
+const pending=requests.at(-1); ui.closeQualityDetail(false,true);
+assert.equal(pending.options.signal.aborted,true); assert.equal(timers.size,0);
+pending.resolve({status:200,ok:true,json:async()=>({messages:[{...original,visitor_rating:{rating:1}}]})}); await tick();
+assert.equal(ui.qualityState.detail,null); assert.equal(node('qualityTimeline').innerHTML,'');
+""",
+    "visitor_rating_refresh_rejects_an_old_customer_and_page_response": r"""
+ui.state.token='session'; ui.state.view='quality'; ui.qualityState.ready=true;
+const original={source_key:'cw',account_id:1,conversation_id:7,message_id:500,is_rating:true,visitor_rating:{rating:null}};
+let opening=ui.openQualityDetail('customer','c1');
+respond(0,{customer:{customer_id:'c1'},messages:[original],total:60,page:1}); await opening;
+const refresh=ui.refreshQualityRatings();
+ui.qualityState.detail.page=2; const page=ui.loadQualityDetail();
+assert.equal(requests[1].options.signal.aborted,true);
+respond(2,{customer:{customer_id:'c1'},messages:[{...original,message_id:600}],total:60,page:2}); await page;
+respond(1,{messages:[{...original,visitor_rating:{rating:1,feedback:'STALE PAGE'}}]}); await refresh;
+assert.equal(node('qualityTimeline').innerHTML.includes('STALE PAGE'),false);
+const second=ui.refreshQualityRatings(); opening=ui.openQualityDetail('customer','c2');
+assert.equal(requests[3].options.signal.aborted,true);
+respond(4,{customer:{customer_id:'c2'},messages:[{...original,source_key:'another-source',visitor_rating:{rating:5}}],total:1,page:1}); await opening;
+respond(3,{messages:[{...original,visitor_rating:{rating:1,feedback:'PRIVATE OLD CUSTOMER'}}]}); await second;
+assert.equal(node('qualityTimeline').innerHTML.includes('PRIVATE OLD CUSTOMER'),false);
+assert.equal(node('qualityTimeline').innerHTML.includes('5 / 5 分'),true);
+ui.logout(); assert.equal(timers.size,0);
 """,
     "overview_uses_all_filtered_rounds_and_does_not_reload_on_pagination_or_history": r"""
 ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
@@ -1570,3 +1784,14 @@ def test_archive_browser_behavior(case: str) -> None:
         [NODE, "-"], input=program, text=True, encoding="utf-8", capture_output=True, timeout=20
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("control,name", [("qualityAiReviewStatus", "ai_review_status"),
+                                         ("qualityHumanReviewStatus", "human_review_status")])
+def test_review_filter_controls_submit_supported_verdicts(control, name):
+    html = ADMIN_PAGE.read_text(encoding="utf-8")
+    select = re.search(r'<select id="' + control + r'" name="' + name + r'">(.*?)</select>', html)
+    assert select is not None
+    assert re.findall(r'<option value="([^"]*)">([^<]*)</option>', select.group(1)) == [
+        ("", "全部结果"), ("passed", "合格"), ("failed", "不合格"), ("pending", "待定")
+    ]

@@ -10,7 +10,7 @@ import threading
 
 from .config import QuerySettings
 from .agents import agent_name_index, archived_agent_name, enrich_round_agents
-from .repository import QueryRepository
+from .repository import QueryRepository, ReviewConflict
 from .export import ExportCancelled, ExportFile, ExportNotFound, ExportRepository, ExportTooLarge
 
 logger = logging.getLogger(__name__)
@@ -118,6 +118,8 @@ class QueryRuntime:
         except asyncio.CancelledError:
             raise
         except ArchiveUnavailable:
+            raise
+        except ReviewConflict:
             raise
         except Exception as error:
             self.ready = False

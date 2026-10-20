@@ -5,6 +5,7 @@ services:
       - ./ics_agent:/app/ics_agent:ro
       - ./reminder:/app/reminder:ro
       - ./quality:/app/quality:ro
+      - ./statistics:/app/statistics:ro
       - ./support-chat.html:/app/support-chat.html:ro
       - ./knowledge_base_in/parse_documents.py:/app/knowledge_base_in/parse_documents.py:ro
       - ./knowledge_base_in/build_chromadb.py:/app/knowledge_base_in/build_chromadb.py:ro
@@ -19,5 +20,7 @@ services:
         "--reload-dir",
         "/app/reminder",
         "--reload-dir",
-        "/app/quality"
+        "/app/quality",
+        "--reload-dir",
+        "/app/statistics"
       ]

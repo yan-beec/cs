@@ -19,6 +19,32 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM ops.schema_migrations WHERE version = '006_presence_retention_state') THEN
         RAISE EXCEPTION 'FAIL: durable presence cleanup migration is not recorded';
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM ops.schema_migrations WHERE version = '008_round_reviews') THEN
+        RAISE EXCEPTION 'FAIL: persistent round review migration is not recorded';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM ops.schema_migrations WHERE version = '009_dual_round_reviews') THEN
+        RAISE EXCEPTION 'FAIL: independent AI and human review migration is not recorded';
+    END IF;
+    IF NOT has_column_privilege('archive_reader', 'quality.current_round_reviews', 'ai_status', 'SELECT')
+        OR NOT has_column_privilege('archive_reader', 'quality.current_round_reviews', 'human_status', 'SELECT')
+        OR NOT has_function_privilege('archive_reader', 'quality.save_round_review(text,text,text,text,text,bigint)', 'EXECUTE')
+        OR has_function_privilege('archive_reader', 'quality.save_round_review(text,text,text,text,bigint)', 'EXECUTE')
+        OR NOT has_table_privilege('archive_reader', 'quality.current_round_reviews', 'SELECT')
+        OR has_table_privilege('archive_reader', 'quality.round_reviews', 'INSERT,UPDATE,DELETE,TRUNCATE')
+        OR has_table_privilege('archive_ingest', 'quality.round_reviews', 'INSERT,UPDATE,DELETE,TRUNCATE')
+        OR has_table_privilege('archive_quality', 'quality.round_reviews', 'INSERT,UPDATE,DELETE,TRUNCATE') THEN
+        RAISE EXCEPTION 'FAIL: round review permissions are incorrect';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_roles r ON r.oid=p.proowner
+        WHERE p.oid='quality.save_round_review(text,text,text,text,text,bigint)'::regprocedure
+            AND p.prosecdef AND r.rolname='archive_owner'
+            AND 'search_path=pg_catalog'=ANY(p.proconfig))
+        OR EXISTS (SELECT 1 FROM pg_proc p,
+            LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a
+            WHERE p.oid='quality.save_round_review(text,text,text,text,text,bigint)'::regprocedure
+                AND a.grantee=0 AND a.privilege_type='EXECUTE') THEN
+        RAISE EXCEPTION 'FAIL: round review function owner or public permissions are incorrect';
+    END IF;
     IF has_table_privilege('archive_presence', 'ops.agent_presence_cleanup_state', 'INSERT,UPDATE,DELETE,TRUNCATE')
         OR NOT has_function_privilege('archive_presence', 'ops.run_presence_cleanup(text,bigint)', 'EXECUTE') THEN
         RAISE EXCEPTION 'FAIL: durable cleanup permissions are incorrect';

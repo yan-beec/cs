@@ -30,6 +30,40 @@ def client(monkeypatch):
     return TestClient(app), runtime, app
 
 
+@pytest.mark.parametrize("endpoint", ["rounds", "customers", "overview"])
+@pytest.mark.parametrize("verdicts", [
+    {"ai_review_status": "passed"}, {"ai_review_status": "failed"},
+    {"human_review_status": "passed"}, {"human_review_status": "failed"},
+    {"ai_review_status": "failed", "human_review_status": "failed"},
+    {"ai_review_status": "pending", "human_review_status": "passed"},
+])
+def test_review_filters_reach_lists_and_overview(client, endpoint, verdicts):
+    browser, runtime, _ = client
+    assert browser.get("/admin/api/quality/" + endpoint, params=verdicts).status_code == 200
+    filters = runtime.call.call_args.args[1]
+    assert filters.ai_review_status == verdicts.get("ai_review_status")
+    assert filters.human_review_status == verdicts.get("human_review_status")
+
+
+@pytest.mark.parametrize("endpoint", ["rounds", "customers", "overview", "export.xlsx"])
+@pytest.mark.parametrize("field", ["ai_review_status", "human_review_status"])
+def test_invalid_review_filters_never_reach_database(client, endpoint, field):
+    browser, runtime, _ = client
+    assert browser.get("/admin/api/quality/" + endpoint, params={field: "bad"}).status_code == 422
+    runtime.call.assert_not_called()
+
+
+@pytest.mark.parametrize("mode", ["rounds", "customers"])
+def test_review_filters_are_shared_by_query_and_export_selection(mode):
+    from quality.query.export import ExportRepository
+    filters = ArchiveFilters(ai_review_status="failed", human_review_status="passed")
+    where, values = (round_conditions if mode == "rounds" else customer_conditions)(filters)
+    selection, export_values = ExportRepository._selection(mode, filters)
+    assert where in selection and export_values == values == ["failed", "passed"]
+    assert "review.ai_status = %s AND review.human_status = %s" in where
+    assert "review.round_id=r.round_id" in where
+
+
 def test_queries_reuse_existing_admin_auth(client):
     browser, runtime, app = client
     app.dependency_overrides.clear()
@@ -193,7 +227,8 @@ def test_customer_metrics_batch_only_page_customers_and_stream_message_metadata(
     connection = Mock()
     connection.execute.return_value.fetchall.return_value = [
         {"customer_id": "a", "round_id": "latest-a", "started_at": "2026-10-19T08:00:00Z",
-         "last_message_at": "2026-10-19T08:03:00Z", "data": {"handoff_requested_at": "2026-10-19T08:01:00Z"}},
+         "last_message_at": "2026-10-19T08:03:00Z", "data": {"handoff_requested_at": "2026-10-19T08:01:00Z"},
+         "review": {"ai_status": "failed", "human_status": "passed", "revision": "7"}},
         {"customer_id": "b", "round_id": "latest-b", "data": {}},
     ]
     cursor = Mock()
@@ -208,6 +243,7 @@ def test_customer_metrics_batch_only_page_customers_and_stream_message_metadata(
     assert "content" not in cursor.execute.call_args.args[0]
     assert cursor.fetchmany.call_count == 2 and connection.cursor.call_count == 1
     assert customers[0]["latest_round"]["service_metrics"]["first_response_seconds"] == 120
+    assert customers[0]["latest_round"]["review"] == {"ai_status": "failed", "human_status": "passed", "revision": "7"}
     assert customers[2]["latest_round"] is None
 
 

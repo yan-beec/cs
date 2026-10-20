@@ -49,6 +49,8 @@
 
 `003_assignment_writer` 为 ICS 固定责任记录增加独立的 `archive_assignment` 账号，不授予消息快照、派生索引或任务更新权限。启用 `ARCHIVE_ASSIGNMENT_SYNC_ENABLED=true` 前配置独立随机 `ARCHIVE_ASSIGNMENT_PASSWORD` 并执行迁移；迁移入口从环境安全设置该账号密码。ICS 分配成功后先在自己的数据库持久保存按轮唯一的快照，再用受限账号异步追加到归档库，归档失败不阻断客服分配。详见[责任口径与配置](query/README.md)。
 
+`008_round_reviews`增加永久质检备注；`009_dual_round_reviews`提供相互独立的AI质检和人工质检手动结果，可同时不合格，共用一份文本备注。原单项结果归入人工质检，AI质检默认待定，原备注及修改历史保留。`archive_reader`通过唯一受限函数追加备注版本，对备注表没有直接新增、修改或删除权限。备注独立于可重建的轮次索引，永久保留各次保存记录；当前版本显示在详情固定区域并随单Sheet聊天记录导出，不受45天坐席状态清理影响。不新增密码配置，不向ICS提供管理员或采集凭据。
+
 ## 服务器自动迁移
 
 共享的 ICS 发布入口为 `deploy/server/release.sh`，质检库专用步骤位于 `quality/deploy/migrate.sh`。从源码仓库发布：
@@ -71,7 +73,7 @@ docker compose --env-file .env -f docker-compose.yml -f docker-compose.archive.y
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.archive.yml exec -T archive-postgres sh /tmp/ics-quality-database/verify-schema.sh
 ```
 
-迁移在事务内以 `archive_owner` 身份建表，使用锁避免并发执行。重复执行相同迁移会跳过；已执行 SQL 文件发生变化时，校验失败并停止。后续修改通过新增编号 SQL 完成，不能编辑已应用迁移。仓库属性固定 SQL 和 Shell 为 LF，确保不同环境校验一致。
+迁移在事务内以 `archive_owner` 身份建表，使用锁避免并发执行。重复执行相同迁移会跳过；已执行 SQL 文件发生变化时，校验失败并停止。后续修改通过新增编号 SQL 完成，不能编辑已应用迁移。发布时保留 SQL 原始字节和 Shell 的 LF 换行；不要对已应用 SQL 统一转换换行符，否则会改变校验值。
 
 验证在事务中写入样本并回滚，检查事件去重、消息版本追加、来源隔离、实际权限拒绝、任务更新、文件记录和只读查询，不保留测试记录。身份序列可能因验证产生空号，这是 PostgreSQL 的正常行为。
 

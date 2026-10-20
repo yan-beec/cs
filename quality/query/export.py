@@ -107,6 +107,16 @@ class ExportRepository(QueryRepository):
                     ).fetchone())
                 entity_count = max(counts[0]["n"], counts[1]["n"])
                 message_count, byte_count = counts[2]["n"], sum(item["bytes"] for item in counts)
+                # A review is repeated on its round's message rows; include it
+                # in the byte budget before streaming the single worksheet.
+                review_budget = connection.execute(f"""
+                    SELECT COALESCE(sum(octet_length(COALESCE(review.remark,'')) +
+                        octet_length(COALESCE(review.ai_status,'')) +
+                        octet_length(COALESCE(review.human_status,''))),0) AS bytes
+                    FROM ops.message_index m LEFT JOIN quality.current_round_reviews review
+                        ON review.round_id=m.round_id WHERE {message_where}
+                """, values).fetchone()
+                byte_count += review_budget["bytes"]
                 if ((round_id is not None and not counts[0]["n"]) or
                         (customer_id is not None and not counts[1]["n"])):
                     raise ExportNotFound()
@@ -136,9 +146,13 @@ class ExportRepository(QueryRepository):
                 """, [])
             else:
                 dataset["messages"] = rows(f"""
-                    SELECT m.*,c.display_name AS customer_name,c.contact_id
+                    SELECT m.*,c.display_name AS customer_name,c.contact_id,r.round_no,
+                        review.ai_status AS ai_review_status,review.human_status AS human_review_status,
+                        review.remark AS review_remark
                     FROM ops.message_index m
                     LEFT JOIN ops.customer_index c ON c.customer_id=m.customer_id
+                    LEFT JOIN ops.round_index r ON r.round_id=m.round_id
+                    LEFT JOIN quality.current_round_reviews review ON review.round_id=m.round_id
                     WHERE {message_where} ORDER BY m.customer_id,m.conversation_id,m.sent_at NULLS LAST,m.message_id,m.source_key,m.account_id
                 """)
             check()

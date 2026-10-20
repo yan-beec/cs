@@ -312,6 +312,51 @@ class QueryDatabaseTest(unittest.TestCase):
         self.assertEqual([row["rating_status"] for row in rounds], ["rated", "not_invited"])
         self.assertEqual(len(self.rows("archive.rating_snapshots")), 2)
         self.assertEqual(self.rows("ops.rating_index")[0]["round_id"], rounds[0]["round_id"])
+        detail = self.reader.round_detail(rounds[0]["round_id"])
+        invitation = next(message for message in detail["messages"] if message["message_id"] == 500)
+        self.assertEqual(invitation["visitor_rating"]["rating"], 5)
+        self.assertEqual(invitation["visitor_rating"]["round_id"], rounds[0]["round_id"])
+        history = self.reader.customer_history(rounds[0]["customer_id"])
+        self.assertEqual(sum(message["visitor_rating"] is not None for message in history["messages"]), 1)
+
+    def test_message_ratings_refresh_independently_and_preserve_original_invitation(self):
+        attrs = {"ics_closed_at": (START + timedelta(minutes=1)).isoformat()}
+        self.receive(event(1), event(2, 1, event_type="conversation_status_changed", status="resolved"),
+            event(3, 2), event(4, 3, message_id=500, sender="agent_bot", direction="outgoing",
+                content_type="input_csat", content="请评价本次服务", content_attributes=attrs))
+        self.drain()
+        customer = self.reader.list_customers(ArchiveFilters(source_key=self.source, account_id=1))["items"][0]
+        history = self.reader.customer_history(customer["customer_id"])
+        invitation = next(message for message in history["messages"] if message["message_id"] == 500)
+        self.assertIsNone(invitation["visitor_rating"]["rating"])
+        self.assertEqual(invitation["visitor_rating"]["status"], "pending")
+        self.receive(event(5, 4, event_type="message_updated", message_id=500, content_type="input_csat",
+            updated_at=(START + timedelta(minutes=4)).isoformat(),
+            content="修改后的邀请", content_attributes={**attrs, "submitted_values": {
+                "csat_survey_response": {"rating": 2, "feedback_message": "等候太久"}}}),
+            event(6, 10, conversation_id=22, message_id=600),
+            event(7, 11, event_type="conversation_status_changed", conversation_id=22, status="resolved"),
+            event(8, 12, conversation_id=22, message_id=601, sender="agent_bot", direction="outgoing",
+                content_type="input_csat", content_attributes={"ics_closed_at": (START + timedelta(minutes=11)).isoformat()}),
+            event(9, 13, event_type="message_updated", conversation_id=22, message_id=601, content_type="input_csat",
+                csat_survey_response={"rating": 5, "feedback_message": "已解决"}))
+        self.drain()
+        history = self.reader.customer_history(customer["customer_id"])
+        ratings = {message["message_id"]: message["visitor_rating"] for message in history["messages"] if message["visitor_rating"]}
+        self.assertEqual(set(ratings), {500, 601})
+        self.assertEqual((ratings[500]["rating"], ratings[500]["feedback"]), (2, "等候太久"))
+        self.assertEqual((ratings[601]["rating"], ratings[601]["feedback"]), (5, "已解决"))
+        self.assertEqual(ratings[500]["rating_at"], (START + timedelta(minutes=4)).isoformat())
+        self.receive(event(10, 15, event_type="message_updated", message_id=500, content_type="input_csat",
+            content_attributes={"submitted_values": {"csat_survey_response": {"rating": 1, "feedback_message": ""}}}))
+        self.drain()
+        messages = self.reader.customer_history(customer["customer_id"])["messages"]
+        invitation = next(message for message in messages if message["message_id"] == 500)
+        self.assertEqual((invitation["visitor_rating"]["rating"], invitation["visitor_rating"]["feedback"]), (1, ""))
+        versions = self.reader.message_versions(self.source, 1, 500)["items"]
+        original = next(snapshot for snapshot in versions if snapshot["id"] == invitation["original_snapshot_id"])
+        self.assertEqual(original["content"], "请评价本次服务")
+        self.assertEqual(next(message for message in messages if message["message_id"] == 601)["visitor_rating"]["rating"], 5)
 
     def test_runtime_roles_preserve_original_evidence_and_reader_is_read_only(self):
         self.receive(event(1))
@@ -372,6 +417,8 @@ class QueryDatabaseTest(unittest.TestCase):
         self.assertEqual(self.reader.list_rounds(ArchiveFilters(source_key=self.source, account_id=1, round_no=2))["items"][0]["rating_status"], "not_invited")
         detail = self.reader.round_detail(row["round_id"])
         self.assertEqual(detail["round"]["rating_feedback"], "=latest feedback")
+        invitation = next(message for message in detail["messages"] if message["message_id"] == 500)
+        self.assertEqual((invitation["visitor_rating"]["rating"], invitation["visitor_rating"]["feedback"]), (5, "=latest feedback"))
         stored = self.rows("ops.rating_index")[0]
         self.assertEqual((stored["rating"], stored["feedback"], stored["round_id"]), (5, "=latest feedback", row["round_id"]))
 
@@ -858,6 +905,11 @@ class QueryDatabaseTest(unittest.TestCase):
         self.assertEqual(item["rating"], 3)
         self.assertIsNone(item["round_id"])
         self.assertEqual(self.rows("ops.round_index")[0]["rating_status"], "not_invited")
+        customer_id = self.rows("ops.customer_index")[0]["customer_id"]
+        invitation = next(message for message in self.reader.customer_history(customer_id)["messages"]
+                          if message["visitor_rating"] is not None)
+        self.assertEqual(invitation["visitor_rating"]["rating"], 3)
+        self.assertIsNone(invitation["visitor_rating"]["round_id"])
 
     def test_byte_budget_rejects_projection_without_losing_captured_event(self):
         receipt = self.receive(event(1, content="x" * (1100 * 1024)))[0]

@@ -34,6 +34,7 @@ from ics_agent.rag.memory import get_conversation_memory_manager
 from reminder.backend.routes import router as reminder_router
 from reminder.backend.repository import get_repository as get_reminder_repository
 from quality.query.routes import router as quality_query_router
+from ics_agent.statistics.routes import router as statistics_router
 from quality.query.runtime import get_query_runtime
 from quality.assignment.runtime import start_assignment_sync, stop_assignment_sync
 from quality.presence.runtime import get_presence_runtime
@@ -199,3 +200,4 @@ app.include_router(admin_router)
 app.include_router(chatwoot_webhook_router)
 app.include_router(reminder_router)
 app.include_router(quality_query_router)
+app.include_router(statistics_router)

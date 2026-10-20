@@ -7,10 +7,11 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ics_agent.app.core.auth import require_admin
+from ics_agent.app.core.auth import AdminPrincipal, require_admin
 from quality.assignment.runtime import get_assignment_sync_runtime
-from .repository import ArchiveFilters
+from .repository import ArchiveFilters, ReviewConflict
 from .export import ExportFile, ExportNotFound, ExportTooLarge
 from .runtime import ArchiveUnavailable, ExportBusy, get_query_runtime
 
@@ -36,6 +37,8 @@ def archive_filters(
     message_scope: Literal["all", "contact", "agent", "bot", "private"] = "all",
     has_attachment: bool | None = None,
     status: Literal["active", "resolved", "idle_boundary", "unknown"] | None = None,
+    ai_review_status: Literal["passed", "failed", "pending"] | None = None,
+    human_review_status: Literal["passed", "failed", "pending"] | None = None,
 ) -> ArchiveFilters:
     if start is not None and start.tzinfo is None:
         start = start.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -54,6 +57,7 @@ def archive_filters(
         agent_id=agent_id, agent_scope=agent_scope, time_field=time_field, start=start, end=end,
         rating_status=rating_status, rating=rating, keyword=keyword.strip() if keyword else None,
         message_scope=message_scope, has_attachment=has_attachment, status=status,
+        ai_review_status=ai_review_status, human_review_status=human_review_status,
     )
 
 
@@ -237,6 +241,47 @@ async def round_detail(
     result = await _call("round_detail", round_id, page=page, page_size=page_size)
     if result is None:
         raise HTTPException(status_code=404, detail="未找到该轮对话。")
+    return result
+
+
+class RoundReviewInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ai_status: Literal["passed", "failed", "pending"]
+    human_status: Literal["passed", "failed", "pending"]
+    remark: str = Field(default="", max_length=5000)
+    revision: int = Field(default=0, ge=0, le=2**63 - 1)
+
+    @field_validator("remark")
+    @classmethod
+    def valid_remark(cls, value):
+        if "\x00" in value or any(0xD800 <= ord(character) <= 0xDFFF for character in value):
+            raise ValueError("备注包含无效字符。")
+        return value
+
+
+@router.get("/rounds/{round_id}/review")
+async def round_review(round_id: str):
+    if len(round_id) > 200:
+        raise HTTPException(status_code=422, detail="轮次标识无效。")
+    result = await _call("round_review", round_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="未找到该轮对话。")
+    return result
+
+
+@router.put("/rounds/{round_id}/review")
+async def save_round_review(
+    round_id: str, body: RoundReviewInput, principal: AdminPrincipal = Depends(require_admin),
+):
+    if len(round_id) > 200:
+        raise HTTPException(status_code=422, detail="轮次标识无效。")
+    try:
+        result = await _call("save_round_review", round_id, body.ai_status, body.human_status, body.remark,
+                             principal.username, body.revision)
+    except ReviewConflict:
+        raise HTTPException(status_code=409, detail="本轮备注已在其他窗口更新，请重新读取后再保存。") from None
+    if result is None:
+        raise HTTPException(status_code=404, detail="未找到该轮对话，备注未保存。")
     return result
 
 

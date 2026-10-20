@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>零新智能客服</title>
+  <link rel="stylesheet" href="/admin/statistics/assets/reports.css">
   <style>
     :root {
       /* 基础 */
@@ -849,6 +850,7 @@
       #qualityPage.quality-reading .quality-customer-card { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 6px; padding: 4px 6px; }
       #qualityPage.quality-reading .quality-customer-identity, #qualityPage.quality-reading .quality-customer-counts { grid-column: span 1; }
       #qualityPage.quality-reading .quality-customer-identity > span:last-child, #qualityPage.quality-reading .quality-customer-counts { grid-template-columns: minmax(0, 1fr); }
+      #qualityPage.quality-reading .quality-customer-identity > span:last-child { grid-template-columns: minmax(0, 1fr) auto; }
       #qualityPage.quality-reading .quality-customer-counts { font-size: 10px; }
       #qualityPage.quality-reading .quality-customer-identity .quality-secondary, #qualityPage.quality-reading .quality-customer-counts .quality-secondary { display: none; }
       #qualityPage.quality-reading .quality-customer-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px 6px; }
@@ -878,7 +880,7 @@
     .quality-customer-card[aria-pressed="true"] { border-color: #092f5f; background: #e5efff; box-shadow: inset 3px 0 #12365f; }
     .quality-customer-identity { grid-column: span 2; min-width: 0; }
     .quality-customer-avatar, .quality-customer-open { display: none; }
-    .quality-customer-identity > span:last-child { display: grid; grid-template-columns: 48px minmax(0, 1fr); align-items: baseline; gap: 6px; min-width: 0; }
+    .quality-customer-identity > span:last-child { display: grid; grid-template-columns: 48px minmax(0, 1fr) max-content; align-items: baseline; gap: 6px; min-width: 0; }
     .quality-customer-identity strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
     .quality-customer-card .quality-secondary { display: inline; margin: 0; font-size: 9px; }
     .quality-customer-card .quality-secondary, .quality-customer-totals { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -891,6 +893,13 @@
     .quality-customer-metric { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: baseline; gap: 3px; min-width: 0; white-space: nowrap; }
     .quality-customer-metric > span { color: var(--muted); font-size: 9px; }
     .quality-customer-metric > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-soft); font-size: 10px; font-weight: 600; }
+    .quality-review-lights { display: inline-grid; grid-template-columns: 24px 30px; align-items: center; gap: 6px; flex-shrink: 0; vertical-align: middle; }
+    .quality-review-light { display: inline-flex; align-items: center; gap: 3px; color: var(--ink-soft); font-size: 9px; line-height: 1.25; white-space: nowrap; }
+    .quality-review-light[data-review-kind="ai"] { grid-column: 1; }
+    .quality-review-light[data-review-kind="human"] { grid-column: 2; }
+    .quality-review-dot { display: inline-block; width: 8px; height: 8px; flex-shrink: 0; border-radius: 50%; border: 1px solid #13814c; background: #20b36a; box-shadow: 0 0 3px #20b36a55; }
+    .quality-review-light[data-review-status="failed"] .quality-review-dot { border-color: #b42332; background: #e34555; box-shadow: 0 0 3px #e3455555; }
+    .quality-round-item > .quality-review-lights { display: grid; margin-top: 4px; }
     @media (max-width: 1200px) {
       .quality-customer-identity, .quality-customer-counts { grid-column: span 3; }
       .quality-customer-round-heading { grid-column: 1 / -1; }
@@ -918,6 +927,15 @@
     .quality-reader-info { flex-shrink: 0; max-height: 30%; overflow: auto; padding: 8px 14px; border-bottom: 1px solid var(--line); }
     .quality-reader-info summary { color: var(--muted); cursor: pointer; font-size: 10px; }
     .quality-reader-info .quality-meta { gap: 5px 16px; margin: 8px 0 0; font-size: 10px; }
+    .quality-review { flex-shrink: 0; padding: 7px 12px; border-bottom: 1px solid var(--blue-line); background: #f5f8ff; }
+    .quality-review-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+    .quality-review-toolbar strong { font-size: 11px; }
+    .quality-review-verdict { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-size: 11px; }
+    #qualityReviewRound { flex: 1; min-width: 100px; max-width: 280px; }
+    .quality-review select, .quality-review textarea { padding: 4px 6px; font-size: 11px; }
+    .quality-review .button { min-height: 26px; padding: 3px 8px; font-size: 11px; }
+    #qualityReviewRemark { display: block; width: 100%; min-height: 42px; max-height: 100px; margin-top: 5px; resize: vertical; line-height: 1.5; }
+    #qualityReviewStatus { margin: 4px 0 0; font-size: 10px; overflow-wrap: anywhere; }
     .quality-chat-scroll { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px; overscroll-behavior: contain; }
     #qualityTimeline { display: flex; flex-direction: column; gap: 7px; }
     .quality-chat-divider { margin: 8px 0; text-align: center; color: var(--muted); font-size: 10px; }
@@ -933,6 +951,12 @@
     #qualityTimeline .bot .quality-message-content { background: #f1e8ff; }
     #qualityTimeline .private .quality-message-content { background: #fff4dc; }
     #qualityTimeline .system .quality-message-content { background: #f6f7f9; color: var(--muted); }
+    #qualityTimeline .quality-message-rating { margin-top: 3px; padding: 7px 10px; border: 1px solid #b7dccb; border-radius: 7px; background: #f0faf5; color: #236447; font-size: 11px; overflow-wrap: anywhere; }
+    #qualityTimeline .quality-message-rating.low { border-color: #e9a6ad; background: #fff1f2; color: #a92e3d; }
+    #qualityTimeline .quality-message-rating.pending { border-color: var(--line); background: var(--surface-soft); color: var(--muted); }
+    .quality-message-rating-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; }
+    .quality-message-rating-stars { letter-spacing: 1px; }
+    .quality-message-rating-feedback { margin: 4px 0 0; white-space: pre-wrap; line-height: 1.5; }
     #qualityTimeline .quality-message-footer { justify-content: flex-start; gap: 7px; margin-top: 2px; font-size: 9px; }
     #qualityTimeline .outgoing .quality-message-footer { justify-content: flex-end; }
     #qualityTimeline .quality-message-footer .button { min-height: 18px; padding: 0 3px; color: var(--muted); font-size: 9px; }
@@ -1043,6 +1067,15 @@
               <span class="nav-icon" aria-hidden="true">勤</span>
               <span>客服状态<small>当前状态 · 每日时长 · 分钟核对</small></span>
             </button>
+            <button id="statisticsNav" class="nav-item" type="button" aria-expanded="false" aria-controls="statisticsSubnav">
+              <span class="nav-icon" aria-hidden="true">统</span>
+              <span>统计报表<small>时间统计 · 坐席细化 · 质检统计</small></span>
+            </button>
+            <div id="statisticsSubnav" class="statistics-subnav hidden">
+              <button id="statisticsTimeNav" class="nav-item" type="button" data-report-view="statistics-time">时间统计</button>
+              <button id="statisticsAgentsNav" class="nav-item" type="button" data-report-view="statistics-agents">坐席细化</button>
+              <button id="statisticsQualityNav" class="nav-item" type="button" data-report-view="statistics-quality">质检统计</button>
+            </div>
             <button id="logsNav" class="nav-item" type="button">
               <span class="nav-icon" aria-hidden="true">志</span>
               <span>系统日志<small>查看全部渠道的运行日志</small></span>
@@ -1199,6 +1232,8 @@
                         <label class="quality-field">正文关键词<input id="qualityKeyword" name="keyword" placeholder="在已归档正文中查找" maxlength="200"></label>
                         <label class="quality-field">Chatwoot 收件箱<select id="qualityInbox"><option value="">全部收件箱</option></select></label>
                         <label class="quality-field">接待分类<select id="qualityReception" name="reception_type"><option value="">全部分类</option><option value="ai_only">纯 AI 接待</option><option value="human">人工介入</option></select></label>
+                        <label class="quality-field">AI质检<select id="qualityAiReviewStatus" name="ai_review_status"><option value="">全部结果</option><option value="passed">合格</option><option value="failed">不合格</option><option value="pending">待定</option></select></label>
+                        <label class="quality-field">人工质检<select id="qualityHumanReviewStatus" name="human_review_status"><option value="">全部结果</option><option value="passed">合格</option><option value="failed">不合格</option><option value="pending">待定</option></select></label>
                         <label class="quality-field">坐席<select id="qualityAgent"><option value="">全部坐席</option></select></label>
                         <label class="quality-field">坐席范围<select id="qualityAgentScope" name="agent_scope"><option value="">请选择坐席范围</option><option value="responsible" selected>本轮责任坐席（ICS分配）</option><option value="replied">本轮全部回复坐席</option><option value="assigned">历史分配（非责任）</option><option value="current">会话当前分配（非责任）</option></select></label>
                         <label class="quality-field">会话 ID<input id="qualityConversation" name="conversation_id" placeholder="Chatwoot 会话 ID" inputmode="numeric" pattern="[1-9][0-9]*" maxlength="19"></label>
@@ -1210,7 +1245,7 @@
                         <label class="quality-field">评价分数<select id="qualityRating" name="rating"><option value="">全部分数</option><option value="1">1 分</option><option value="2">2 分</option><option value="3">3 分</option><option value="4">4 分</option><option value="5">5 分</option></select></label>
                         <label class="quality-field">消息范围<select id="qualityMessageScope" name="message_scope"><option value="">请选择消息范围</option><option value="all" selected>全部消息</option><option value="contact">客户消息</option><option value="agent">真人客服公开回复</option><option value="bot">机器人消息</option><option value="private">私密消息 / 内部备注</option></select></label>
                       </div>
-                      <p class="hint">筛选用于查找客户或轮次；打开客户后可阅读完整历史。责任坐席取本轮 ICS 原始分配者。</p>
+                      <p class="hint">筛选用于查找客户或轮次；质检条件须在同一轮满足，未标记按待定处理。打开客户后可阅读完整历史。责任坐席取本轮 ICS 原始分配者。</p>
                     </div>
                     <div class="quality-form-actions"><div class="toolbar-actions"><button id="qualityReset" class="button secondary" type="button">重置</button><button class="button" type="submit">查询归档</button></div></div>
                   </fieldset>
@@ -1229,7 +1264,7 @@
                 <div class="panel-header"><div class="panel-heading"><h3 id="qualityDetailTitle">对话详情</h3><p id="qualityDetailHint">完整归档时间线</p></div><div class="toolbar-actions"><button id="qualityExportDetail" class="button secondary hidden" type="button" disabled>导出本轮（Excel）</button><button id="qualityCustomerHistory" class="button secondary hidden" type="button">客户完整历史</button><button id="qualityCloseDetail" class="button tertiary" type="button" aria-label="关闭聊天窗口（Esc）">关闭 ×</button></div></div>
                 <div class="quality-reader">
                   <nav class="quality-round-sidebar" aria-label="客户对话轮次"><div class="quality-round-heading"><strong>对话轮次</strong><span id="qualityRoundCount" class="hint"></span></div><button id="qualityAllHistory" class="quality-round-item" type="button" aria-current="true">全部聊天记录</button><div id="qualityRoundList" class="quality-round-list"><div class="hint">选择客户后读取轮次。</div></div><div class="quality-round-pages"><button id="qualityRoundPrev" class="button tertiary" type="button" disabled>上一页</button><span id="qualityRoundPageInfo"></span><button id="qualityRoundNext" class="button tertiary" type="button" disabled>下一页</button></div></nav>
-                  <div class="quality-reader-main"><details class="quality-reader-info"><summary>对话资料、责任坐席及评价</summary><div id="qualityDetailMeta" class="quality-meta"></div></details><div id="qualityChatScroll" class="quality-chat-scroll"><div id="qualityTimeline" class="quality-timeline" aria-live="polite"></div>
+                  <div class="quality-reader-main"><section id="qualityReview" class="quality-review" aria-label="本轮质检备注"><div class="quality-review-toolbar"><strong>本轮质检</strong><select id="qualityReviewRound" aria-label="质检备注所属轮次" disabled><option value="">请选择轮次</option></select><label class="quality-review-verdict" for="qualityReviewAiVerdict">AI质检<select id="qualityReviewAiVerdict" disabled><option value="pending">待定</option><option value="passed">合格</option><option value="failed">不合格</option></select></label><label class="quality-review-verdict" for="qualityReviewHumanVerdict">人工质检<select id="qualityReviewHumanVerdict" disabled><option value="pending">待定</option><option value="passed">合格</option><option value="failed">不合格</option></select></label><button id="qualityReviewSave" class="button primary" type="button" disabled>保存备注</button><button id="qualityReviewReload" class="button tertiary" type="button" disabled>重新读取</button></div><textarea id="qualityReviewRemark" rows="2" maxlength="5000" aria-label="本轮质检备注" placeholder="填写本轮对话的质检备注，最多5000字" disabled></textarea><p id="qualityReviewStatus" class="hint" role="status">选择轮次后填写，保存后长期保留并随聊天记录导出。</p></section><details class="quality-reader-info"><summary>对话资料、责任坐席及评价</summary><div id="qualityDetailMeta" class="quality-meta"></div></details><div id="qualityChatScroll" class="quality-chat-scroll"><div id="qualityTimeline" class="quality-timeline" aria-live="polite"></div>
                   <section id="qualityVersions" class="quality-versions hidden" aria-label="消息版本"><div class="quality-message-header"><div><h4 id="qualityVersionsTitle">消息观察版本</h4><p class="hint">保留创建、编辑和删除时已收到的内容；缺少最初事件时不会将后续观察标为原文。</p></div><button id="qualityCloseVersions" class="button tertiary" type="button">收起版本</button></div><div id="qualityVersionList" class="quality-timeline"></div><div class="quality-form-actions"><span id="qualityVersionsPageInfo" class="hint">第 1 页</span><div class="toolbar-actions"><button id="qualityVersionsPrev" class="button tertiary" type="button" disabled>上一页版本</button><button id="qualityVersionsNext" class="button tertiary" type="button" disabled>下一页版本</button></div></div></section>
                   </div><div class="panel-footer quality-pagination"><span id="qualityDetailPageInfo" class="hint">第 1 页</span><div class="toolbar-actions"><button id="qualityDetailPrev" class="button tertiary" type="button" disabled>上一页消息</button><button id="qualityDetailNext" class="button tertiary" type="button" disabled>下一页消息</button></div></div></div>
                 </div>
@@ -1264,6 +1299,8 @@
               </section>
             </div>
           </section>
+
+          <section id="statisticsPage" class="hidden" aria-label="统计报表"></section>
 
           <section id="logsPage" class="hidden" aria-label="系统日志">
             <div class="workspace-heading">
@@ -1304,6 +1341,7 @@
   </div>
   <div id="toast" class="toast hidden"></div>
 
+  <script src="/admin/statistics/assets/reports.js"></script>
   <script>
     const state = {
       channelKey: "xingliao",
@@ -1327,7 +1365,7 @@
     const $ = (id) => document.getElementById(id);
     const currentChannelName = () => state.channels.find((channel) => channel.key === state.channelKey)?.name || state.channelKey;
     const setNavigationBusy = () => {
-      document.querySelectorAll("#channelNav button, #logsNav, #qualityNav, #presenceNav").forEach((button) => {
+      document.querySelectorAll("#channelNav button, #logsNav, #qualityNav, #presenceNav, #statisticsNav, #statisticsSubnav button").forEach((button) => {
         button.disabled = state.pendingMutations > 0;
       });
     };
@@ -1389,6 +1427,8 @@
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
     }[char]));
+    const statisticsReports = window.ICSReports?.create({api, escapeHtml, getToken: () => state.token,
+      isActive: () => state.view.startsWith("statistics-")});
 
     const qualityState = {
       generation: 0, controllers: new Map(), ready: false, mode: "customers", page: 1, pageSize: 30,
@@ -1396,7 +1436,7 @@
       detail: null, versions: null, messages: [], listVersion: 0, detailVersion: 0, versionsVersion: 0,
       listLoading: false, detailLoading: false, exportJob: null, exportEpoch: 0,
       overview: null, overviewVersion: 0, overviewLoading: false,
-      roundDirectory: null, filtersCollapsed: false
+      roundDirectory: null, filtersCollapsed: false, review: null, ratingTimer: null
     };
     const presenceState = {
       generation: 0, controllers: new Map(), timer: null,
@@ -1433,13 +1473,13 @@
       qualityState.controllers.get(slot)?.abort();
       qualityState.controllers.delete(slot);
     };
-    const qualityRequest = async (slot, path) => {
+    const qualityRequest = async (slot, path, options = {}) => {
       cancelQualityRequest(slot);
       const controller = new AbortController();
       const generation = qualityState.generation, token = state.token;
       qualityState.controllers.set(slot, controller);
       try {
-        const result = await api(`/admin/api/quality${path}`, { signal: controller.signal });
+        const result = await api(`/admin/api/quality${path}`, { ...options, signal: controller.signal });
         if (controller.signal.aborted || !isQualityCurrent(generation, token) || qualityState.controllers.get(slot) !== controller) throw qualityAbort();
         return result;
       } catch (error) {
@@ -1460,6 +1500,81 @@
     };
     const qualityLocalTime = (value) => value ? `${value}${value.length === 16 ? ":00" : ""}+08:00` : "";
     const qualityTag = (label, color = "") => `<span class="tag ${color}">${escapeHtml(label)}</span>`;
+    const qualityReviewLabel = (status) => ({ passed: "合格", failed: "不合格", pending: "待定" }[status] || "待定");
+    const qualityReviewLights = (review, scope = "本轮") => {
+      const lights = [["ai", "AI", "AI质检", review?.ai_status], ["human", "人工", "人工质检", review?.human_status]]
+        .filter(([, , , status]) => status === "passed" || status === "failed")
+        .map(([kind, text, label, status]) => `<span class="quality-review-light" data-review-kind="${kind}" data-review-status="${status}" role="img" aria-label="${label}：${qualityReviewLabel(status)}" title="${escapeHtml(scope)} · ${label}：${qualityReviewLabel(status)}"><i class="quality-review-dot" aria-hidden="true"></i>${text}</span>`).join("");
+      return lights ? `<span class="quality-review-lights" aria-label="${escapeHtml(scope)}质检结果">${lights}</span>` : "";
+    };
+    const canLeaveQualityReview = () => {
+      if (qualityState.review?.saving) { showToast("正在保存质检备注，请稍候。", true); return false; }
+      return !qualityState.review?.dirty || window.confirm("本轮质检备注尚未保存，确定放弃这些修改吗？");
+    };
+    const renderQualityReview = () => {
+      const review = qualityState.review, detail = qualityState.detail;
+      const rounds = detail?.type === "round" && detail.item?.round_id ? [detail.item] : qualityState.roundDirectory?.items || [];
+      const options = rounds.slice();
+      if (review && !options.some((item) => String(item.round_id) === review.roundId)) options.unshift(review.round);
+      $("qualityReviewRound").innerHTML = options.length ? options.map((item) => `<option value="${escapeHtml(item.round_id)}">会话 ${escapeHtml(item.conversation_id)} · 第 ${escapeHtml(item.round_no)} 轮</option>`).join("") : '<option value="">请选择轮次</option>';
+      $("qualityReviewRound").value = review?.roundId || "";
+      $("qualityReviewRound").disabled = detail?.type !== "customer" || !options.length || !!review?.saving;
+      $("qualityReviewAiVerdict").value = review?.ai_status || "pending";
+      $("qualityReviewHumanVerdict").value = review?.human_status || "pending";
+      $("qualityReviewRemark").value = review?.remark || "";
+      for (const id of ["qualityReviewAiVerdict", "qualityReviewHumanVerdict", "qualityReviewRemark", "qualityReviewReload"]) $(id).disabled = !review || review.loading || review.saving;
+      $("qualityReviewSave").disabled = !review || review.loading || review.saving || review.readFailed;
+      $("qualityReviewSave").textContent = review?.saving ? "保存中…" : "保存备注";
+      $("qualityReviewStatus").textContent = !review ? "选择轮次后填写，保存后长期保留并随聊天记录导出。" : review.loading ? "正在读取本轮质检备注…" : review.saving ? "正在保存，请稍候…" : review.error || (review.dirty ? "有未保存的修改，请点击保存备注。" : review.reviewed_at ? `已保存 · AI质检：${qualityReviewLabel(review.ai_status)} · 人工质检：${qualityReviewLabel(review.human_status)} · ${qualityTime(review.reviewed_at)} · ${review.reviewer || "管理员"}` : "本轮尚未保存质检结果，两项默认待定。保存后长期保留并随聊天记录导出。");
+    };
+    const setQualityReview = (round, saved = null) => {
+      const value = saved || round.review || {};
+      qualityState.review = { roundId: String(round.round_id), round, ai_status: value.ai_status || "pending", human_status: value.human_status || "pending", remark: value.remark || "", revision: String(value.revision || "0"), reviewer: value.reviewer, reviewed_at: value.reviewed_at, dirty: false, saving: false, loading: false, error: "" };
+      renderQualityReview();
+    };
+    const loadQualityReview = async (round) => {
+      if (!round || !canLeaveQualityReview()) { renderQualityReview(); return; }
+      cancelQualityRequest("review");
+      setQualityReview(round);
+      const review = qualityState.review;
+      review.loading = true; renderQualityReview();
+      try {
+        const result = await qualityRequest("review", `/rounds/${encodeURIComponent(round.round_id)}/review`);
+        if (qualityState.review === review) setQualityReview(round, result);
+      } catch (error) {
+        if (error.name === "AbortError" || qualityState.review !== review) return;
+        review.loading = false; review.readFailed = true; review.error = error.message;
+        // A failed read must never allow overwriting an unknown newer revision.
+        renderQualityReview(); $("qualityReviewSave").disabled = true;
+      }
+    };
+    const saveQualityReview = async () => {
+      const review = qualityState.review;
+      if (!review || review.loading || review.saving || $("qualityReviewSave").disabled) return;
+      review.ai_status = $("qualityReviewAiVerdict").value;
+      review.human_status = $("qualityReviewHumanVerdict").value;
+      review.remark = $("qualityReviewRemark").value;
+      review.saving = true; review.error = ""; renderQualityReview();
+      try {
+        const result = await qualityRequest("review-save", `/rounds/${encodeURIComponent(review.roundId)}/review`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ai_status: review.ai_status, human_status: review.human_status, remark: review.remark, revision: review.revision }) });
+        if (qualityState.review !== review) return;
+        review.round.review = result;
+        for (const item of qualityState.roundDirectory?.items || []) if (String(item.round_id) === review.roundId) item.review = result;
+        let listChanged = false;
+        for (const item of qualityState.items) {
+          const round = qualityState.mode === "customers" ? item.latest_round : item;
+          if (round && String(round.round_id) === review.roundId) { round.review = result; listChanged = true; }
+        }
+        if (listChanged) renderQualityList();
+        setQualityReview(review.round, result);
+        renderQualityRoundDirectory();
+        showToast("本轮质检备注已保存。");
+      } catch (error) {
+        if (error.name === "AbortError" || qualityState.review !== review) return;
+        review.saving = false; review.dirty = true; review.error = `${error.message} 当前输入已保留。`;
+        renderQualityReview();
+      }
+    };
     const qualityStatusLabel = (value) => ({ active: "未结束", resolved: "已解决", idle_boundary: "超时分轮", unknown: "待确认" }[value] || "待确认");
     const qualityReceptionLabel = (round) => {
       const value = String(round.reception_type || "unknown").toLowerCase();
@@ -1984,8 +2099,8 @@
       return filename && filename.length <= 200 && /\.xlsx$/i.test(filename) ? filename : fallback;
     };
     const qualityExportFilterSummary = (params) => {
-      const labels = { source_key: "来源", account_id: "账号", inbox_id: "收件箱", channel_key: "ICS 业务渠道", customer_query: "用户", keyword: "关键词", reception_type: "接待分类", agent_id: "坐席", agent_scope: "坐席范围", conversation_id: "会话", round_no: "轮次", status: "轮次状态", time_field: "时间依据", start: "开始时间", end: "结束时间（不含）", rating_status: "评价状态", rating: "评价分数", message_scope: "消息范围", has_attachment: "附件" };
-      const values = { reception_type: { ai_only: "纯 AI 接待", human: "人工介入" }, agent_scope: { responsible: "本轮责任坐席（ICS分配）", replied: "本轮全部回复坐席", assigned: "历史分配（非责任）", current: "会话当前分配（非责任）" }, time_field: { started_at: "轮次开始", message_at: "消息时间", resolved_at: "解决时间", rating_at: "评价时间" }, rating_status: { rated: "已评价" }, message_scope: { all: "全部消息", private: "私密备注", contact: "客户", agent: "真人客服", bot: "机器人", system: "系统", unknown: "身份待确认" }, has_attachment: { true: "有附件", false: "无附件" } };
+      const labels = { source_key: "来源", account_id: "账号", inbox_id: "收件箱", channel_key: "ICS 业务渠道", customer_query: "用户", keyword: "关键词", reception_type: "接待分类", agent_id: "坐席", agent_scope: "坐席范围", conversation_id: "会话", round_no: "轮次", status: "轮次状态", time_field: "时间依据", start: "开始时间", end: "结束时间（不含）", rating_status: "评价状态", rating: "评价分数", ai_review_status: "AI质检", human_review_status: "人工质检", message_scope: "消息范围", has_attachment: "附件" };
+      const values = { reception_type: { ai_only: "纯 AI 接待", human: "人工介入" }, agent_scope: { responsible: "本轮责任坐席（ICS分配）", replied: "本轮全部回复坐席", assigned: "历史分配（非责任）", current: "会话当前分配（非责任）" }, time_field: { started_at: "轮次开始", message_at: "消息时间", resolved_at: "解决时间", rating_at: "评价时间" }, rating_status: { rated: "已评价" }, ai_review_status: { passed: "合格", failed: "不合格", pending: "待定" }, human_review_status: { passed: "合格", failed: "不合格", pending: "待定" }, message_scope: { all: "全部消息", private: "私密备注", contact: "客户", agent: "真人客服", bot: "机器人", system: "系统", unknown: "身份待确认" }, has_attachment: { true: "有附件", false: "无附件" } };
       const summary = [];
       for (const [key, value] of params) {
         if (!labels[key]) continue;
@@ -2003,6 +2118,7 @@
       return summary.length ? summary.join("\n") : "全部归档（未限定筛选条件）";
     };
     const exportQuality = async (scope) => {
+      if (qualityState.review?.dirty || qualityState.review?.saving) { showToast("请先保存本轮质检备注，再导出聊天记录。", true); return; }
       const detail = qualityState.detail;
       if (!qualityState.ready || state.view !== "quality" || !state.token || qualityState.exportJob) return;
       if (!["list", "detail"].includes(scope)) return;
@@ -2087,7 +2203,12 @@
         button.setAttribute("aria-pressed", String(!!selected));
       });
     };
-    const closeQualityDetail = (preserveDirectory = false) => {
+    const closeQualityDetail = (preserveDirectory = false, force = false) => {
+      if (!force && !canLeaveQualityReview()) return false;
+      stopQualityRatingRefresh();
+      cancelQualityRequest("review");
+      cancelQualityRequest("review-save");
+      qualityState.review = null;
       cancelQualityExport();
       cancelQualityRequest("detail");
       qualityState.detailVersion++;
@@ -2108,7 +2229,9 @@
       $("qualityDetailPrev").disabled = true;
       $("qualityDetailNext").disabled = true;
       $("qualityDetailPageInfo").textContent = "第 1 页";
+      renderQualityReview();
       updateQualityExportButtons();
+      return true;
     };
     const stopQuality = (reset = false) => {
       qualityState.generation++;
@@ -2123,7 +2246,7 @@
       qualityState.overviewVersion++;
       qualityState.overview = null;
       qualityState.overviewLoading = false;
-      closeQualityDetail();
+      closeQualityDetail(false, true);
       $("qualityFilters").disabled = true;
       $("qualityRoundsTab").disabled = true;
       $("qualityCustomersTab").disabled = true;
@@ -2264,11 +2387,11 @@
           const identity = `联系人 ${escapeHtml(item.contact_id || "未知")} · 业务用户 ${escapeHtml(item.business_user_id || "未关联")}`;
           const totals = `${escapeHtml(item.round_count ?? 0)} 轮 · ${escapeHtml(item.message_count ?? 0)} 条消息`;
           const time = escapeHtml(qualityTime(item.last_message_at));
-          return `<button class="quality-customer-card" type="button" data-quality-open="${index}" aria-haspopup="dialog"><span class="quality-customer-identity"><span><strong title="${name}">${name}</strong><span class="quality-secondary" title="${identity}">${identity}</span></span></span><span class="quality-customer-counts"><span class="quality-customer-totals" title="${totals}">${totals}</span><span class="quality-secondary" title="${time}">${time}</span></span>${qualityCustomerRound(item)}</button>`;
+          return `<button class="quality-customer-card" type="button" data-quality-open="${index}" aria-haspopup="dialog"><span class="quality-customer-identity"><span><strong title="${name}">${name}</strong><span class="quality-secondary" title="${identity}">${identity}</span>${qualityReviewLights(item.latest_round?.review, "最近一轮")}</span></span><span class="quality-customer-counts"><span class="quality-customer-totals" title="${totals}">${totals}</span><span class="quality-secondary" title="${time}">${time}</span></span>${qualityCustomerRound(item)}</button>`;
         }
         const responsible = qualityResponsibleAgentLabel(item);
         const feedback = qualityRatingFeedback(item);
-        return `<tr><td>${escapeHtml(item.customer_name || "未命名用户")}</td><td>会话 ${escapeHtml(item.conversation_id)} · 第 ${escapeHtml(item.round_no)} 轮<span class="quality-secondary">${escapeHtml(qualityInboxName(item))}</span><span class="quality-secondary">ICS 业务渠道：${escapeHtml(qualityChannelName(item.channel_key))}</span></td><td><div class="quality-tags">${qualityTag(qualityReceptionLabel(item), item.reception_type === "human" ? "green" : "")}${qualityTag(qualityStatusLabel(item.status), item.status === "active" ? "amber" : "")}</div></td><td>${escapeHtml(responsible)}</td><td>${escapeHtml(qualityTime(item.started_at))}<span class="quality-secondary">最近消息 ${escapeHtml(qualityTime(item.last_message_at))}</span></td><td>${escapeHtml(qualityRatingLabel(item))}${feedback ? `<span class="quality-secondary quality-rating-feedback">${escapeHtml(feedback)}</span>` : ""}</td><td><div class="row-actions"><button class="button tertiary" type="button" data-quality-open="${index}">本轮详情</button>${item.customer_id ? `<button class="button tertiary" type="button" data-quality-history="${index}">用户全史</button>` : ""}</div></td></tr>`;
+        return `<tr><td>${escapeHtml(item.customer_name || "未命名用户")} ${qualityReviewLights(item.review)}</td><td>会话 ${escapeHtml(item.conversation_id)} · 第 ${escapeHtml(item.round_no)} 轮<span class="quality-secondary">${escapeHtml(qualityInboxName(item))}</span><span class="quality-secondary">ICS 业务渠道：${escapeHtml(qualityChannelName(item.channel_key))}</span></td><td><div class="quality-tags">${qualityTag(qualityReceptionLabel(item), item.reception_type === "human" ? "green" : "")}${qualityTag(qualityStatusLabel(item.status), item.status === "active" ? "amber" : "")}</div></td><td>${escapeHtml(responsible)}</td><td>${escapeHtml(qualityTime(item.started_at))}<span class="quality-secondary">最近消息 ${escapeHtml(qualityTime(item.last_message_at))}</span></td><td>${escapeHtml(qualityRatingLabel(item))}${feedback ? `<span class="quality-secondary quality-rating-feedback">${escapeHtml(feedback)}</span>` : ""}</td><td><div class="row-actions"><button class="button tertiary" type="button" data-quality-open="${index}">本轮详情</button>${item.customer_id ? `<button class="button tertiary" type="button" data-quality-history="${index}">用户全史</button>` : ""}</div></td></tr>`;
       }).join("");
       const headings = ["用户", "会话 / 轮次", "分类 / 状态", "本轮责任坐席", "北京时间", "服务评价", "操作"];
       $("qualityList").innerHTML = rounds ? `<table><thead><tr>${headings.map((heading) => `<th>${heading}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>` : rows;
@@ -2324,6 +2447,50 @@
         return `<div>${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">${escapeHtml(name)} ↗</a>` : `<span>${escapeHtml(name)} · 暂无可打开的来源链接</span>`}${item.media_type ? `<span class="quality-secondary">${escapeHtml(item.media_type)}</span>` : ""}</div>`;
       }).join("")}</div>`;
     };
+    const qualityMessageRating = (message) => {
+      const rating = message.visitor_rating;
+      if (!rating && !message.is_rating) return "";
+      const score = rating?.rating;
+      const rated = typeof score === "number" && Number.isInteger(score) && score >= 1 && score <= 5;
+      const feedback = typeof rating?.feedback === "string" ? rating.feedback.trim() : "";
+      const low = rated && score < 4;
+      return `<div class="quality-message-rating${rated ? low ? " low" : "" : " pending"}" aria-label="访客评价：${rated ? `${score} 分，满分 5 分` : "待评价"}"><div class="quality-message-rating-heading"><strong>访客评价</strong>${rated ? `<span class="quality-message-rating-stars" aria-hidden="true">${"★".repeat(score)}${"☆".repeat(5 - score)}</span><strong>${score} / 5 分</strong>${low ? "<span>低评分</span>" : ""}` : "<span>待评价</span>"}</div>${feedback ? `<p class="quality-message-rating-feedback">${escapeHtml(feedback)}</p>` : ""}</div>`;
+    };
+    const stopQualityRatingRefresh = () => {
+      if (qualityState.ratingTimer !== null) clearInterval(qualityState.ratingTimer);
+      qualityState.ratingTimer = null;
+      cancelQualityRequest("detail-ratings");
+    };
+    const refreshQualityRatings = async () => {
+      const detail = qualityState.detail;
+      if (!detail || !qualityState.ready || state.view !== "quality" || document.hidden || qualityState.detailLoading || qualityState.controllers.has("detail-ratings")) return;
+      const version = qualityState.detailVersion, generation = qualityState.generation, token = state.token, page = detail.page;
+      const path = detail.type === "customer" ? `/customers/${encodeURIComponent(detail.id)}/history` : `/rounds/${encodeURIComponent(detail.id)}`;
+      try {
+        const result = await qualityRequest("detail-ratings", `${path}?page=${page}&page_size=${qualityState.pageSize}`);
+        if (!isQualityCurrent(generation, token) || qualityState.detail !== detail || qualityState.detailVersion !== version || detail.page !== page) return;
+        const key = (message) => JSON.stringify([message.source_key, message.account_id, message.conversation_id, message.message_id]);
+        const ratings = new Map((result.messages || []).map((message) => [key(message), message.visitor_rating ?? null]));
+        let changed = false;
+        qualityState.messages = qualityState.messages.map((message) => {
+          const id = key(message);
+          if (!ratings.has(id) || JSON.stringify(message.visitor_rating ?? null) === JSON.stringify(ratings.get(id))) return message;
+          changed = true;
+          return { ...message, visitor_rating: ratings.get(id) };
+        });
+        if (changed) {
+          const scrollTop = $("qualityChatScroll").scrollTop;
+          renderQualityTimeline();
+          $("qualityChatScroll").scrollTop = scrollTop;
+        }
+      } catch (error) {
+        // Retain the last received rating during a transient failure; retry on the next tick.
+      }
+    };
+    const startQualityRatingRefresh = () => {
+      stopQualityRatingRefresh();
+      if (qualityState.detail && qualityState.ready && state.view === "quality" && !document.hidden) qualityState.ratingTimer = setInterval(refreshQualityRatings, 15000);
+    };
     const renderQualityTimeline = () => {
       const history = qualityState.detail?.type === "customer";
       if (!qualityState.messages.length) {
@@ -2343,7 +2510,7 @@
         if (!message.round_id) badges.push(qualityTag("未归轮", "amber"));
         const content = message.content === null || message.content === undefined || message.content === "" ? "（无文字内容）" : message.content;
         const outgoing = ["agent", "bot"].includes(message.sender_role);
-        return `${separator}<article class="quality-message${outgoing ? " outgoing" : ""}${message.sender_role === "bot" ? " bot" : ""}${message.sender_role === "system" ? " system" : ""}${message.is_private ? " private" : ""}${message.is_deleted ? " deleted" : ""}" title="会话 ${escapeHtml(message.conversation_id ?? "未知")} · 消息 ${escapeHtml(message.message_id)}"><div class="quality-message-header"><div class="quality-tags"><strong>${escapeHtml(message.sender_name || qualityRoleLabel(message.sender_role))}</strong>${badges.join("")}</div><span class="hint">${escapeHtml(qualityTime(message.sent_at))}</span><button class="button tertiary" type="button" data-quality-versions="${index}">原文与版本</button></div><p class="quality-message-content">${escapeHtml(content)}</p>${qualityAttachments(message.attachments)}${message.is_deleted ? '<div class="quality-message-footer">展示删除前最后收到的内容</div>' : ""}</article>`;
+        return `${separator}<article class="quality-message${outgoing ? " outgoing" : ""}${message.sender_role === "bot" ? " bot" : ""}${message.sender_role === "system" ? " system" : ""}${message.is_private ? " private" : ""}${message.is_deleted ? " deleted" : ""}" title="会话 ${escapeHtml(message.conversation_id ?? "未知")} · 消息 ${escapeHtml(message.message_id)}"><div class="quality-message-header"><div class="quality-tags"><strong>${escapeHtml(message.sender_name || qualityRoleLabel(message.sender_role))}</strong>${badges.join("")}</div><span class="hint">${escapeHtml(qualityTime(message.sent_at))}</span><button class="button tertiary" type="button" data-quality-versions="${index}">原文与版本</button></div><p class="quality-message-content">${escapeHtml(content)}</p>${qualityMessageRating(message)}${qualityAttachments(message.attachments)}${message.is_deleted ? '<div class="quality-message-footer">展示删除前最后收到的内容</div>' : ""}</article>`;
       }).join("");
       $("qualityTimeline").querySelectorAll("[data-quality-round]").forEach((button) => button.addEventListener("click", () => {
         const message = qualityState.messages[Number(button.dataset.qualityRound)];
@@ -2401,7 +2568,14 @@
       $("qualityAllHistory").disabled = false;
       $("qualityAllHistory").setAttribute("aria-current", String(detail?.type === "customer"));
       $("qualityRoundCount").textContent = directory.loading ? "读取中" : `${directory.total} 轮`;
-      $("qualityRoundList").innerHTML = directory.loading ? '<div class="hint">正在读取轮次...</div>' : directory.items.length ? directory.items.map((item, index) => `<button class="quality-round-item" type="button" data-quality-directory-round="${index}" aria-current="${detail?.type === "round" && String(detail.id) === String(item.round_id)}"><strong>第 ${escapeHtml(item.round_no)} 轮 <span>${escapeHtml(qualityReceptionLabel(item))}</span></strong><span>${escapeHtml(qualityTime(item.started_at))}</span><span>会话 ${escapeHtml(item.conversation_id)} · ${escapeHtml(qualityStatusLabel(item.status))}${item.rating !== null && item.rating !== undefined ? ` · ${escapeHtml(item.rating)} 分` : ""}</span></button>`).join("") : '<div class="hint">暂无已归档轮次；可查看全部聊天记录。</div>';
+      $("qualityRoundList").innerHTML = directory.loading ? '<div class="hint">正在读取轮次...</div>' : directory.items.length ? directory.items.map((item, index) => `<button class="quality-round-item" type="button" data-quality-directory-round="${index}" aria-current="${detail?.type === "round" && String(detail.id) === String(item.round_id)}"><strong>第 ${escapeHtml(item.round_no)} 轮 <span>${escapeHtml(qualityReceptionLabel(item))}</span></strong><span>${escapeHtml(qualityTime(item.started_at))}</span><span>会话 ${escapeHtml(item.conversation_id)} · ${escapeHtml(qualityStatusLabel(item.status))}${item.rating !== null && item.rating !== undefined ? ` · ${escapeHtml(item.rating)} 分` : ""}</span>${qualityReviewLights(item.review)}</button>`).join("") : '<div class="hint">暂无已归档轮次；可查看全部聊天记录。</div>';
+      // Keep the editor outside the message scroller, also in full-history mode.
+      if (detail?.type === "customer" && !qualityState.review && !directory.loading && directory.items.length) setQualityReview(directory.items[0]);
+      else renderQualityReview();
+      $("qualityRoundList").querySelectorAll("[data-quality-directory-round]").forEach((button) => {
+        const item = directory.items[Number(button.dataset.qualityDirectoryRound)];
+        if (item?.review) button.title = `AI质检：${qualityReviewLabel(item.review.ai_status)} · 人工质检：${qualityReviewLabel(item.review.human_status)}${item.review.remark ? `\n${item.review.remark}` : ""}`;
+      });
       const pages = Math.max(1, Math.ceil(directory.total / directory.pageSize));
       $("qualityRoundPageInfo").textContent = `${directory.page} / ${pages}`;
       $("qualityRoundPrev").disabled = directory.loading || directory.page <= 1;
@@ -2436,7 +2610,7 @@
     };
     const openQualityDetail = async (type, id, preserveDirectory = false) => {
       if (!id || !qualityState.ready || state.view !== "quality") return;
-      closeQualityDetail(preserveDirectory);
+      if (closeQualityDetail(preserveDirectory) === false) return;
       qualityState.detail = { type, id: String(id), page: 1, total: 0, item: null };
       $("qualityPage").classList.add("quality-reading");
       syncQualityCustomerSelection();
@@ -2448,6 +2622,7 @@
     const loadQualityDetail = async () => {
       const detail = qualityState.detail;
       if (!detail || !qualityState.ready || state.view !== "quality") return;
+      stopQualityRatingRefresh();
       closeQualityVersions();
       const version = ++qualityState.detailVersion, generation = qualityState.generation, token = state.token;
       qualityState.detailLoading = true;
@@ -2462,6 +2637,7 @@
         if (!isQualityCurrent(generation, token) || version !== qualityState.detailVersion || qualityState.detail !== detail) return;
         const item = detail.type === "customer" ? result.customer : result.round;
         detail.item = item || {};
+        if (detail.type === "round" && (!qualityState.review || qualityState.review.roundId !== String(detail.id) || !qualityState.review.dirty && !qualityState.review.saving && !qualityState.review.loading)) setQualityReview({ ...detail.item, round_id: detail.id });
         syncQualityCustomerSelection();
         detail.total = Number(result.total || 0);
         detail.page = Number(result.page || detail.page);
@@ -2469,7 +2645,7 @@
         const customerId = detail.type === "customer" ? detail.id : item?.customer_id;
         if (customerId && qualityState.roundDirectory?.customerId !== String(customerId)) loadQualityRoundDirectory(customerId);
         $("qualityDetailTitle").textContent = detail.type === "customer" ? `${item?.display_name || "未命名用户"} · 完整历史` : `${item?.customer_name || "未命名用户"} · 会话 ${item?.conversation_id ?? "未知"} · 第 ${item?.round_no ?? "未知"} 轮`;
-        $("qualityDetailHint").textContent = detail.type === "customer" ? "同一归档用户跨会话的完整历史 · 包含未归轮消息 · 不受列表筛选限制" : "本轮完整消息 · 可查看用户全史和每条消息的观察版本";
+        $("qualityDetailHint").textContent = (detail.type === "customer" ? "同一归档用户跨会话的完整历史 · 包含未归轮消息 · 不受列表筛选限制" : "本轮完整消息 · 可查看用户全史和每条消息的观察版本") + " · 评分每15秒自动更新";
         $("qualityDetailMeta").innerHTML = qualityDetailMetadata(detail.item, detail.type);
         if (detail.type === "round" && item?.customer_id) {
           $("qualityCustomerHistory").classList.remove("hidden");
@@ -2482,6 +2658,7 @@
         $("qualityDetailPageInfo").textContent = `共 ${detail.total} 条消息 · 第 ${detail.page} / ${pages} 页 · 北京时间`;
         $("qualityDetailPrev").disabled = detail.page <= 1;
         $("qualityDetailNext").disabled = detail.page >= pages;
+        startQualityRatingRefresh();
       } catch (error) {
         if (error.name === "AbortError" || !isQualityCurrent(generation, token) || version !== qualityState.detailVersion || qualityState.detail !== detail) return;
         $("qualityDetailHint").textContent = error.message;
@@ -2619,6 +2796,10 @@
     };
     const showCurrentPage = () => {
       if (!state.token) return;
+      if (state.view === "quality" && qualityState.review?.dirty && !canLeaveQualityReview()) {
+        history.replaceState(null, "", state.route);
+        return;
+      }
       if (state.pendingMutations && window.location.hash !== state.route) {
         history.replaceState(null, "", state.route);
         showToast("操作正在进行，请完成后再切换页面。", true);
@@ -2627,23 +2808,28 @@
       const hash = window.location.hash;
       const match = /^#channel\/([a-z][a-z0-9_]*)$/.exec(hash);
       const channel = state.channels.find((item) => item.key === match?.[1]);
-      const view = hash === "#logs" ? "logs" : hash === "#quality" ? "quality" : hash === "#presence" ? "presence" : "channel";
+      const view = hash === "#logs" ? "logs" : hash === "#quality" ? "quality" : hash === "#presence" ? "presence" : hash === "#statistics/quality" ? "statistics-quality" : hash === "#statistics/agents" ? "statistics-agents" : ["#statistics", "#statistics/time"].includes(hash) ? "statistics-time" : "channel";
+      const reporting = view.startsWith("statistics-");
       const key = channel?.key || "xingliao";
       state.view = view;
       if (view === "channel") state.channelKey = key;
-      state.route = view === "channel" ? `#channel/${key}` : `#${view}`;
+      state.route = view === "channel" ? `#channel/${key}` : reporting ? `#statistics/${view.slice(11)}` : `#${view}`;
       if (hash !== state.route) history.replaceState(null, "", state.route);
       state.contentVersion++;
       stopLogs();
       stopQuality();
       stopQualityPresence(true);
+      statisticsReports?.stop();
       closePreview();
       $("channelPage").classList.toggle("hidden", view !== "channel");
       $("logsPage").classList.toggle("hidden", view !== "logs");
       $("qualityPage").classList.toggle("hidden", view !== "quality");
       $("presencePage").classList.toggle("hidden", view !== "presence");
-      document.querySelectorAll("#channelNav button, #logsNav, #qualityNav, #presenceNav").forEach((button) => {
-        const active = view === "channel" ? button.dataset.channelKey === key : button.id === `${view}Nav`;
+      $("statisticsPage").classList.toggle("hidden", !reporting);
+      $("statisticsSubnav").classList.toggle("hidden", !reporting);
+      $("statisticsNav").setAttribute("aria-expanded", String(reporting));
+      document.querySelectorAll("#channelNav button, #logsNav, #qualityNav, #presenceNav, #statisticsNav, #statisticsSubnav button").forEach((button) => {
+        const active = view === "channel" ? button.dataset.channelKey === key : button.dataset.reportView ? button.dataset.reportView === view : button.id === `${view}Nav`;
         button.classList.toggle("active", active);
         if (active) button.setAttribute("aria-current", "page");
         else button.removeAttribute("aria-current");
@@ -2663,6 +2849,14 @@
         $("pageContext").textContent = "当前状态 · 每日时长 · 分钟核对";
         document.title = "客服状态 - 零新智能客服";
         startQualityPresence();
+      } else if (reporting) {
+        const kind = view.slice(11);
+        const title = {time: "时间统计", agents: "坐席细化", quality: "质检统计"}[kind];
+        $("pageTitle").textContent = `统计报表 · ${title}`;
+        $("pageContext").textContent = "按日 / 月 / 年查看 · 北京时间";
+        document.title = `${title} - 零新智能客服`;
+        setConnectionStatus("服务已连接");
+        statisticsReports?.start(kind);
       } else {
         $("pageTitle").textContent = `${currentChannelName()} · 内容管理`;
         $("pageContext").textContent = "知识库与 FAQ 问答对";
@@ -2694,6 +2888,7 @@
       stopLogs();
       stopQuality(true);
       stopQualityPresence(true, true);
+      statisticsReports?.stop(true);
       state.contentVersion++;
       state.logGeneration++;
       state.logId = 0;
@@ -3009,6 +3204,7 @@
       if (state.view === "logs") loadLogs();
       else if (state.view === "quality") { stopQuality(); loadQuality(); }
       else if (state.view === "presence") { stopQualityPresence(); startQualityPresence(); }
+      else if (state.view.startsWith("statistics-")) statisticsReports?.refresh();
       else loadDashboard();
     });
     $("knowledgeRefresh").addEventListener("click", () => loadKnowledgeFiles().catch((error) => showToast(error.message, true)));
@@ -3017,6 +3213,10 @@
     $("logsNav").addEventListener("click", () => navigateTo("#logs"));
     $("qualityNav").addEventListener("click", () => navigateTo("#quality"));
     $("presenceNav").addEventListener("click", () => navigateTo("#presence"));
+    $("statisticsNav").addEventListener("click", () => navigateTo("#statistics/time"));
+    $("statisticsTimeNav").addEventListener("click", () => navigateTo("#statistics/time"));
+    $("statisticsAgentsNav").addEventListener("click", () => navigateTo("#statistics/agents"));
+    $("statisticsQualityNav").addEventListener("click", () => navigateTo("#statistics/quality"));
     $("qualityFilterForm").addEventListener("submit", (event) => { event.preventDefault(); applyQualityFilters(); });
     $("qualityToggleFilters").addEventListener("click", () => setQualityFiltersCollapsed(!qualityState.filtersCollapsed));
     $("qualityInbox").addEventListener("change", () => changeQualityScopedFilter("qualityInbox"));
@@ -3060,8 +3260,8 @@
     $("presenceTimelineBar").addEventListener("click", handlePresenceMinuteClick);
     $("presenceIntervals").addEventListener("click", handlePresenceMinuteClick);
     document.addEventListener("visibilitychange", () => {
-      if (document.hidden) stopQualityPresence();
-      else startQualityPresence();
+      if (document.hidden) { stopQualityPresence(); stopQualityRatingRefresh(); }
+      else { startQualityPresence(); startQualityRatingRefresh(); refreshQualityRatings(); }
     });
     $("qualityReset").addEventListener("click", () => {
       $("qualityFilterForm").reset();
@@ -3078,6 +3278,27 @@
     $("qualityPrev").addEventListener("click", () => { if (qualityState.page > 1) { qualityState.page--; loadQualityList(); } });
     $("qualityNext").addEventListener("click", () => { if (qualityState.page * qualityState.pageSize < qualityState.total) { qualityState.page++; loadQualityList(); } });
     $("qualityCloseDetail").addEventListener("click", () => closeQualityDetail());
+    const markQualityReviewDirty = () => {
+      const review = qualityState.review;
+      if (!review || review.loading || review.saving) return;
+      review.ai_status = $("qualityReviewAiVerdict").value;
+      review.human_status = $("qualityReviewHumanVerdict").value;
+      review.remark = $("qualityReviewRemark").value;
+      review.dirty = true; review.error = "";
+      $("qualityReviewStatus").textContent = "有未保存的修改，请点击保存备注。";
+    };
+    $("qualityReviewAiVerdict").addEventListener("change", markQualityReviewDirty);
+    $("qualityReviewHumanVerdict").addEventListener("change", markQualityReviewDirty);
+    $("qualityReviewRemark").addEventListener("input", markQualityReviewDirty);
+    $("qualityReviewSave").addEventListener("click", saveQualityReview);
+    $("qualityReviewReload").addEventListener("click", () => { if (qualityState.review) loadQualityReview(qualityState.review.round); });
+    $("qualityReviewRound").addEventListener("change", () => {
+      const item = qualityState.roundDirectory?.items.find((round) => String(round.round_id) === $("qualityReviewRound").value);
+      if (item) loadQualityReview(item);
+    });
+    window.addEventListener("beforeunload", (event) => {
+      if (qualityState.review?.dirty || qualityState.review?.saving) { event.preventDefault(); event.returnValue = ""; }
+    });
     $("qualityAllHistory").addEventListener("click", () => { if (qualityState.roundDirectory) openQualityDetail("customer", qualityState.roundDirectory.customerId, true); });
     $("qualityRoundPrev").addEventListener("click", () => { const directory = qualityState.roundDirectory; if (directory && !directory.loading && directory.page > 1) loadQualityRoundDirectory(directory.customerId, directory.page - 1); });
     $("qualityRoundNext").addEventListener("click", () => { const directory = qualityState.roundDirectory; if (directory && !directory.loading && directory.page * directory.pageSize < directory.total) loadQualityRoundDirectory(directory.customerId, directory.page + 1); });

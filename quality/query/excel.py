@@ -45,6 +45,7 @@ _ENUMS = {
     "rating_status": {"not_invited": "未邀请评价", "pending": "待评价", "rated": "已评价", "unlinked": "待关联"},
     "sender_role": {"contact": "客户", "agent": "客服", "bot": "机器人", "system": "系统", "unknown": "未知"},
     "linkage": {"closed_at_or_invitation": "按关闭时间或评价邀请关联", "unknown": "归属未确认"},
+    "review_status": {"passed": "合格", "failed": "不合格", "pending": "待定"},
 }
 _MODES = {"rounds", "customers", "unlinked-ratings"}
 _HEADER_FONT = Font(name="Microsoft YaHei", size=11, bold=True, color="FFFFFF")
@@ -172,6 +173,7 @@ class _Table:
 _MESSAGE_COLUMNS = [
     ("客户", 22), ("发送时间（北京时间）", 28), ("发送人", 22), ("发送人类型", 14),
     ("聊天内容", 85), ("会话ID", 22), ("消息ID", 22), ("消息标记", 20), ("附件", 65),
+    ("轮次", 10), ("AI质检", 12), ("人工质检", 12), ("质检备注", 55),
 ]
 _RATING_COLUMNS = [
     ("实例来源", 20), ("账号ID", 20), ("会话ID", 20), ("评价键", 28), ("轮次ID", 25),
@@ -203,6 +205,10 @@ def _message_values(row):
         row.get("sender_name") or _text(row.get("sender_id")) or role,
         role, None, _text(row.get("conversation_id")), _text(row.get("message_id")),
         "、".join(marks), _attachment_text(row.get("attachments")),
+        row.get("round_no"),
+        _enum("review_status", row.get("ai_review_status") or "pending") if row.get("round_id") else "",
+        _enum("review_status", row.get("human_review_status") or "pending") if row.get("round_id") else "",
+        row.get("review_remark") or "",
     ]
 
 

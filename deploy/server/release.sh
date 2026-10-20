@@ -64,7 +64,9 @@ if [[ "$with_receiver" == true ]]; then
     "${compose[@]}" --profile quality-capture up -d --no-deps --wait --wait-timeout 60 quality-receiver
 fi
 stage='application container update'
-"${compose[@]}" up -d ics-agent
+# The existing business database is checked before maintenance. Publishing the
+# application must not recreate it because the shared Compose file changed.
+"${compose[@]}" up -d --no-deps ics-agent
 if [[ -n "$source_commit" ]]; then
     mkdir -p deployment-records
     printf '%s\n' "$source_commit" > deployment-records/source-commit.txt

@@ -287,6 +287,7 @@ bash /opt/cs-src/deploy/server/release.sh --source /opt/cs-src --target /opt/cs
 ics_agent/                 智能客服主服务、管理后台、FAQ、RAG、渠道与模型调用
 reminder/                  提醒后端、Windows 客户端、浏览器插件与安装说明
 quality/                   对话归档、事件接收及后续质检模块
+statistics/                统计报表、时间趋势及坐席细化（共用归档数据）
 knowledge_base_in/         文档解析、分块、向量构建与生成产物
 database/                  渠道配置、FAQ、知识库、提示词与训练资料
 models/                    本地模型文件
@@ -311,3 +312,4 @@ log/                       运行日志
 | [归档与质检模块](quality/README.md) | 归档数据结构、权限与当前开发范围 |
 | [原始消息接收](quality/capture/README.md) | 独立采集服务配置、网络接入与验收 |
 | [归档查询首版](quality/query/README.md) | 用户历史、轮次、评价、消息版本及独立工作进程启用 |
+| [统计报表初版](statistics/README.md) | 按日、月、年查看询盘趋势、渠道进客及坐席状态和回复工作量 |

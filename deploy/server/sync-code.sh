@@ -18,12 +18,12 @@ fi
 case "$source_directory/" in "$target_directory/"*) printf '%s\n' 'Source and target must not overlap.' >&2; exit 1 ;; esac
 case "$target_directory/" in "$source_directory/"*) printf '%s\n' 'Source and target must not overlap.' >&2; exit 1 ;; esac
 
-for relative_path in ics_agent knowledge_base_in reminder quality deploy docs; do
+for relative_path in ics_agent knowledge_base_in reminder quality statistics deploy docs; do
     [[ -d "$source_directory/$relative_path" ]] || { printf 'Missing source directory: %s\n' "$relative_path" >&2; exit 1; }
     [[ ! -L "$target_directory/$relative_path" ]] || { printf 'Refusing symlink target: %s\n' "$relative_path" >&2; exit 1; }
 done
 files=(docker-compose.yml docker-compose.archive.yml .dockerignore requirements.txt .env.example)
-for relative_path in "${files[@]}" deploy/server/Dockerfile.backend-only quality/deploy/migrate.sh quality/database/apply-migrations.sh; do
+for relative_path in "${files[@]}" deploy/server/Dockerfile.backend-only deploy/archive/init/01-archive-roles.sh quality/deploy/migrate.sh quality/database/apply-migrations.sh; do
     [[ -f "$source_directory/$relative_path" ]] || { printf 'Missing source file: %s\n' "$relative_path" >&2; exit 1; }
 done
 for relative_path in "${files[@]}" Dockerfile; do
@@ -31,7 +31,7 @@ for relative_path in "${files[@]}" Dockerfile; do
 done
 
 mkdir -p -- "$target_directory"
-for relative_path in ics_agent quality; do
+for relative_path in ics_agent quality statistics; do
     mkdir -p -- "$target_directory/$relative_path"
     rsync -a --delete --exclude='__pycache__/' --exclude='*.pyc' \
         "$source_directory/$relative_path/" "$target_directory/$relative_path/"
@@ -44,6 +44,10 @@ rsync -a --delete --exclude='/build/' --exclude='/dist/' \
     --exclude='__pycache__/' --exclude='*.pyc' --exclude='.pytest_cache/' \
     "$source_directory/reminder/" "$target_directory/reminder/"
 rsync -a "$source_directory/deploy/" "$target_directory/deploy/"
+# A private checkout (umask 077) must not make the bind-mounted init scripts
+# unreadable to PostgreSQL's container user. These files contain no secrets.
+chmod 644 -- "$target_directory/deploy/archive/init/01-archive-roles.sh"
+chmod 755 -- "$target_directory/deploy/archive/init"
 rsync -a "$source_directory/docs/" "$target_directory/docs/"
 for relative_path in "${files[@]}"; do
     cp -- "$source_directory/$relative_path" "$target_directory/$relative_path"
