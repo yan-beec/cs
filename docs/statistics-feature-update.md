@@ -1,8 +1,8 @@
 # 统计报表服务器增量更新手册
 
-适用本次后台更新：统计报表下的“时间统计”“坐席细化”“质检统计”，以及对应的筛选、重置、图表、表格和指标说明，同时补齐服务器尚未完成的既有归档迁移。操作顺序参考 [对话归档与客服状态更新手册](archive-feature-update.md)，采用**保留服务器配置的代码及数据库增量更新**。
+适用本次后台更新：统计报表下的“时间统计”“坐席细化”“质检统计”，以及对应的筛选、重置、图表、表格和指标说明，同时补齐服务器尚未完成的既有归档迁移。操作顺序参考 [对话归档与客服状态更新手册](archive-feature-update.md)，沿用 **Git 仓库 `test` 分支拉取发布**，保留服务器配置，只增量更新应用代码及归档数据库。
 
-本手册只说明操作，尚未在目标服务器执行。示例沿用 SSH 别名 `ics`、运行目录 `/opt/cs`、Compose 项目名 `cs`；如实际不同，先调整第三节对应参数。
+本手册只说明操作，尚未在目标服务器执行。示例沿用 SSH 别名 `ics`、Git 源码目录 `/opt/cs-src`、运行目录 `/opt/cs`、Compose 项目名 `cs`；如实际不同，先调整第三节对应参数。Git 拉取只更新源码目录，随后将指定应用代码同步到运行目录。
 
 ## 一、本次更新边界
 
@@ -11,7 +11,7 @@
 | `statistics/` | 增加统计逻辑和原生 SVG 图表、表格资源 |
 | `ics_agent/` | 更新后台菜单、入口、统计路由及配套代码，包含新增的 `ics_agent/statistics.py` |
 | `quality/` 应用代码 | 同步配套查询代码；保留服务器原有 `quality/database/` 和 `quality/deploy/` |
-| `.env`、其他环境文件、现有 Compose 及覆盖文件 | 保留，不上传本地配置替换它们 |
+| `.env`、其他环境文件、现有 Compose 及覆盖文件 | 保留，不用仓库配置替换它们 |
 | `requirements.txt`、服务器原 Dockerfile、`.dockerignore` | 保留；只为本次构建生成一份额外的 Dockerfile |
 | 渠道、模型、知识库、提示词、业务资料、日志 | 保留，不在本次同步范围 |
 | PostgreSQL、归档数据库、Webhook、接收器 | 沿用现有部署，不重新建库、不修改既有角色密码、不重建这些服务 |
@@ -33,15 +33,23 @@
 
 如果服务器仍只有 `001–007`，本流程新增 `008`、`009`；只有 `001–008` 时新增 `009`；已有完整 `001–009` 时核对后跳过迁移。更早的连续版本同样按编号补齐。迁移历史缺失、版本断档、出现未知版本或校验不一致时停止核实，不伪造历史、不删库重做。
 
-## 二、Windows：检查、打包并上传当前工作区
+## 二、Windows：检查并推送 Git 的 test 发布分支
 
-在 **Windows PowerShell** 执行，使用指定的 `cs` 环境。上传包可包含尚未提交的当前代码，不要求先提交或推送 Git。
+在 **Windows PowerShell** 执行，使用指定的 `cs` 环境。先按现有项目流程，将本次确认发布的代码及完整归档迁移提交、合并到 `test` 分支，再在该分支执行以下检查。不要直接把包含无关改动的工作区切换、重置或全部提交。
+
+本项目开发机的远端名称为 `chatwoot`；其他开发机先核对实际远端名称。服务器只能拉到已经提交并推送的内容。
 
 ```powershell
 Set-Location D:\project\CS
+git branch --show-current
 git status --short
+git remote -v
+if ((git branch --show-current).Trim() -ne 'test') { throw '请先按现有流程准备好test发布分支，停止。' }
+if (git status --porcelain) { throw '工作区仍有未提交修改，停止发布。' }
 git diff --check
 if ($LASTEXITCODE -ne 0) { throw '差异检查未通过，停止。' }
+$statisticsReleaseCommit = (git rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) { throw '读取发布提交失败，停止。' }
 
 $statisticsTestStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 & 'C:\Users\lenovo\Anaconda3\envs\cs\python.exe' -m pytest `
@@ -55,22 +63,17 @@ if ($LASTEXITCODE -ne 0) { throw '统计或后台检查失败，停止。' }
 & 'C:\Users\lenovo\Anaconda3\envs\cs\python.exe' -c "from pathlib import Path; paths=[Path('quality/database/apply-migrations.sh'),Path('quality/database/verify-schema.sh')]; bad=[str(p) for p in paths if b'\r' in p.read_bytes()]; print('Shell CRLF files:',bad); raise SystemExit(bool(bad))"
 if ($LASTEXITCODE -ne 0) { throw '迁移Shell存在CRLF，修正后重新检查。' }
 
-New-Item -ItemType Directory -Force .\tmp | Out-Null
-$statisticsPackage = Join-Path $PWD 'tmp\cs-statistics-update.tar.gz'
-tar.exe -czf $statisticsPackage `
-  --exclude=__pycache__ --exclude=*.pyc --exclude=.pytest_cache `
-  --exclude=.env --exclude='.env.*' `
-  ics_agent quality statistics
-if ($LASTEXITCODE -ne 0) { throw '打包失败，停止。' }
-
-Get-FileHash $statisticsPackage -Algorithm SHA256
-scp -o ServerAliveInterval=30 $statisticsPackage ics:~/cs-statistics-update.tar.gz
-if ($LASTEXITCODE -ne 0) { throw '上传失败，停止。' }
+if ((git branch --show-current).Trim() -ne 'test' -or
+    (git rev-parse HEAD).Trim() -ne $statisticsReleaseCommit -or
+    (git status --porcelain)) { throw '检查期间源码发生变化，重新检查后再发布。' }
+git push chatwoot test
+if ($LASTEXITCODE -ne 0) { throw '推送失败，停止发布。' }
+"本次发布完整Git提交SHA：$statisticsReleaseCommit"
 ```
 
-保存输出的 SHA256，服务器解包前会核对。测试中的前端交互检查使用开发机现有 Node；不因此给服务器安装 Node。数据库聚合测试须在隔离测试库执行，不能指向生产库；上面的命令不包含数据库集成测试。
+保存输出的完整 Git 提交 SHA，第四节拉取后必须核对一致。测试中的前端交互检查使用开发机现有 Node；不因此给服务器安装 Node。数据库聚合测试须在隔离测试库执行，不能指向生产库；上面的命令不包含数据库集成测试。
 
-本包只选择三个代码目录，不包含根目录 `.env`、本地 Compose、依赖文件、模型或数据库。`quality/database/` 提供完整 `001–009` 和迁移、验证脚本；保留原字节上传，第四节校验历史文件，第6.2节复制到归档容器的独立临时目录执行，不覆盖生产原迁移目录。不要对已应用 SQL 批量转换换行。
+发布提交须包含 `ics_agent/`、`quality/`、`statistics/` 的配套更新；`quality/database/` 中须有完整 `001–009` 和迁移、验证脚本。第四节校验历史 SQL 的原始字节，第6.2节从 Git 源码目录复制到归档容器的独立临时目录执行，不覆盖生产原迁移目录。不要对已应用 SQL 批量转换换行。仓库内即使有环境、Compose、构建模板的更新，第五节也不把它们同步到运行目录。
 
 ## 三、服务器：检查权限并沿用实际部署配置
 
@@ -88,9 +91,10 @@ set -euo pipefail
 umask 077
 
 statistics_target=/opt/cs
+statistics_source=/opt/cs-src
 statistics_project=cs
 cd "$statistics_target"
-for statistics_tool in docker python3 rsync tar sha256sum flock; do
+for statistics_tool in git docker python3 rsync tar sha256sum flock; do
   command -v "$statistics_tool" >/dev/null || { echo "缺少工具：$statistics_tool"; exit 1; }
 done
 test -r .env && test -w .
@@ -198,18 +202,42 @@ SQL
 
 记录显示的版本，继续第四节。这里使用现有归档容器内的数据库管理员读取历史；`-w` 禁止数据库密码交互，不修改角色或密码。只有到第6.2节才执行增量迁移。
 
-## 四、核对上传包并备份本次涉及的文件
+## 四、拉取 Git 的 test 分支，核对提交并备份
 
-把下面 SHA256 占位值替换为第二节开发机输出，不能保留占位文字继续执行。
+源码目录与运行目录分开：只在 `/opt/cs-src` 拉取 `test`，不在 `/opt/cs` 执行 Git 覆盖运行配置。把下面提交 SHA 占位值替换为第二节开发机输出，不能保留占位文字继续执行。
+
+拉取地址沿用原手册的仓库地址，不改服务器已保存的远端设置；Git 认证沿用现有方式，不在命令中填写密码或令牌。源码目录必须已在 `test` 分支且工作区干净；不满足时先处理，不自动切换分支、隐藏修改或强制重置。
 
 ```bash
-statistics_expected_sha='替换为Windows输出的64位SHA256'
-test "${#statistics_expected_sha}" -eq 64
-printf '%s  %s\n' "$statistics_expected_sha" "$HOME/cs-statistics-update.tar.gz" | sha256sum -c -
+statistics_expected_commit='替换为Windows输出的完整Git提交SHA'
+[[ "$statistics_expected_commit" =~ ^[0-9a-f]{40}$ ]]
+test "$statistics_source" != "$statistics_target"
+test "$(git -C "$statistics_source" rev-parse --show-toplevel)" = "$statistics_source"
+git -C "$statistics_source" status --short
+git -C "$statistics_source" branch --show-current
+test "$(git -C "$statistics_source" branch --show-current)" = test || {
+  echo '服务器源码目录不在test分支，停止。'; exit 1;
+}
+test -z "$(git -C "$statistics_source" status --porcelain)" || {
+  echo '服务器源码目录有未提交修改，停止。'; exit 1;
+}
+git -C "$statistics_source" rev-parse HEAD > "$statistics_record/source-before.txt"
+git -C "$statistics_source" pull --ff-only https://code-sayu.xingyongshe.com/backend/chatwoot.git test
+statistics_release_commit=$(git -C "$statistics_source" rev-parse HEAD)
+test "$statistics_release_commit" = "$statistics_expected_commit" || {
+  echo '拉取提交与开发机记录不一致，停止发布。'; exit 1;
+}
 
-statistics_source="$statistics_record/source"
-mkdir "$statistics_source"
-tar -xzf "$HOME/cs-statistics-update.tar.gz" -C "$statistics_source"
+# 同步和迁移前再次核对，防止会话中途源码被其他操作改变。
+statistics_verify_source() {
+  test "$(git -C "$statistics_source" branch --show-current)" = test
+  test "$(git -C "$statistics_source" rev-parse HEAD)" = "$statistics_release_commit"
+  test -z "$(git -C "$statistics_source" status --porcelain)"
+}
+statistics_verify_source
+printf '%s\n' "$statistics_release_commit" > "$statistics_record/source-after.txt"
+git -C "$statistics_source" log -1 --oneline
+
 for statistics_file in \
   ics_agent/statistics.py ics_agent/app/main.py ics_agent/app/admin.html \
   quality/query/runtime.py statistics/routes.py statistics/repository.py \
@@ -234,7 +262,7 @@ expected = ["001_capture", "002_query", "003_assignment_writer", "004_agent_pres
     "005_presence_retention", "006_presence_retention_state", "007_presence_agent_management",
     "008_round_reviews", "009_dual_round_reviews"]
 files = sorted((source / "quality/database/migrations").glob("*.sql"))
-assert [p.stem for p in files] == expected, "发布包的001-009不完整或包含未知版本"
+assert [p.stem for p in files] == expected, "本次Git源码的001-009不完整或包含未知版本"
 history = json.loads((record / "versions-before.json").read_text())
 versions = [r["version"] for r in history]
 assert versions and versions == expected[:len(versions)], "历史版本不连续、为空或出现未知版本，停止"
@@ -311,11 +339,13 @@ SQL
 # 保存恢复会话和回退需要的参数；这些参数不含密码。
 declare -p statistics_target statistics_project statistics_record statistics_source \
   statistics_stamp statistics_image statistics_old_image statistics_rollback_image \
-  statistics_dockerfile statistics_compose statistics_had_directory statistics_expected_sha \
+  statistics_dockerfile statistics_compose statistics_had_directory \
+  statistics_expected_commit statistics_release_commit \
   statistics_needs_migration statistics_worker_was_running \
   statistics_assignment_existed statistics_presence_existed \
   > "$statistics_record/session.sh"
 declare -f statistics_archive_psql >> "$statistics_record/session.sh"
+declare -f statistics_verify_source >> "$statistics_record/session.sh"
 printf '备份完成，记录目录：%s\n' "$statistics_record"
 ```
 
@@ -333,9 +363,10 @@ exec 9>"$statistics_target/.deployment.lock"; flock -n 9
 
 ## 五、只同步应用代码，保留现有配置
 
-预检已排除源码挂载，因此以下宿主机代码同步不会让旧容器在运行中读到一半的新代码。当前会话不要与其他发布、配置修改同时进行。
+预检已排除源码挂载，因此以下宿主机代码同步不会让旧容器在运行中读到一半的新代码。当前会话不要与其他发布、配置修改同时进行，也不要再次拉取或修改 `/opt/cs-src`。
 
 ```bash
+statistics_verify_source
 cd "$statistics_target"
 for statistics_dir in ics_agent quality; do
   test -d "$statistics_target/$statistics_dir"
@@ -344,7 +375,7 @@ for statistics_dir in ics_agent quality; do
 done
 test ! -L "$statistics_target/statistics"
 
-# 使用内容比较，避免 Windows 时间戳导致漏更新；不进行整目录清理。
+# 使用内容比较，避免相同时间戳导致漏更新；不进行整目录清理。
 # 仅公开应用代码使用普通读取权限；备份、配置和会话文件仍沿用私有权限。
 (
   umask 022
@@ -425,6 +456,7 @@ sha256sum -c "$statistics_record/config-before.sha256"
 不直接调用通用 `migrate.sh`，因为它固定使用两份 Compose，可能遗漏服务器额外覆盖配置；它调用的原迁移脚本还会按配置设置 writer 角色密码。本节复用已经核对的完整 Compose，并在**单次迁移进程中**移除既有 writer 角色对应的密码输入，从而保留它们原密码。只有这次新建的 writer 角色，才允许使用归档容器已有的真实配置值完成初始密码设置，不写 `.env`、不生成新密码。原来未启用的状态采样或分配同步不自动启用。
 
 ```bash
+statistics_verify_source
 test -s "$statistics_record/archive-before.dump"
 test -s "$statistics_record/archive-roles-before.sql"
 rm -f -- "$statistics_record/migration-verified.txt"
@@ -489,7 +521,7 @@ files = sorted((source / "quality/database/migrations").glob("*.sql"))
 assert len(history) == len(files) == 9, "迁移记录不完整"
 for p, row in zip(files, history):
     assert row["version"] == p.stem and row["checksum_sha256"] == hashlib.sha256(p.read_bytes()).hexdigest(), \
-        f"{p.name}迁移后的记录与发布包不一致"
+        f"{p.name}迁移后的记录与本次Git源码不一致"
 before = json.loads((record / "role-passwords-before.json").read_text())
 after = json.loads((record / "role-passwords-after.json").read_text())
 assert all(after.get(name) == value for name, value in before.items()), "既有角色密码摘要变化，停止核实"
@@ -504,7 +536,7 @@ date -Is > "$statistics_record/migration-verified.txt"
 
 成功时 `migration.log` 中已应用项显示 `unchanged migration skipped`，缺失项显示 `Applying ...`；验证日志末尾包含 `PASS: capture schema, append-only evidence, task permissions and account authentication.`，终端显示上述完整版本和密码核对的 `PASS`。已全部迁移时不重新执行 SQL，但仍要通过验证。
 
-出现 `checksum differs` 时，保持停止并核对服务器已应用文件及原发布包；不要转换 SQL 换行、修改历史校验值或强行跳过。密码认证失败时核对已有凭据与数据库是否一致，本流程不会通过覆盖密码来让检查通过。
+出现 `checksum differs` 时，保持停止并核对服务器已应用文件及原发布提交对应的 SQL；不要转换 SQL 换行、修改历史校验值或强行跳过。密码认证失败时核对已有凭据与数据库是否一致，本流程不会通过覆盖密码来让检查通过。
 
 每个 SQL 自身有事务，整组001–009不是一个总事务：中途失败，前面的版本可能已提交。保留记录目录和备份，修复原因后恢复第四节的同一会话，再执行第6.2节；它会使用新的临时目录，核对后跳过已完成版本。不要重新初始化归档卷，不导入本地测试库。迁移失败后不要继续第6.3节，也不要直接用旧镜像恢复质检写入。
 
@@ -595,8 +627,8 @@ for (const mode of ['day', 'month', 'year']) {
 ```bash
 statistics_new_container=$("${statistics_compose[@]}" ps -q ics-agent)
 docker inspect -f '{{.Image}}' "$statistics_new_container" > "$statistics_record/image-after.txt"
-printf 'package_sha256=%s\nreleased_at=%s\nmigrations_applied=%s\nresult=accepted\n' \
-  "$statistics_expected_sha" "$(date -Is)" "$statistics_needs_migration" > "$statistics_record/result.txt"
+printf 'git_branch=test\ngit_commit=%s\nreleased_at=%s\nmigrations_applied=%s\nresult=accepted\n' \
+  "$statistics_release_commit" "$(date -Is)" "$statistics_needs_migration" > "$statistics_record/result.txt"
 sha256sum -c "$statistics_record/config-before.sha256"
 flock -u 9
 exec 9>&-
@@ -665,10 +697,10 @@ flock -u 9
 exec 9>&-
 ```
 
-回退后按第7.1节等待健康并用原后台验证。**回退不执行构建**，否则会再次得到新镜像。配置校验异常时先核对是否有人另行修改了生产配置，不直接把备份配置全量覆盖回去；本流程不修改环境配置，正常回退也不需要恢复 `.env`。
+回退后按第7.1节等待健康并用原后台验证。**回退不执行构建**，否则会再次得到新镜像。回退只恢复运行目录和旧镜像，不重置 `/opt/cs-src` 的 Git 分支或改写提交历史。配置校验异常时先核对是否有人另行修改了生产配置，不直接把备份配置全量覆盖回去；本流程不修改环境配置，正常回退也不需要恢复 `.env`。
 
 ## 九、这次发布的操作顺序
 
-Windows检查与打包 → 上传并核对SHA256 → 普通发布用户检查权限与原服务 → 沿用完整现有Compose → 识别历史版本并核对全部已应用SQL → 备份归档库/角色/代码/配置，保留旧镜像 → 同步三个代码目录 → 构建并检查新镜像 → 有缺失时暂停ICS和原worker → 补齐001–009、验证结构及授权、核对既有密码未变 → 更新ICS并按原状态恢复worker → 三个报表及原功能验收 → 核对配置哈希并记录结果。
+Windows检查并推送test分支、记录完整提交SHA → 普通发布用户检查权限与原服务 → 沿用完整现有Compose → 在/opt/cs-src快进拉取test并核对提交SHA → 识别历史版本并核对全部已应用SQL → 备份归档库/角色/代码/配置，保留旧镜像 → 同步三个代码目录到/opt/cs → 构建并检查新镜像 → 有缺失时暂停ICS和原worker → 补齐001–009、验证结构及授权、核对既有密码未变 → 更新ICS并按原状态恢复worker → 三个报表及原功能验收 → 核对配置哈希并记录Git发布结果。
 
 本次不需要新增系统提权密码交互，不需要覆盖本地配置到服务器，不需要重建数据库、修改Webhook或重新采集历史数据。
