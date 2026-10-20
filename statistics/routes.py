@@ -5,12 +5,15 @@ import logging
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse, Response
 
 from ics_agent.app.core.auth import require_admin
 from ics_agent.channels import list_channels
-from quality.query.runtime import ArchiveUnavailable, get_query_runtime
+from quality.query.export import ExportTooLarge
+from quality.query.routes import ExportResponse, _generate_export
+from quality.query.runtime import ArchiveUnavailable, ExportBusy, get_query_runtime
+from .export import create_export
 from .periods import BEIJING, ReportPeriod
 from .repository import StatisticsRepository
 
@@ -26,8 +29,17 @@ async def asset(filename: Literal["reports.js", "reports.css"]):
                         headers={"Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"})
 
 
-def report_period(mode: Literal["day", "month", "year"] = "day", date: date | None = None):
+def report_period(
+    mode: Literal["day", "month", "year", "custom"] = "day", date: date | None = None,
+    start_date: date | None = None, end_date: date | None = None,
+):
     try:
+        if mode == "custom":
+            if start_date is None or end_date is None:
+                raise ValueError("自定义时间段需同时选择起始日期和结束日期。")
+            return ReportPeriod.build(mode, start_date, end_date)
+        if start_date is not None or end_date is not None:
+            raise ValueError("起止日期仅用于自定义统计周期。")
         return ReportPeriod.build(mode, date or datetime.now(BEIJING).date())
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from None
@@ -99,6 +111,27 @@ async def quality_report(
     page: int = Query(1, ge=1, le=100000), page_size: int = Query(20, ge=1, le=100),
 ):
     return await run_report("quality_report", period, **scope, page=page, page_size=page_size)
+
+
+@api.get("/{kind}/export.xlsx")
+async def export_report(
+    request: Request, kind: Literal["time", "agents", "quality"],
+    period: ReportPeriod = Depends(report_period), scope: dict = Depends(report_scope),
+    channel_key: str | None = Query(None, min_length=1, max_length=128),
+):
+    if kind != "time" and channel_key is not None:
+        raise HTTPException(status_code=422, detail="渠道筛选仅用于时间统计。")
+    try:
+        artifact = await _generate_export(request, kind, period, runtime=get_query_runtime(),
+            builder=create_export, **scope, channel_key=channel_key,
+            channels=list({**{c.key: c.name for c in list_channels()}, "unmapped": "未映射渠道"}.items()))
+    except ExportBusy:
+        raise HTTPException(status_code=429, detail="已有报表正在导出，请稍后再试。", headers={"Retry-After": "3"}) from None
+    except ExportTooLarge as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
+    except ArchiveUnavailable:
+        raise HTTPException(status_code=503, detail="统计导出暂不可用，请稍后重试。", headers={"Retry-After": "10"}) from None
+    return ExportResponse(artifact) if artifact is not None else Response(status_code=499)
 
 
 router.include_router(api)

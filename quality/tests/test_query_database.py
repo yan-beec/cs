@@ -441,6 +441,32 @@ class QueryDatabaseTest(unittest.TestCase):
         self.assertIsNone(unassigned["round_id"])
         self.assertIsNone(unassigned["sent_at"])
 
+    def test_customer_history_exposes_chatwoot_contact_profile_and_backfills_old_projection(self):
+        incoming = event(1)
+        profile = {"id": 42, "type": "contact", "name": "客户甲",
+                   "phone_number": "+86 13800000000",
+                   "additional_attributes": {"description": "VIP 联系人备注"}}
+        incoming["payload"]["sender"] = dict(profile)
+        incoming["payload"]["conversation"]["meta"]["sender"] = dict(profile)
+        self.receive(incoming)
+        self.drain()
+        customer = self.reader.list_customers(ArchiveFilters(source_key=self.source, account_id=1))["items"][0]
+        history = self.reader.customer_history(customer["customer_id"])
+        expected = {"chatwoot_user_id": "42", "phone_number": "+86 13800000000", "contact_note": "VIP 联系人备注"}
+        for key, value in expected.items():
+            self.assertEqual(history["customer"][key], value)
+        round_id = self.reader.list_rounds(ArchiveFilters(source_key=self.source, account_id=1))["items"][0]["round_id"]
+        detail = self.reader.round_detail(round_id)
+        for key, value in expected.items():
+            self.assertEqual(detail["round"][key], value)
+        # Simulate a pre-profile projection. The read path can recover contact
+        # information from immutable snapshots without a migration or replay.
+        self.admin.execute("UPDATE ops.customer_index SET data=data-'chatwoot_user_id'-'phone_number'-'contact_note' WHERE customer_id=%s",
+                           (customer["customer_id"],))
+        recovered = self.reader.customer_history(customer["customer_id"])["customer"]
+        for key, value in expected.items():
+            self.assertEqual(recovered[key], value)
+
     def test_customer_card_metrics_use_logical_messages_handoff_and_original_round_rating(self):
         attrs = {"ics_round_id": "metrics-round", "ics_closed_at": (START + timedelta(minutes=12, microseconds=1)).isoformat()}
         self.receive(event(1), event(2, .5, sender="agent_bot", direction="outgoing"),

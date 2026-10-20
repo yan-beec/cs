@@ -77,13 +77,24 @@ def event_time(event):
 
 
 def contact_payload(payload, conversation):
+    selected = None
     for candidate in (payload.get("contact"), conversation.get("contact"),
                       obj(conversation.get("meta")).get("sender"), obj(payload.get("meta")).get("sender"),
                       payload.get("sender")):
         candidate = obj(candidate)
         kind = str(candidate.get("type") or "").lower().replace("_", "")
         if candidate and (kind == "contact" or candidate.get("id") and not kind and candidate is not payload.get("sender")):
-            return candidate
+            if selected is None:
+                selected = dict(candidate)
+            elif text(selected.get("id")) == text(candidate.get("id")):
+                for key, value in candidate.items():
+                    if key not in selected or selected[key] in (None, "", {}):
+                        selected[key] = value
+                for key in ("additional_attributes", "custom_attributes"):
+                    if isinstance(selected.get(key), dict) and isinstance(candidate.get(key), dict):
+                        selected[key] = {**selected[key], **candidate[key]}
+    if selected is not None:
+        return selected
     # Chatwoot's incoming message webhook serializes a Contact without a type
     # field. Its own ID remains usable when no conversation contact is included.
     # Never apply this fallback to an untyped outgoing user or bot payload.
@@ -92,6 +103,26 @@ def contact_payload(payload, conversation):
     if not kind and direction_of(payload.get("message_type")) == "incoming" and positive_id(sender.get("id")):
         return sender
     return {}
+
+
+def contact_profile(contact):
+    """Keep the contact fields needed by the archive's customer detail view."""
+    contact = obj(contact)
+    additional = obj(contact.get("additional_attributes"))
+    custom = obj(contact.get("custom_attributes"))
+    phone = text(contact.get("phone_number") or contact.get("phone") or
+                 additional.get("phone_number") or custom.get("phone_number"))
+    note = None
+    for source in (contact, additional, custom):
+        for key in ("description", "note", "notes", "contact_note", "contact_notes"):
+            value = text(source.get(key))
+            if value is not None and value.strip():
+                note = value
+                break
+        if note is not None:
+            break
+    return {"chatwoot_user_id": text(contact.get("id") or contact.get("user_id")),
+            "phone_number": phone, "contact_note": note}
 
 
 def sender_role(payload):
@@ -186,11 +217,13 @@ def project_conversation(events: list[dict], idle_timeout_seconds=21600, channel
     business_id = text(contact.get("identifier") or identity_attributes.get("app_user_id"))
     verified = any(identity_attributes.get(key) is True or contact.get(key) is True
                    for key in ("hmac_verified", "identity_verified", "identifier_verified"))
+    profile = contact_profile(contact)
     output.customer = {"customer_id": customer_id, "source_key": source, "account_id": account,
                        "contact_id": contact_id, "business_user_id": business_id if verified else None,
                        "display_name": text(contact.get("name")), "last_message_at": None,
                        "data": {"identity_status": "verified" if verified and business_id else "contact" if contact_id else "unknown",
                                 "unverified_identifier": business_id if business_id and not verified else None,
+                                **profile,
                                 "identity_observed_at": iso(event_time(contact_event)),
                                 "first_message_at": None, "latest_event_id": contact_event["id"]}}
     if contact_id:

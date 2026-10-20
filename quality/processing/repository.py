@@ -250,6 +250,9 @@ class ProcessingRepository:
             if customer["business_user_id"] is None and old["business_user_id"]:
                 customer["business_user_id"] = old["business_user_id"]
                 customer["data"]["identity_status"] = old["data"].get("identity_status", "verified")
+            for key in ("chatwoot_user_id", "phone_number", "contact_note"):
+                if not customer["data"].get(key) and old["data"].get(key):
+                    customer["data"][key] = old["data"][key]
         self._upsert(connection, "ops.customer_index", customer, ("customer_id",))
 
     @staticmethod

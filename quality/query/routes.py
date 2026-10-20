@@ -174,8 +174,8 @@ class ExportResponse(FileResponse):
             self.artifact.cleanup()
 
 
-async def _generate_export(request, mode, filters, **scope):
-    task = asyncio.create_task(get_query_runtime().export(mode, filters, **scope))
+async def _generate_export(request, mode, filters, *, runtime=None, **scope):
+    task = asyncio.create_task((runtime or get_query_runtime()).export(mode, filters, **scope))
     artifact = None
     try:
         while True:

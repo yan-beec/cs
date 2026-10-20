@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta, timezone
 
 from quality.presence.retention import retention_metadata
-from .agent_quality import consultation_ctes, handoff_ctes, reply_quality
+from .agent_quality import consultation_ctes, handoff_ctes, reply_quality, timing_replies_cte
 from .periods import BEIJING
 from .quality_reports import ai_quality, percentage
 
@@ -195,7 +195,11 @@ class StatisticsRepository:
         rows = connection.execute(f"""
             WITH bounds AS (SELECT %s::timestamptz AS starts_at,%s::timestamptz AS ends_at,
                 %s::timestamptz AS observed_at),
-            {handoff_ctes(r_where)}, {consultation_ctes(r_where)}, replies AS MATERIALIZED (
+            {handoff_ctes(r_where)}, {consultation_ctes(r_where)}, {timing_replies_cte(r_where)},
+            timing_seats AS (
+                SELECT source_key,account_id,agent_id,max(sender_name) AS agent_name
+                FROM timing_replies GROUP BY 1,2,3
+            ), replies AS MATERIALIZED (
                 SELECT m.source_key,m.account_id,m.sender_id AS agent_id,m.sender_name,m.round_id,m.sent_at
                 FROM ops.message_index m WHERE {m_where} AND m.sent_at >= %s AND m.sent_at < %s
                     AND m.sender_role='agent' AND m.direction='outgoing' AND NOT m.is_private
@@ -223,9 +227,10 @@ class StatisticsRepository:
                 SELECT source_key,account_id,agent_id FROM roster UNION
                 SELECT source_key,account_id,agent_id FROM consultation_totals UNION
                 SELECT source_key,account_id,agent_id FROM assignment_totals UNION
+                SELECT source_key,account_id,agent_id FROM timing_seats UNION
                 SELECT source_key,account_id,agent_id FROM loss_totals
             ), seats AS (
-                SELECT i.*,COALESCE(roster.agent_name,p.agent_name,r.agent_name,l.agent_name,c.agent_name,a.agent_name) AS agent_name,
+                SELECT i.*,COALESCE(roster.agent_name,p.agent_name,r.agent_name,l.agent_name,c.agent_name,a.agent_name,t.agent_name) AS agent_name,
                     COALESCE(r.inquiries,0) AS inquiries,COALESCE(r.replies,0) AS replies,
                     COALESCE(a.assigned_inquiries,0) AS assigned_inquiries,
                     COALESCE(l.lost_inquiries,0) AS lost_inquiries,
@@ -239,6 +244,7 @@ class StatisticsRepository:
                     LEFT JOIN loss_totals l USING(source_key,account_id,agent_id)
                     LEFT JOIN consultation_totals c USING(source_key,account_id,agent_id)
                     LEFT JOIN assignment_totals a USING(source_key,account_id,agent_id)
+                    LEFT JOIN timing_seats t USING(source_key,account_id,agent_id)
             ), selected AS (
                 SELECT * FROM seats ORDER BY inquiries DESC,agent_name NULLS LAST,source_key,account_id,agent_id LIMIT %s OFFSET %s
             ), bins AS (
@@ -255,7 +261,7 @@ class StatisticsRepository:
                         'YYYY-MM-DD"T"HH24:MI:SS') || '+08:00',b.inquiries) FROM bins b WHERE b.source_key=s.source_key
                         AND b.account_id=s.account_id AND b.agent_id=s.agent_id),'{{}}'::jsonb))
                     ORDER BY s.inquiries DESC,s.agent_name NULLS LAST,s.source_key,s.account_id,s.agent_id) FROM selected s),'[]'::jsonb) AS agents
-        """, [period.start, min(period.end, now), now, *r_values, *r_values,
+        """, [period.start, min(period.end, now), now, *r_values, *r_values, *r_values,
               *m_values, period.start, min(period.end, now), *s_values, retained_start, through,
               *s_values, period.end, period.start, page_size, (page - 1) * page_size]).fetchone()
         quality = reply_quality(connection, period, rows["agents"], now)

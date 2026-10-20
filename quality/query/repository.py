@@ -220,6 +220,35 @@ def _flatten(row: dict | None) -> dict | None:
     return result
 
 
+def _contact_profile(value):
+    """Extract the stable Chatwoot contact fields from an archived payload."""
+    if not isinstance(value, dict):
+        return {}
+    additional = value.get("additional_attributes") if isinstance(value.get("additional_attributes"), dict) else {}
+    custom = value.get("custom_attributes") if isinstance(value.get("custom_attributes"), dict) else {}
+    phone = next((value.get(key) for source in (value, additional, custom)
+                  for key in ("phone_number", "phone")
+                  if isinstance(source, dict) and source.get(key) not in (None, "")), None)
+    note = next((source.get(key) for source in (value, additional, custom)
+                 for key in ("description", "note", "notes", "contact_note", "contact_notes")
+                 if isinstance(source, dict) and isinstance(source.get(key), str) and source.get(key).strip()), None)
+    return {"chatwoot_user_id": str(value.get("id") or value.get("user_id")) if value.get("id") or value.get("user_id") else None,
+            "phone_number": str(phone) if phone is not None else None,
+            "contact_note": note}
+
+
+def _snapshot_contact(data):
+    if not isinstance(data, dict):
+        return {}
+    candidates = [data.get("contact"), data.get("sender"),
+                  (data.get("meta") or {}).get("sender") if isinstance(data.get("meta"), dict) else None]
+    for candidate in candidates:
+        profile = _contact_profile(candidate)
+        if any(profile.values()):
+            return profile
+    return {}
+
+
 class QueryRepository:
     def __init__(self, settings: QuerySettings):
         self.pool = ConnectionPool(
@@ -393,7 +422,7 @@ class QueryRepository:
     def round_detail(self, round_id: str, page: int = 1, page_size: int = 100):
         with self.pool.connection() as connection:
             row = connection.execute("""
-                SELECT r.*,c.display_name AS customer_name,c.contact_id,c.business_user_id,
+                SELECT r.*,c.display_name AS customer_name,c.contact_id,c.business_user_id,c.data AS customer_profile,
                     to_jsonb(review) AS review
                 FROM ops.round_index r LEFT JOIN ops.customer_index c ON c.customer_id=r.customer_id
                 LEFT JOIN quality.current_round_reviews review ON review.round_id=r.round_id
@@ -402,6 +431,7 @@ class QueryRepository:
             if row is None:
                 return None
             round_item = self._agents(connection, [_flatten(row)])[0]
+            self._customer_profile(connection, round_item, round_item.pop("customer_profile", None))
             messages, total = self._messages(connection, "m.round_id=%s", [round_id], page, page_size)
         return {"round": round_item, "messages": messages, "total": total, "page": page, "page_size": page_size}
 
@@ -453,6 +483,56 @@ class QueryRepository:
         """, [*values, page_size, (page - 1) * page_size]).fetchall()
         return [_flatten(row) for row in rows], total
 
+    def _customer_profile(self, connection, customer: dict, customer_profile=None):
+        """Fill contact fields for new and pre-profile customer projections."""
+        data = customer.get("data") if isinstance(customer.get("data"), dict) else {}
+        profile = {key: data.get(key) for key in ("chatwoot_user_id", "phone_number", "contact_note")}
+        if not profile["chatwoot_user_id"] and customer.get("contact_id"):
+            profile["chatwoot_user_id"] = str(customer["contact_id"])
+        candidates = [customer_profile] if customer_profile is not None else []
+        if isinstance(customer_profile, dict):
+            for key in profile:
+                if not profile[key] and customer_profile.get(key):
+                    profile[key] = customer_profile[key]
+        if not profile["phone_number"] or not profile["contact_note"]:
+            rows = connection.execute("""
+                SELECT s.data FROM archive.conversation_snapshots s
+                JOIN (
+                    SELECT DISTINCT source_key,account_id,conversation_id,customer_id FROM ops.message_index
+                    UNION
+                    SELECT DISTINCT source_key,account_id,conversation_id,customer_id FROM ops.round_index
+                ) c ON c.source_key=s.source_key
+                    AND c.account_id=s.account_id AND c.conversation_id=s.conversation_id
+                WHERE c.customer_id=%s ORDER BY s.id DESC LIMIT 100
+            """, (customer["customer_id"],)).fetchall()
+            candidates.extend(row["data"] for row in rows)
+        if not profile["phone_number"] or not profile["contact_note"]:
+            rows = connection.execute("""
+                SELECT e.payload FROM archive.events e
+                JOIN (
+                    SELECT DISTINCT source_key,account_id,conversation_id,customer_id FROM ops.message_index
+                    UNION
+                    SELECT DISTINCT source_key,account_id,conversation_id,customer_id FROM ops.round_index
+                ) c ON c.source_key=e.source_key
+                    AND c.account_id=e.account_id AND c.conversation_id=e.conversation_id
+                WHERE c.customer_id=%s ORDER BY e.id DESC LIMIT 100
+            """, (customer["customer_id"],)).fetchall()
+            for row in rows:
+                payload = row["payload"] if isinstance(row["payload"], dict) else {}
+                conversation = payload.get("conversation") if isinstance(payload.get("conversation"), dict) else {}
+                candidates.extend((payload.get("contact"), payload.get("sender"), conversation.get("contact"),
+                                   (conversation.get("meta") or {}).get("sender")
+                                   if isinstance(conversation.get("meta"), dict) else None))
+        for candidate in candidates:
+            found = _snapshot_contact(candidate)
+            for key in profile:
+                if not profile[key] and found.get(key):
+                    profile[key] = found[key]
+            if profile["phone_number"] and profile["contact_note"]:
+                break
+        customer.update({key: value for key, value in profile.items() if value is not None})
+        return customer
+
     def customer_history(self, customer_id: str, page: int = 1, page_size: int = 100):
         with self.pool.connection() as connection:
             customer = connection.execute("""
@@ -462,8 +542,9 @@ class QueryRepository:
             """, (customer_id,)).fetchone()
             if customer is None:
                 return None
+            customer = self._customer_profile(connection, _flatten(customer))
             messages, total = self._messages(connection, "m.customer_id=%s", [customer_id], page, page_size)
-        return {"customer": _flatten(customer), "messages": messages, "total": total, "page": page, "page_size": page_size}
+        return {"customer": customer, "messages": messages, "total": total, "page": page, "page_size": page_size}
 
     def customer_rounds(self, customer_id: str, page: int = 1, page_size: int = 50):
         """Read a customer's round directory without loading any message bodies."""

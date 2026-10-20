@@ -16,16 +16,16 @@
     channel: "该渠道的新咨询轮次数，按轮次开始时间归入时段；无法识别渠道的记录归入‘未映射渠道’。"
   };
   const agentHelp = {
-    seats: "所选周期内的监控坐席、状态记录、实际回复人、已确认分配询盘、存在咨询时长或已归属流单的坐席；来源、账号和坐席ID共同确定身份。",
+    seats: "所选周期内的监控坐席、状态记录、实际回复人、已确认分配询盘、存在响应时长、咨询时长或已归属流单的坐席；来源、账号和坐席ID共同确定身份。",
     inquiries: "区间内有实际公开人工回复的询盘轮次数，同一坐席同一轮只计一次；不同坐席参与同一轮分别计入各自数据。",
     total_inquiries: "各坐席在所选周期内回复的询盘量之和；同一轮多人回复时，每位回复坐席各计一次。",
     replies: "所选区间内的公开人工回复逻辑消息数，编辑版本不重复计数；排除私密备注、系统消息、机器人回复和评价卡。",
     peak_online: "所选周期内，单个有采样分钟观测到的在线坐席人数最大值；仅覆盖保留期内的数据。",
     observed_minutes: "所选周期内至少有一条成功状态采样的分钟数；不包含缺采样、过期和未来分钟。",
     coverage: "实际坐席状态样本数÷按历史监控成员计算的应采样数×100%，最高显示100%；只统计状态保留期内的已完成分钟。",
-    online: "按日展示每分钟采样中状态为online的坐席人数；按月、年展示有采样分钟的平均在线人数。缺采样保留空缺，在线不代表仍有接待容量。",
-    first_response: "从转人工到本轮首次公开人工回复的平均时长，仅统计首次回复发生于所选区间的已回复轮次，归入首位回复坐席；转接或消息时间不明时排除。",
-    average_response: "客户连续消息从首条未回复消息等到下一条公开人工回复，首次等待从转人工开始；按实际回复坐席平均，只纳入区间内已完成的响应，未回复的尾段不计。",
+    online: "按日展示每分钟采样中状态为online的坐席人数；按月、年及自定义时间段展示对应时段内有采样分钟的平均在线人数。缺采样保留空缺，在线不代表仍有接待容量。",
+    first_response: "按转人工发生时间筛选对话，从转人工后用户第一条有效消息到随后首次有效人工回复计时，归入该回复坐席，再对有效对话求平均。触发转人工的指令不计；转人工后未发言、未回复或时间不明时不计。使用截至查询时已完成的回复，可跨筛选区间结束时间。",
+    average_response: "按转人工发生时间筛选对话。首段响应使用首响时长，后续每段从用户连续发言的最后一条有效消息到下一条有效人工回复计时；先算每通对话中该坐席的平均响应，再对各通对话等权平均。未回复尾段、连续人工回复、私密消息、评价卡、空白和已删除消息不计；回复可跨筛选区间结束时间。",
     average_rating: "该坐席在区间内已回复询盘当前关联的1至5分评价平均值，同一轮只计一次，未评分不作为0分。",
     low_rating: "该坐席在区间内已回复询盘当前关联评分为1至3分的轮次数，同一坐席同一轮只计一次。",
     lost_inquiries: "转人工发生在所选区间、截至查询时仍无任何公开人工回复的轮次数，包含仍在等待的询盘；只归属已确认的ICS责任坐席。",
@@ -60,14 +60,15 @@
     return `${hours ? `${number(hours)}小时` : ""}${minutes ? `${minutes}分` : ""}${number(Number((seconds % 60).toFixed(2)))}秒`;
   };
 
-  function create({api, escapeHtml: esc, getToken, isActive}) {
+  function create({api, escapeHtml: esc, getToken, isActive, download}) {
     const $ = id => document.getElementById(id);
     const helpLabel = (label, key) => {
       const help = model.kind === "quality" ? qualityHelp[key] : model.kind === "time" ? timeHelp[key.startsWith("channel:") ? "channel" : key] : agentHelp[key];
       return `${esc(label)}<span class="report-help" tabindex="0" role="img" aria-label="${esc(`${label}：${help}`)}" title="${esc(help)}">?</span>`;
     };
-    const model = {kind: "time", mode: "day", date: beijingDay(), page: 1, controller: null,
-      epoch: 0, result: null, optionsToken: null, options: {channels: []}, hidden: new Set(), mounted: false};
+    const today = beijingDay();
+    const model = {kind: "time", mode: "day", date: today, startDate: today, endDate: today, page: 1, controller: null,
+      epoch: 0, result: null, applied: null, exportController: null, optionsToken: null, options: {channels: []}, hidden: new Set(), mounted: false};
 
     const mount = () => {
       if (model.mounted) return;
@@ -75,11 +76,13 @@
       $("statisticsPage").innerHTML = `
         <aside class="panel report-sidebar" aria-label="筛选与统计概况"><form id="reportFilters" class="report-filters">
           <h3 class="report-sidebar-title">统计筛选</h3>
-          <label class="report-field">统计周期<select id="reportMode"><option value="day">按日 · 每小时</option><option value="month">按月 · 每日</option><option value="year">按年 · 每月</option></select></label>
-          <label class="report-field"><span id="reportDateLabel">选择日期</span><input id="reportDate" type="date" min="2000-01-01" max="2099-12-31" required aria-label="统计日期"></label>
+          <label class="report-field">统计周期<select id="reportMode"><option value="day">按日 · 每小时</option><option value="month">按月 · 每日</option><option value="year">按年 · 每月</option><option value="custom">自定义 · 每日</option></select></label>
+          <label id="reportDateField" class="report-field"><span id="reportDateLabel">选择日期</span><input id="reportDate" type="date" min="2000-01-01" max="2099-12-31" required aria-label="统计日期"></label>
+          <label id="reportStartField" class="report-field hidden">起始日期<input id="reportStartDate" type="date" min="2000-01-01" max="2099-12-31" required disabled aria-label="统计起始日期"></label>
+          <label id="reportEndField" class="report-field hidden">结束日期<input id="reportEndDate" type="date" min="2000-01-01" max="2099-12-31" required disabled aria-label="统计结束日期"></label>
           <label id="reportChannelField" class="report-field">渠道<select id="reportChannel"><option value="">全部渠道</option></select></label>
-          <div class="report-filter-actions"><button id="reportRefresh" class="button primary" type="submit">查询统计</button><button id="reportReset" class="button secondary" type="button">重置</button></div>
-          <span class="report-zone">北京时间 · 时段开始含、结束不含</span>
+          <div class="report-filter-actions"><button id="reportRefresh" class="button primary" type="submit">查询统计</button><button id="reportReset" class="button secondary" type="button">重置</button><button id="reportExport" class="button secondary report-export" type="button" disabled>导出 Excel</button></div>
+          <span id="reportZone" class="report-zone">北京时间 · 时段开始含、结束不含</span>
         </form>
         <section class="report-overview" aria-label="统计概况"><h3 class="report-sidebar-title">统计概况</h3><div id="reportCards" class="report-cards"></div></section>
         <p id="reportStatus" class="report-status" role="status" aria-live="polite"></p>
@@ -96,13 +99,15 @@
         <section id="reportAgentPanel" class="panel report-data-panel hidden"><div class="panel-header"><div class="panel-heading"><h3 id="reportAgentTitle">坐席回复询盘</h3><p id="reportAgentSubtitle">按实际回复时间归入时段；同一坐席在同一时段回复同一轮询盘仅计一次</p></div></div>
           <div id="reportAgents" class="table-wrap report-table"></div><div id="reportPagination" class="report-pagination"><span id="reportPageInfo"></span><div><button id="reportPrev" type="button" class="button secondary">上一页</button><button id="reportNext" type="button" class="button secondary">下一页</button></div></div>
         </section></div></div>`;
-      $("reportDate").value = model.date;
+      $("reportMode").value = model.mode;
+      updateDateInput();
       $("reportFilters").addEventListener("submit", event => {event.preventDefault(); model.page = 1; load();});
       $("reportReset").addEventListener("click", reset);
+      $("reportExport").addEventListener("click", exportReport);
       $("reportMode").addEventListener("change", () => {
         model.mode = $("reportMode").value; model.date = beijingDay(); updateDateInput(); model.page = 1; load();
       });
-      for (const id of ["reportDate", "reportChannel"]) $(id).addEventListener("change", () => {model.page = 1; load();});
+      for (const id of ["reportDate", "reportStartDate", "reportEndDate", "reportChannel"]) $(id).addEventListener("change", () => {model.page = 1; load();});
       $("reportLegend").addEventListener("change", event => {
         const key = event.target.dataset.series;
         if (!key) return;
@@ -130,12 +135,18 @@
 
     function reset() {
       model.mode = "day"; model.date = beijingDay(); model.page = 1; model.hidden.clear();
+      model.startDate = model.endDate = model.date;
       $("reportMode").value = "day";
       $("reportChannel").value = "";
       updateDateInput(); load();
     }
 
     function readDate() {
+      if (model.mode === "custom") {
+        model.startDate = $("reportStartDate").value;
+        model.endDate = $("reportEndDate").value;
+        return;
+      }
       const value = $("reportDate").value;
       if (!value) return;
       const mode = $("reportDate").type;
@@ -143,6 +154,17 @@
     }
     function updateDateInput() {
       const input = $("reportDate"), day = model.date;
+      const custom = model.mode === "custom";
+      $("reportDateField").classList.toggle("hidden", custom);
+      $("reportStartField").classList.toggle("hidden", !custom);
+      $("reportEndField").classList.toggle("hidden", !custom);
+      input.disabled = custom;
+      $("reportStartDate").disabled = $("reportEndDate").disabled = !custom;
+      $("reportStartDate").value = model.startDate;
+      $("reportEndDate").value = model.endDate;
+      $("reportEndDate").setCustomValidity("");
+      $("reportZone").textContent = custom ? "北京时间 · 包含起止日期全天；按日汇总" : "北京时间 · 时段开始含、结束不含";
+      if (custom) return;
       input.type = model.mode === "day" ? "date" : model.mode === "month" ? "month" : "number";
       input.min = model.mode === "day" ? "2000-01-01" : model.mode === "month" ? "2000-01" : "2000";
       input.max = model.mode === "day" ? "2099-12-31" : model.mode === "month" ? "2099-12" : "2099";
@@ -152,6 +174,8 @@
     function stop(reset = false) {
       model.epoch++;
       model.controller?.abort(); model.controller = null;
+      model.exportController?.abort(); model.exportController = null; model.applied = null;
+      if (model.mounted) {$("reportExport").disabled = true; $("reportExport").textContent = "导出 Excel";}
       if (reset) {
         model.result = null; model.optionsToken = null; model.options = {channels: []};
         if (model.mounted) {
@@ -181,11 +205,16 @@
       } catch (_) { /* Report endpoint still provides readable data if the directory fails. */ }
     }
     async function load() {
-      if (!$("reportFilters").reportValidity()) return;
+      const startDate = $("reportStartDate").value, endDate = $("reportEndDate").value;
+      $("reportEndDate").setCustomValidity(model.mode === "custom" && startDate && endDate && endDate < startDate ? "结束日期不能早于起始日期。" : "");
+      if (!$("reportFilters").reportValidity()) {stop(); $("reportRefresh").disabled = false; return;}
       readDate(); stop(); model.result = null;
       const epoch = model.epoch, token = getToken(), controller = new AbortController();
       model.controller = controller;
-      const params = new URLSearchParams({mode: model.mode, date: model.date});
+      const params = new URLSearchParams({mode: model.mode});
+      if (model.mode === "custom") {
+        params.set("start_date", model.startDate); params.set("end_date", model.endDate);
+      } else params.set("date", model.date);
       if (model.kind === "time" && $("reportChannel").value) params.set("channel_key", $("reportChannel").value);
       if (model.kind !== "time") {params.set("page", model.page); params.set("page_size", 20);}
       clear(); $("reportStatus").classList.remove("error"); $("reportStatus").textContent = "正在读取统计数据…";
@@ -194,7 +223,8 @@
       try {
         const result = await api(`/admin/api/statistics/${model.kind}?${params}`, {signal: controller.signal});
         if (epoch !== model.epoch || token !== getToken() || !isActive()) return;
-        model.result = result; render();
+        model.result = result; model.applied = new URLSearchParams(params); render();
+        $("reportExport").disabled = false;
       } catch (error) {
         if (error.name === "AbortError" || epoch !== model.epoch || token !== getToken() || !isActive()) return;
         clear("暂无可显示的数据"); $("reportStatus").textContent = error.message; $("reportStatus").classList.add("error");
@@ -202,6 +232,31 @@
         if (epoch === model.epoch) $("reportRefresh").disabled = false;
       }
       await optionsTask;
+    }
+    async function exportReport() {
+      if (!model.result || !model.applied || model.exportController || !isActive()) return;
+      const controller = new AbortController(), epoch = model.epoch, token = getToken(), kind = model.kind;
+      const params = new URLSearchParams(model.applied), result = model.result;
+      params.delete("page"); params.delete("page_size");
+      model.exportController = controller;
+      $("reportExport").disabled = true; $("reportExport").textContent = "正在导出…";
+      const current = () => !controller.signal.aborted && epoch === model.epoch && token === getToken() && isActive();
+      try {
+        const blob = await api(`/admin/api/statistics/${kind}/export.xlsx?${params}`, {signal: controller.signal, responseType: "blob"});
+        if (!current()) return;
+        const title = {time: "时间统计", agents: "坐席细化", quality: "质检统计"}[kind];
+        download(blob, `${title}_${result.start_date || result.date}_${result.end_date || result.date}.xlsx`);
+      } catch (error) {
+        if (error.name !== "AbortError" && current()) {
+          $("reportStatus").textContent = error.message || "导出失败，请稍后重试。";
+          $("reportStatus").classList.add("error");
+        }
+      } finally {
+        if (model.exportController === controller) {
+          model.exportController = null;
+          $("reportExport").disabled = !model.applied; $("reportExport").textContent = "导出 Excel";
+        }
+      }
     }
     function start(kind) {
       mount(); model.kind = kind; model.page = 1;
@@ -218,7 +273,7 @@
       $("reportChartTitle").textContent = kind === "time" ? "询盘趋势" : "可用客服量（在线）";
       $("reportChartSubtitle").textContent = kind === "time" ? "按咨询开始时间归入对应时段；数据随左侧渠道筛选更新" : "按分钟观测在线状态；缺采样处断开显示";
       $("reportTableTitle").textContent = kind === "quality" ? "人工质检表" : kind === "time" ? "时段数据" : "客服回复质量";
-      $("reportTableSubtitle").textContent = kind === "quality" ? "按坐席统计已回复询盘，使用最新人工质检结论" : kind === "time" ? "折线图对应的完整指标明细" : "按坐席汇总；首响与响应只计已回复记录，与下方明细共用分页";
+      $("reportTableSubtitle").textContent = kind === "quality" ? "按坐席统计已回复询盘，使用最新人工质检结论" : kind === "time" ? "折线图对应的完整指标明细" : "首响与响应按转人工时间筛选，其余询盘按实际回复时间；与下表共用分页";
       load();
     }
     const channelName = key => model.options.channels.find(c => c.key === key)?.name || (key === "unmapped" ? "未映射渠道" : key);
@@ -246,7 +301,8 @@
       if (!chosen.length) {$("reportChart").innerHTML = '<div class="report-empty">请勾选至少一个指标。</div>'; return;}
       const width = Math.max(640, $("reportChart").clientWidth || 1000);
       const height = Math.max(140, $("reportChart").clientHeight || 200);
-      const left = 40, right = 20, top = 16, bottom = 30;
+      const custom = model.result.mode === "custom";
+      const left = custom ? 45 : 40, right = custom ? 45 : 20, top = 16, bottom = 30;
       const plotWidth = width - left - right, plotHeight = height - top - bottom;
       let peak = 0;
       data.forEach(row => {if (!row.future) chosen.forEach(s => {peak = Math.max(peak, Number(getValue(row, s[0])) || 0);});});
@@ -255,7 +311,7 @@
       let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc($("reportChartTitle").textContent)}"><title>${esc($("reportChartTitle").textContent)}</title>`;
       for (let i = 0; i <= 4; i++) svg += `<line x1="${left}" y1="${y(i * step)}" x2="${width - right}" y2="${y(i * step)}" stroke="#e7eaf0"/><text x="${left - 12}" y="${y(i * step) + 4}" text-anchor="end">${number(i * step)}</text>`;
       data.forEach((row, i) => {
-        const stride = data.length > 100 ? 120 : data.length > 24 ? 2 : 1;
+        const stride = custom ? Math.max(1, Math.ceil(data.length / Math.max(2, Math.floor(plotWidth / 90)))) : data.length > 100 ? 120 : data.length > 24 ? 2 : 1;
         if (i % stride === 0 || i === data.length - 1) svg += `<text x="${x(i)}" y="${height - 18}" text-anchor="middle">${esc(row.label)}</text>`;
       });
       chosen.forEach(([key, name, color]) => {
@@ -293,8 +349,8 @@
       cards([["参与统计坐席", r.total, "seats"], ["回复询盘（按坐席去重）", r.total_inquiries, "total_inquiries"], ["公开回复消息数", r.total_replies, "replies"], ["在线人数峰值", summary.peak_online, "peak_online"], ["有采样的分钟数", summary.observed_minutes, "observed_minutes"], ["状态采样覆盖率（%）", summary.expected_samples ? Math.min(100, summary.samples / summary.expected_samples * 100) : null, "coverage"]]);
       const seatName = a => `<span class="report-seat-name">${esc(a.agent_name || `坐席 #${a.agent_id}`)}</span><span class="report-seat-id">${esc(a.source_key)} / ${esc(a.account_id)} / #${esc(a.agent_id)}</span>`;
       const qualityFields = [["首响时长", "first_response"], ["平均响应时长", "average_response"], ["对话量", "dialogues"], ["高质量对话量", "high_quality_dialogues"], ["发配量", "assigned_inquiries"], ["回复询盘总量", "inquiries"], ["平均评分", "average_rating"], ["低分数（低于4分）", "low_rating"], ["流单数（转人工后未回）", "lost_inquiries"], ["咨询状态总时长", "consultation_seconds"]];
-      $("reportTable").innerHTML = r.agents.length ? `<table><thead><tr><th>坐席</th>${qualityFields.map(([label, key]) => `<th>${helpLabel(label, key)}</th>`).join("")}</tr></thead><tbody>${r.agents.map(a => `<tr><td>${seatName(a)}</td><td title="已回复首响样本 ${number(a.first_response_samples)} 条">${duration(a.first_response_seconds)}</td><td title="已完成响应样本 ${number(a.response_samples)} 次">${duration(a.average_response_seconds)}</td><td>${number(a.dialogues)}</td><td>${number(a.high_quality_dialogues)}</td><td>${number(a.assigned_inquiries)}</td><td>${number(a.inquiries)}</td><td title="已评分询盘 ${number(a.rated_inquiries)} 条">${number(a.average_rating)}</td><td>${number(a.low_rating)}</td><td>${number(a.lost_inquiries)}</td><td>${duration(a.consultation_seconds)}</td></tr>`).join("")}</tbody></table>` : '<div class="report-empty">当前时间范围没有坐席记录、公开人工回复、成功分配或已归属流单。</div>';
-      $("reportTableSubtitle").textContent = `按坐席汇总；时长仅计已回复记录；与下表共用分页${r.unassigned_lost_inquiries ? `。另有 ${number(r.unassigned_lost_inquiries)} 条未归属坐席的流单` : ""}`;
+      $("reportTable").innerHTML = r.agents.length ? `<table><thead><tr><th>坐席</th>${qualityFields.map(([label, key]) => `<th>${helpLabel(label, key)}</th>`).join("")}</tr></thead><tbody>${r.agents.map(a => `<tr><td>${seatName(a)}</td><td title="有效首响对话 ${number(a.first_response_samples)} 通">${duration(a.first_response_seconds)}</td><td title="有效响应对话 ${number(a.response_rounds)} 通，已完成响应 ${number(a.response_samples)} 次；先按对话平均，再等权汇总">${duration(a.average_response_seconds)}</td><td>${number(a.dialogues)}</td><td>${number(a.high_quality_dialogues)}</td><td>${number(a.assigned_inquiries)}</td><td>${number(a.inquiries)}</td><td title="已评分询盘 ${number(a.rated_inquiries)} 条">${number(a.average_rating)}</td><td>${number(a.low_rating)}</td><td>${number(a.lost_inquiries)}</td><td>${duration(a.consultation_seconds)}</td></tr>`).join("")}</tbody></table>` : '<div class="report-empty">当前时间范围没有坐席记录、公开人工回复、成功分配或已归属流单。</div>';
+      $("reportTableSubtitle").textContent = `时长按转人工时间筛选并按对话平均；其余询盘按实际回复时间；与下表共用分页${r.unassigned_lost_inquiries ? `。另有 ${number(r.unassigned_lost_inquiries)} 条未归属坐席的流单` : ""}`;
       $("reportAgents").innerHTML = r.agents.length ? `<table><thead><tr><th>坐席</th>${[["回复询盘合计", "inquiries"], ["公开回复数", "replies"], ["在线分钟", "online_minutes"], ["忙碌分钟", "busy_minutes"]].map(([label, key]) => `<th>${helpLabel(label, key)}</th>`).join("")}${r.buckets.map(b => `<th>${helpLabel(b.label, "bucket")}</th>`).join("")}</tr></thead><tbody>${r.agents.map(a => {
         const sampled = a.online_minutes + a.busy_minutes + a.offline_minutes + a.unknown_minutes;
         return `<tr><td>${seatName(a)}</td><td>${number(a.inquiries)}</td><td>${number(a.replies)}</td><td>${sampled ? number(a.online_minutes) : "—"}</td><td>${sampled ? number(a.busy_minutes) : "—"}</td>${r.buckets.map(b => `<td>${b.future ? "—" : number(a.buckets[b.key] || 0)}</td>`).join("")}</tr>`;
@@ -302,8 +358,8 @@
       const pages = Math.max(1, Math.ceil(r.total / r.page_size));
       $("reportPageInfo").textContent = `第 ${r.page} / ${pages} 页 · 共 ${number(r.total)} 位坐席 · 每页 ${r.page_size} 位`;
       $("reportPrev").disabled = r.page <= 1; $("reportNext").disabled = r.page >= pages;
-      $("reportNotice").innerHTML = `<p>可用客服量以采样时状态为“在线”的人数展示。按日展示每分钟人数；按月、年展示对应日、月内有采样分钟的平均在线人数。</p><p>状态历史保留45天，当前可用起点为 ${esc(new Date(r.retention_cutoff_at).toLocaleString("zh-CN", {timeZone: "Asia/Shanghai", hour12: false}))}。未监控、缺采样和已过期不补为离线或零；覆盖不足时，观测人数可能偏低。询盘归档不受45天保留期影响。</p>`;
-      $("reportRules").innerHTML = "<p>在线人数根据每分钟成功采样中的online状态计数，不表示当时仍有剩余接待容量。未收到状态样本的分钟保持空缺，当天尚未结束的分钟不参与统计。</p><p>首响时长为转人工到本轮首次公开人工回复的平均等待，归入实际首位回复坐席；只统计首条回复发生于所选区间且转接时间已知的对话。平均响应时长按客户连续消息的首条未回复消息到下一条公开人工回复计算，首次等待从转人工开始；只纳入区间内实际完成的回复，未回复的尾段不参与平均。连续人工回复不重复计样本，私密备注、系统消息和评价卡排除；缺失时间戳的轮次不计算时长。</p><p>回复询盘数按区间内实际公开回复的坐席和咨询轮次去重。跨时段回复同一轮时，合计可能小于各时段相加。平均评分与低分数基于这些已回复询盘的当前关联评价，同一坐席同一轮只计一次，未评分不参与平均；多人参与同一轮时分别计入各自数据。</p><p>流单按区间内转人工时间统计，截至查询时没有任何公开人工回复（含尚在等待的进行中询盘），只归入已确认的ICS责任坐席；后续已由其他坐席回复的轮次不计流单，无法确认责任坐席的数量单独提示。转人工时间优先使用请求时间，再使用已确认的ICS分配时间；继承人工接待的轮次使用新轮开始时间。</p><p>坐席名单包含监控坐席、实际回复人和存在已归属流单的责任坐席。两张坐席明细使用同一分页，坐席ID相同但来源或账号不同的记录独立统计。状态采样时长仅覆盖保留期内可观察到的分钟，回复质量不受45天状态保留期影响。</p>";
+      $("reportNotice").innerHTML = `<p>可用客服量以采样时状态为“在线”的人数展示。按日展示每分钟人数；按月、年展示对应日、月内有采样分钟的平均在线人数，自定义时间段按天展示平均在线人数。</p><p>状态历史保留45天，当前可用起点为 ${esc(new Date(r.retention_cutoff_at).toLocaleString("zh-CN", {timeZone: "Asia/Shanghai", hour12: false}))}。未监控、缺采样和已过期不补为离线或零；覆盖不足时，观测人数可能偏低。询盘归档不受45天保留期影响。</p>`;
+      $("reportRules").innerHTML = `<p>在线人数根据每分钟成功采样中的online状态计数，不表示当时仍有剩余接待容量。未收到状态样本的分钟保持空缺，当天尚未结束的分钟不参与统计。</p><p>首响时长：${esc(agentHelp.first_response)}</p><p>平均响应时长：${esc(agentHelp.average_response)} 同一通对话涉及多位坐席时，各自只计算自己完成的响应；转人工或有效消息时间不明的轮次排除时长计算。</p><p>回复询盘数按区间内实际公开回复的坐席和咨询轮次去重。跨时段回复同一轮时，合计可能小于各时段相加。平均评分与低分数基于这些已回复询盘的当前关联评价，同一坐席同一轮只计一次，未评分不参与平均；多人参与同一轮时分别计入各自数据。首响和响应使用转人工时间范围，时长样本数可以与回复询盘总量不同。</p><p>流单按区间内转人工时间统计，截至查询时没有任何公开人工回复（含尚在等待的进行中询盘），只归入已确认的ICS责任坐席；后续已由其他坐席回复的轮次不计流单，无法确认责任坐席的数量单独提示。转人工时间优先使用请求时间，再使用已确认的ICS分配时间；继承人工接待的轮次使用新轮开始时间。</p><p>坐席名单包含监控坐席、实际回复人、所选转人工对话中存在后续回复的坐席和存在已归属流单的责任坐席。两张坐席明细使用同一分页，坐席ID相同但来源或账号不同的记录独立统计。状态采样时长仅覆盖保留期内可观察到的分钟，回复质量不受45天状态保留期影响。</p>`;
     }
     function renderQuality() {
       const r = model.result;
@@ -312,7 +368,7 @@
       const fields = [["assigned_inquiries", "发配量"], ["dialogues", "对话量"], ["high_quality_dialogues", "高质量对话量"], ["inquiries", "回复询盘总量"], ["failed_inquiries", "质检不合格量"], ["failure_rate", "不合格率"]];
       const seatName = a => `<span class="report-seat-name">${esc(a.agent_name || `坐席 #${a.agent_id}`)}</span><span class="report-seat-id">${esc(a.source_key)} / ${esc(a.account_id)} / #${esc(a.agent_id)}</span>`;
       $("reportTable").innerHTML = r.agents.length ? `<table><thead><tr><th>坐席</th>${fields.map(([key, label]) => `<th>${helpLabel(label, key === "failure_rate" ? "human_failure_rate" : key)}</th>`).join("")}</tr></thead><tbody>${r.agents.map(a => `<tr><td>${seatName(a)}</td>${fields.map(([key]) => `<td>${key === "failure_rate" ? percent(a[key]) : number(a[key])}</td>`).join("")}</tr>`).join("")}</tbody></table>` : '<div class="report-empty">当前时间范围没有坐席记录或询盘。</div>';
-      const selected = model.mode === "day" ? r.date : model.mode === "month" ? r.date.slice(0, 7) : r.date.slice(0, 4);
+      const selected = periodLabel(r);
       $("reportAgents").innerHTML = `<table><thead><tr><th>统计周期</th>${aiFields.map(([key, label]) => `<th>${helpLabel(label, `ai_${key}`)}</th>`).join("")}</tr></thead><tbody><tr><td>${esc(selected)}</td>${aiFields.map(([key]) => `<td>${key === "failure_rate" ? percent(r.ai[key]) : number(r.ai[key])}</td>`).join("")}</tr></tbody></table>`;
       const pages = Math.max(1, Math.ceil(r.total / r.page_size));
       $("reportQualityPageInfo").textContent = `第 ${r.page} / ${pages} 页 · 共 ${number(r.total)} 位坐席 · 每页 ${r.page_size} 位`;
@@ -320,10 +376,14 @@
       $("reportNotice").innerHTML = "<p>人工与AI质检结论独立，使用当前最新保存结果；复核后历史报表随之更新。待质检轮次保留在分母中，不计为不合格；分母为0时不合格率显示‘—’。</p>";
       $("reportRules").innerHTML = `<p>人工表沿用坐席细化的发配量、对话量、高质量对话量和回复询盘总量。发配量按成功分配时间统计，其余三项按区间内实际回复询盘统计；多人回复同一轮时分别计入各自数据。</p><p>人工质检不合格量：${esc(qualityHelp.failed_inquiries)}</p><p>不合格率：${esc(qualityHelp.human_failure_rate)}</p>${aiFields.map(([key, label]) => `<p>${esc(label)}：${esc(qualityHelp[`ai_${key}`])}</p>`).join("")}`;
     }
+    function periodLabel(r) {
+      const mode = r.mode || model.mode;
+      return mode === "custom" ? `${r.start_date} 至 ${r.end_date}` : mode === "day" ? r.date : mode === "month" ? r.date.slice(0, 7) : r.date.slice(0, 4);
+    }
     function render() {
       const r = model.result;
       if (!r) return;
-      const selected = model.mode === "day" ? r.date : model.mode === "month" ? r.date.slice(0, 7) : r.date.slice(0, 4);
+      const selected = periodLabel(r);
       $("reportStatus").textContent = `${selected} · ${{time: "时间统计", agents: "坐席细化", quality: "质检统计"}[model.kind]} · 更新于 ${new Date(r.generated_at).toLocaleTimeString("zh-CN", {timeZone: "Asia/Shanghai", hour12: false})}（北京时间）`;
       if (model.kind === "quality") {renderQuality(); return;}
       model.kind === "time" ? renderTime() : renderAgents();

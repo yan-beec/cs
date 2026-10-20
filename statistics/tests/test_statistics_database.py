@@ -1,9 +1,10 @@
 """Opt-in checks on a disposable quality_query_test_* database, never a live archive."""
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import os
 from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock, patch
 
 from psycopg.types.json import Jsonb
 
@@ -61,6 +62,59 @@ class StatisticsDatabaseTest(unittest.TestCase):
             "sampled_at": (START + timedelta(minutes=minute, seconds=10)).isoformat(),
             "agents": [{"agent_id": str(agent), "agent_name": f"Seat {agent}", "agent_name_source": "chatwoot",
                         "availability_status": status} for agent, status in agents]})
+
+    def test_excel_exports_full_filtered_roster_and_current_quality_in_one_sheet(self):
+        from openpyxl import load_workbook
+        from ics_agent.statistics import export
+        from quality.query.config import QuerySettings
+
+        export_settings = QuerySettings(_env_file=None, reader_password="unused-export-test")
+        self.sample(0, [(agent, "online") for agent in range(7, 30)])
+        self.sample(0, [(999, "online")], account=2)
+        self.receive(event(1, content="我要转人工"), event(2, 1, content="请帮我查一下"), agent_reply(3, 2),
+            event(11, 1440, conversation_id=22),
+            event(12, 1441, conversation_id=22, sender="agent_bot", direction="outgoing", content="AI回复"),
+            event(21, 2880, conversation_id=32))
+        self.drain()
+        self.review(12, "failed", "failed")
+        period = ReportPeriod.build("custom", date(2026, 10, 1), date(2026, 10, 2))
+        clock = Mock(wraps=datetime)
+        clock.now.return_value = START + timedelta(days=3)
+        for kind in ("time", "agents", "quality"):
+            with patch.object(export, "datetime", clock):
+                artifact = export.create_export(self.reader.pool, export_settings, kind, period,
+                    source_key=self.source, account_id=1)
+            try:
+                book = load_workbook(artifact.path)
+                self.assertEqual(book.sheetnames, [export.TITLES[kind]])
+                rows = list(book.active.values)
+                if kind == "time":
+                    self.assertEqual([row[1] for row in rows[1:]], [1, 1, 2])
+                else:
+                    seats = [row for row in rows[1:] if len(row) > 3 and row[1] == self.source]
+                    self.assertEqual(len(seats), 46 if kind == "agents" else 23)
+                    self.assertNotIn("999", [row[3] for row in seats])
+                    headers = list(rows[0])
+                    self.assertEqual(rows[1][headers.index("回复询盘总量")], 1)
+                    if kind == "agents":
+                        self.assertEqual(rows[1][headers.index("首响时长（秒）")], 60)
+                        self.assertEqual(rows[1][headers.index("平均响应时长（秒）")], 60)
+                    else:
+                        self.assertEqual(rows[1][headers.index("质检不合格量")], 1)
+                        self.assertEqual(rows[1][headers.index("不合格率（%）")], 100)
+                        self.assertEqual(rows[-1][1:7], (2, 1, 1, 0, 1, 50))
+                book.close()
+            finally:
+                artifact.cleanup()
+        with patch.object(export, "datetime", clock):
+            artifact = export.create_export(self.reader.pool, export_settings, "time", period,
+                source_key=self.source, account_id=1, channel_key="wechat")
+        try:
+            book = load_workbook(artifact.path)
+            self.assertEqual(list(book.active.values)[-1][1], 0)
+            book.close()
+        finally:
+            artifact.cleanup()
 
     def test_round_metrics_deduplicate_notices_messages_and_preserve_calendar_boundary(self):
         self.receive(event(1, content="我要转人工"), event(2, 1, sender="agent_bot", direction="outgoing", content=BUSY_NOTICE),
@@ -133,18 +187,22 @@ class StatisticsDatabaseTest(unittest.TestCase):
 
     def test_quality_averages_only_completed_customer_waits_and_deduplicates_ratings(self):
         self.receive(event(1, content="我要转人工"), agent_reply(2, 3), event(3, 4), event(4, 5),
+            event(101, .5), event(102, 1),
             agent_reply(5, 7), agent_reply(6, 7.5), event(7, 8), event(8, 9),
             agent_reply(9, 10, private=True, agent_id=99),
             agent_reply(10, 11, content_type="input_csat", agent_id=99),
-            event(21, 10, conversation_id=22, content="我要转人工"), agent_reply(22, 11, conversation_id=22))
+            event(21, 10, conversation_id=22, content="我要转人工"),
+            event(103, 10.5, conversation_id=22), agent_reply(22, 11, conversation_id=22))
         self.drain()
         self.admin.execute("""UPDATE ops.round_index SET rating=CASE conversation_id WHEN 12 THEN 3 ELSE 5 END,
             rating_status='rated' WHERE source_key=%s""", (self.source,))
         report, seats = self.seats()
         self.assertEqual(set(seats), {"7"})
         a = seats["7"]
-        self.assertEqual((a["first_response_seconds"], a["first_response_samples"]), (120, 2))
-        self.assertEqual((a["average_response_seconds"], a["response_samples"]), (140, 3))
+        # Round means: (150s first response + 120s last-message response)/2,
+        # and 30s. Average the two rounds equally, not their three responses.
+        self.assertEqual((a["first_response_seconds"], a["first_response_samples"]), (90, 2))
+        self.assertEqual((a["average_response_seconds"], a["response_samples"], a["response_rounds"]), (82.5, 3, 2))
         self.assertEqual((a["inquiries"], a["rated_inquiries"], a["average_rating"], a["low_rating"]), (2, 2, 4, 1))
         self.assertEqual(report["total_lost_inquiries"], 0)
 
@@ -155,16 +213,16 @@ class StatisticsDatabaseTest(unittest.TestCase):
         self.drain()
         self.admin.execute("UPDATE ops.round_index SET rating=2,rating_status='rated' WHERE source_key=%s", (self.source,))
         _, seats = self.seats()
-        self.assertEqual(seats["7"]["first_response_seconds"], 120)
-        self.assertEqual(seats["7"]["average_response_seconds"], 120)
+        self.assertEqual(seats["7"]["first_response_seconds"], 60)
+        self.assertEqual(seats["7"]["average_response_seconds"], 60)
         self.assertIsNone(seats["8"]["first_response_seconds"])
-        self.assertEqual(seats["8"]["average_response_seconds"], 180)
+        self.assertEqual(seats["8"]["average_response_seconds"], 120)
         self.assertEqual(seats["8"]["response_samples"], 1)
         self.assertEqual([seats[k]["low_rating"] for k in ("7", "8")], [1, 1])
         _, second = self.seats(page=2, page_size=1)
         self.assertEqual(set(second), {"8"})
         self.assertIsNone(second["8"]["first_response_seconds"])
-        self.assertEqual(second["8"]["average_response_seconds"], 180)
+        self.assertEqual(second["8"]["average_response_seconds"], 120)
 
     def test_lost_transfers_use_confirmed_responsibility_and_include_seats_without_replies(self):
         self.receive(event(1, content="我要转人工"), agent_reply(2, 2, private=True),
@@ -191,16 +249,22 @@ class StatisticsDatabaseTest(unittest.TestCase):
         first, _ = self.seats(page_size=1)
         self.assertEqual((first["total"], first["total_lost_inquiries"]), (3, 3))
 
-    def test_reply_quality_retains_waits_before_the_selected_calendar_window(self):
-        self.receive(event(1, content="我要转人工"), agent_reply(2, 480))
+    def test_reply_timings_select_transfers_and_keep_completed_replies_after_the_window(self):
+        self.receive(event(1, content="我要转人工"), event(3, 1), agent_reply(2, 480))
         self.drain()
         tomorrow = ReportPeriod.build("day", date(2026, 10, 2))
-        for period in [tomorrow, ReportPeriod.build("month", date(2026, 10, 1)),
-                       ReportPeriod.build("year", date(2026, 10, 1))]:
+        for period in [self.period, ReportPeriod.build("month", date(2026, 10, 1)),
+                       ReportPeriod.build("year", date(2026, 10, 1)),
+                       ReportPeriod.build("custom", date(2026, 10, 1), date(2026, 10, 1))]:
             _, seats = self.seats(period=period, now=START + timedelta(days=2))
-            self.assertEqual(seats["7"]["first_response_seconds"], 480 * 60)
-            self.assertEqual(seats["7"]["average_response_seconds"], 480 * 60)
+            self.assertEqual(seats["7"]["first_response_seconds"], 479 * 60)
+            self.assertEqual(seats["7"]["average_response_seconds"], 479 * 60)
             self.assertEqual(seats["7"]["response_samples"], 1)
+            self.assertEqual(seats["7"]["response_rounds"], 1)
+        _, seats = self.seats(period=tomorrow, now=START + timedelta(days=2))
+        self.assertIsNone(seats["7"]["first_response_seconds"])
+        self.assertIsNone(seats["7"]["average_response_seconds"])
+        self.assertEqual(seats["7"]["inquiries"], 1)
         yesterday, _ = self.seats(now=START + timedelta(days=2))
         self.assertEqual(yesterday["total_inquiries"], 0)
         self.assertEqual(yesterday["total_lost_inquiries"], 0)
@@ -213,17 +277,91 @@ class StatisticsDatabaseTest(unittest.TestCase):
         self.admin.execute("UPDATE ops.message_index SET sent_at=NULL WHERE source_key=%s AND message_id=22", (self.source,))
         _, seats = self.seats()
         self.assertIsNone(seats["7"]["first_response_seconds"])
-        self.assertEqual((seats["7"]["average_response_seconds"], seats["7"]["response_samples"]), (60, 1))
+        self.assertEqual((seats["7"]["average_response_seconds"], seats["7"]["response_samples"]), (None, 0))
         self.assertIsNone(seats["8"]["first_response_seconds"])
         self.assertIsNone(seats["8"]["average_response_seconds"])
         self.assertEqual(seats["8"]["inquiries"], 1)
 
     def test_true_zero_second_first_reply_and_subsecond_averages_remain_valid(self):
-        self.receive(event(1, content="我要转人工"), agent_reply(2), event(3, 1), agent_reply(4, 1 + .5 / 60))
+        self.receive(event(1, content="我要转人工"), event(2), agent_reply(3), event(4, 1), agent_reply(5, 1 + .5 / 60))
         self.drain()
         _, seats = self.seats()
         self.assertEqual((seats["7"]["first_response_seconds"], seats["7"]["first_response_samples"]), (0, 1))
         self.assertEqual((seats["7"]["average_response_seconds"], seats["7"]["response_samples"]), (.25, 2))
+
+    def test_transfer_without_a_followup_customer_message_has_no_response_sample(self):
+        self.receive(event(1, content="我要转人工"), agent_reply(2, 1), agent_reply(3, 2),
+            event(11, conversation_id=22, content="我要转人工"), event(12, 3, conversation_id=22))
+        self.drain()
+        _, seats = self.seats()
+        a = seats["7"]
+        self.assertIsNone(a["first_response_seconds"])
+        self.assertIsNone(a["average_response_seconds"])
+        self.assertEqual((a["first_response_samples"], a["response_samples"], a["response_rounds"]), (0, 0, 0))
+        self.assertEqual(a["inquiries"], 1)
+
+    def test_proactive_greeting_does_not_replace_first_actual_customer_response(self):
+        self.receive(event(1, content="我要转人工"), agent_reply(2, 1),
+            event(3, 2), event(4, 3), agent_reply(5, 4), agent_reply(6, 5),
+            event(7, 6), event(8, 7), agent_reply(9, 8))
+        self.drain()
+        _, seats = self.seats()
+        self.assertEqual(seats["7"]["first_response_seconds"], 120)
+        self.assertEqual(seats["7"]["average_response_seconds"], 90)
+        self.assertEqual((seats["7"]["response_samples"], seats["7"]["response_rounds"]), (2, 1))
+
+    def test_response_timings_exclude_invalid_messages_and_use_valid_attachments(self):
+        self.receive(event(1, content="我要转人工"), event(2, .5, content=" "),
+            event(3, .75, private=True), event(4, 1),
+            agent_reply(5, 1.25, content=""), agent_reply(6, 1.5, content_type="input_csat"),
+            agent_reply(7, 1.75, private=True), event(8, 2, sender="agent_bot", direction="outgoing"),
+            event(9, 2.25), agent_reply(10, 2.5),
+            event(11, 3, content="", attachments=[{"id": 111, "file_name": "question.png", "file_type": "image"}]),
+            agent_reply(12, 4, content="", attachments=[{"id": 121, "file_name": "answer.png", "file_type": "image"}]),
+            event(13, 5), agent_reply(14, 6), event(15, 7))
+        self.drain()
+        self.admin.execute("UPDATE ops.message_index SET is_deleted=true WHERE source_key=%s AND message_id IN (9,10,14)", (self.source,))
+        _, seats = self.seats()
+        self.assertEqual(seats["7"]["first_response_seconds"], 180)
+        self.assertEqual(seats["7"]["average_response_seconds"], 180)
+        self.assertEqual(seats["7"]["response_samples"], 1)
+
+    def test_timing_transfer_boundary_and_now_do_not_fall_back_to_reply_dates(self):
+        self.receive(event(1, 470, content="我要转人工"), event(2, 471), agent_reply(3, 481),
+            event(11, 480, conversation_id=22, content="我要转人工"),
+            event(12, 481, conversation_id=22), event(13, 482, conversation_id=22),
+            agent_reply(14, 483, conversation_id=22, agent_id=8))
+        self.drain()
+        _, before_reply = self.seats(now=START + timedelta(minutes=480))
+        self.assertNotIn("7", before_reply)
+        _, today = self.seats(now=START + timedelta(minutes=485))
+        self.assertEqual(set(today), {"7"})
+        self.assertEqual(today["7"]["first_response_seconds"], 600)
+        self.assertEqual(today["7"]["inquiries"], 0)
+        tomorrow = ReportPeriod.build("day", date(2026, 10, 2))
+        report, seats = self.seats(period=tomorrow, now=START + timedelta(minutes=485))
+        self.assertEqual(set(seats), {"7", "8"})
+        self.assertIsNone(seats["7"]["average_response_seconds"])
+        self.assertEqual((seats["8"]["first_response_seconds"], seats["8"]["average_response_seconds"]), (120, 120))
+        self.assertEqual(report["total_inquiries"], 2)
+
+    def test_timing_only_seats_are_paginated_without_losing_source_scope(self):
+        events = []
+        for i in range(3):
+            conversation, base = 100 + i, 100 + i * 10
+            events.extend([event(base, conversation_id=conversation, content="我要转人工"),
+                event(base + 1, 1, conversation_id=conversation),
+                agent_reply(base + 2, 480, conversation_id=conversation, agent_id=i + 7)])
+        self.receive(*events)
+        self.drain()
+        report, first = self.seats(page_size=2, now=START + timedelta(days=2))
+        _, second = self.seats(page=2, page_size=2, now=START + timedelta(days=2))
+        self.assertEqual((report["total"], len(first), len(second)), (3, 2, 1))
+        for a in [*first.values(), *second.values()]:
+            self.assertEqual((a["inquiries"], a["first_response_seconds"], a["response_rounds"]), (0, 479 * 60, 1))
+        empty = self.reports.agent_report(self.period, source_key=self.source + "-absent", account_id=1,
+            now=START + timedelta(days=2))
+        self.assertEqual(empty["total"], 0)
 
     def test_consultation_unions_nested_touching_and_separate_spans_per_seat(self):
         events = []

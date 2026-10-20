@@ -1,6 +1,6 @@
 # 统计报表服务器增量更新手册
 
-适用本次后台更新：统计报表下的“时间统计”“坐席细化”“质检统计”，以及对应的筛选、重置、图表、表格和指标说明，同时补齐服务器尚未完成的既有归档迁移。操作顺序参考 [对话归档与客服状态更新手册](archive-feature-update.md)，沿用 **Git 仓库 `test` 分支拉取发布**，保留服务器配置，只增量更新应用代码及归档数据库。
+适用本次整批后台更新：统计报表下的“时间统计”“坐席细化”“质检统计”，对应的按日/月/年和自定义时间段筛选、重置、图表、表格、指标说明、Excel 导出，以及首响/平均响应时长判定逻辑；同时包含完整历史中的 Chatwoot 用户 ID、手机号和联系人备注展示。另按需补齐服务器尚未完成的既有归档迁移。操作顺序参考 [对话归档与客服状态更新手册](archive-feature-update.md)，沿用 **Git 仓库 `test` 分支拉取发布**，保留服务器配置，只增量更新应用代码及归档数据库。
 
 本手册只说明操作，尚未在目标服务器执行。示例沿用 SSH 别名 `ics`、Git 源码目录 `/opt/cs-src`、运行目录 `/opt/cs`、Compose 项目名 `cs`；如实际不同，先调整第三节对应参数。Git 拉取只更新源码目录，随后将指定应用代码同步到运行目录。
 
@@ -9,6 +9,12 @@
 每次只复制当前编号步骤中的一个代码块，核对该步“继续条件”后再执行下一步。Windows 使用同一个 PowerShell 会话；服务器从第 3.2 步开始使用同一个 Bash 会话，后续步骤依赖前面保存的变量。
 
 报错或检查未通过时停在当前步骤，不跳过。含 Python、SQL、循环或条件判断的代码块是一次完整操作，须整块复制，不拆成单行执行。第四节后的“断线恢复”和第八节“回退”只在对应情况发生时使用。
+
+### 上次部署问题的处理说明
+
+上次发布中已确认并修正以下流程问题：服务器 Bash 命令不能粘贴到 Windows PowerShell；`exec` 打开锁文件必须与 `flock` 分开执行，否则可能替换当前 Shell 并断开 SSH；SSH 断线后必须先载入同一发布记录、恢复 Compose 参数，再继续未完成步骤；不能在 worker 原本停止时主动启动它；健康检查不能对已退出的容器循环等待。
+
+上次 ICS 的 `ExitCode=137` 记录同时显示 `OOMKilled=false`，容器日志也没有留下退出原因，因此不能据此认定为内存不足。新版流程会在健康检查前确认容器是本次新建且处于 `running`，对 `exited`、`dead`、`restarting` 或 137 先检查容器状态、容器日志和应用日志，再决定修复或回退；不会通过重复重启掩盖退出原因。Compose 文件、环境文件和资源限制沿用运行中的实际调用参数，避免重建时遗漏覆盖配置。
 
 ## 一、本次更新边界
 
@@ -21,8 +27,8 @@
 | `requirements.txt`、服务器原 Dockerfile、`.dockerignore` | 保留；只为本次构建生成一份额外的 Dockerfile |
 | 渠道、模型、知识库、提示词、业务资料、日志 | 保留，不在本次同步范围 |
 | PostgreSQL、归档数据库、Webhook、接收器 | 沿用现有部署，不重新建库、不修改既有角色密码、不重建这些服务 |
-| 解析进程 `quality-worker` | 需要迁移时暂停，升级后仅恢复原本运行的实例 |
-| 新依赖、统计专用环境变量、统计专用数据库迁移 | 均不需要 |
+| 解析进程 `quality-worker` | 本批含归档应用代码时，按升级前状态使用新镜像重建；需要迁移时先暂停，验证后恢复；原本停止的保持停止 |
+| 新依赖、统计专用环境变量、统计专用数据库迁移 | 均不需要；本批改动不新增表、列、索引或迁移文件 |
 
 其中归档库需要按本手册检查并补齐既有 `001–009`：已应用且校验一致的版本跳过，只执行缺失版本。需要迁移时，在新镜像构建成功后暂停 ICS 和原本运行的 worker；迁移验证通过后更新 ICS，并恢复该 worker。两套数据库和接收器保持运行，不删除或重新初始化数据卷。
 
@@ -75,14 +81,16 @@ if ($LASTEXITCODE -ne 0) { throw '读取发布提交失败，停止。' }
 
 ### 2.3 运行统计和后台检查
 
-使用指定的 `cs` 环境检查本次功能。
+使用指定的 `cs` 环境检查本次整批功能。
 
 ```powershell
 $statisticsTestStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 & 'C:\Users\lenovo\Anaconda3\envs\cs\python.exe' -m pytest `
   statistics/tests/test_statistics_reports.py `
   statistics/tests/test_statistics_ui.py `
+  statistics/tests/test_statistics_export.py `
   quality/tests/test_admin_ui.py `
+  quality/tests/test_processing.py `
   -q -p no:cacheprovider --basetemp "tmp/pytest-statistics-release-$statisticsTestStamp"
 if ($LASTEXITCODE -ne 0) { throw '统计或后台检查失败，停止。' }
 ```
@@ -450,9 +458,11 @@ git -C "$statistics_source" log -1 --oneline
 ```bash
 for statistics_file in \
   ics_agent/statistics.py ics_agent/app/main.py ics_agent/app/admin.html \
-  quality/query/runtime.py statistics/routes.py statistics/repository.py \
-  statistics/agent_quality.py statistics/quality_reports.py \
-  statistics/web/reports.js statistics/web/reports.css \
+  quality/processing/projector.py quality/processing/repository.py \
+  quality/query/repository.py quality/query/routes.py quality/query/runtime.py \
+  quality/query/export.py statistics/periods.py statistics/routes.py \
+  statistics/repository.py statistics/agent_quality.py statistics/quality_reports.py \
+  statistics/export.py statistics/web/reports.js statistics/web/reports.css \
   quality/database/apply-migrations.sh quality/database/verify-schema.sh \
   quality/database/verify-schema.sql; do
   test -f "$statistics_source/$statistics_file"
@@ -1105,20 +1115,22 @@ fi
 
 继续条件：`Created` 是本次重新创建的时间，且 `Status=running`。时间为 UTC，北京时间加 8 小时。若仍是旧容器的创建时间或状态为 `exited`，不要进入健康检查等待；先核对上一步的实际输出、原发布参数和日志。
 
-#### 6.3.3 按原状态恢复 worker
+#### 6.3.3 按原状态更新 worker
 
-只有补过迁移且原 worker 运行时，本步才恢复它并使用本批镜像。
+本批包含 `quality/processing` 和 `quality/query` 应用代码，因此原本运行的 worker 必须使用本批镜像重建，即使没有待执行的数据库迁移。原本停止的 worker 保持停止。若第 6.2 节补过迁移，则本步同时承担迁移后的恢复启动。
 
 ```bash
-if test "$statistics_needs_migration" -eq 1 && test "$statistics_worker_was_running" -eq 1; then
+if test "$statistics_worker_was_running" -eq 1; then
   "${statistics_compose[@]}" --profile quality-query up -d --no-deps --no-build \
     --pull never --force-recreate quality-worker
+else
+  printf '%s\n' 'worker更新前未运行，保持原状态。'
 fi
 ```
 
 继续条件：需要恢复的 worker 已启动；原本停止的保持停止。
 
-ICS 会短暂中断并重新预热模型。只有实际补迁移且 worker 原本运行时，才恢复该 worker 并使用同批新镜像；原本停止的不自动启用。receiver 与两个数据库保持原容器，归档采集的旧原始事件继续保留，不因本次升级丢弃。
+ICS 会短暂中断并重新预热模型。原本运行的 worker 也会短暂重建并使用同批新镜像；原本停止的不自动启用。需要迁移时，worker 只会在迁移验证成功后重建。receiver 与两个数据库保持原容器，归档采集的旧原始事件继续保留，不因本次升级丢弃。
 
 receiver、worker 与 ICS 沿用同一个镜像标签：构建更新标签，不会自动重启已有容器。不要执行不带服务名的 `up`，也不要执行 `down`。009升级后应刷新所有已打开的后台页面，旧单项质检保存接口已撤销授权，不能继续使用旧页面提交。
 
@@ -1241,7 +1253,7 @@ diff -u "$statistics_record/containers-before.txt" "$statistics_record/container
 
 继续条件：应用启动正常，没有持续报错，再验证后台页面。
 
-数据库与 receiver 应保持原容器。ICS 被重新创建；有补迁移且原 worker 运行时，它也应按第6.3节恢复运行，检查其日志并确认持久任务逐步被处理。没有补迁移时 worker 保持原容器。日志若写入挂载目录，还应检查 `/opt/cs/log/uvicorn-admin.stderr.log` 的启动和模型预热结果。`/health` 正常只证明应用能响应，不等于统计查询已通过，继续验证下面的后台接口。
+数据库与 receiver 应保持原容器。ICS 被重新创建；原 worker 运行时，它也应按第6.3节使用本批镜像重建，检查其日志并确认持久任务逐步被处理；原 worker 停止时保持停止。日志若写入挂载目录，还应检查 `/opt/cs/log/uvicorn-admin.stderr.log` 的启动和模型预热结果。`/health` 正常只证明应用能响应，不等于统计查询已通过，继续验证下面的后台接口。
 
 ### 7.2 用原管理员账号登录验收
 
@@ -1492,7 +1504,7 @@ exec 9>&-
 - [ ] 第五节：三个应用目录同步完成，原配置全部校验为 `OK`。
 - [ ] 第 6.1 节：新镜像构建和模块检查通过。
 - [ ] 第 6.2 节：补齐或确认 001–009，结构、权限和已有角色密码验证通过。
-- [ ] 第 6.3 节：ICS 更新成功，worker 按原状态恢复。
+- [ ] 第 6.3 节：ICS 更新成功，worker 按原状态使用本批镜像更新。
 - [ ] 第七节：服务健康、三个报表和原功能验收通过，结果已保存，发布锁已释放。
 
 本次不需要新增系统提权密码交互，不需要覆盖本地配置到服务器，不需要重建数据库、修改Webhook或重新采集历史数据。

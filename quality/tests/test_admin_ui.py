@@ -96,7 +96,7 @@ const timelinePayload = (overrides = {}) => {
 """
 
 EXPORTS = """
-globalThis.ui = {state, qualityState, presenceState, showCurrentPage, collectQualityFilters, populateQualityFilters, qualityTime,
+globalThis.ui = {api, state, qualityState, presenceState, showCurrentPage, collectQualityFilters, populateQualityFilters, qualityTime,
  qualitySafeLink, qualityAttachments, renderQualityTimeline, refreshQualityRatings, qualitySnapshotLabel, loadQualityList, qualityAgentLabel,
  openQualityDetail, loadQualityDetail, openQualityVersions, loadQualityVersions, stopQuality, logout,
  qualityRequest, loadQuality, downloadQualityEvent, changeQualityMode, closeQualityDetail, applyQualityFilters,
@@ -107,6 +107,24 @@ globalThis.ui = {state, qualityState, presenceState, showCurrentPage, collectQua
 """
 
 CASES = {
+    "authenticated_binary_api_preserves_blob_and_handles_errors": r"""
+ui.state.token='session';
+const controller=new AbortController();
+let pending=ui.api('/admin/api/statistics/time/export.xlsx?mode=day&date=2026-10-01',
+  {signal:controller.signal,responseType:'blob'});
+assert.equal(requests[0].options.headers.get('Authorization'),'Bearer session');
+assert.equal(requests[0].options.signal,controller.signal);
+assert.equal('responseType' in requests[0].options,false);
+respond(0,'binary-excel');
+assert.deepEqual(await pending,{payload:'binary-excel'});
+pending=ui.api('/admin/api/statistics/time/export.xlsx',{responseType:'blob'});
+respond(1,{detail:'统计导出暂不可用'},503);
+await assert.rejects(pending,/统计导出暂不可用/);
+pending=ui.api('/admin/api/statistics/time/export.xlsx',{responseType:'blob'});
+respond(2,{detail:'expired'},401);
+await assert.rejects(pending,/登录已失效/);
+assert.equal(ui.state.token,'');
+""",
     "review_lights_show_independent_verdicts_and_hide_pending_without_expanding_cards": r"""
 ui.qualityState.mode='customers';
 for (const ai of ['passed','failed','pending']) for (const human of ['passed','failed','pending']) {
@@ -215,6 +233,15 @@ respond(0,{ai_status:'failed',human_status:'failed',remark:'第二轮旧请求',
 assert.equal(ui.qualityState.review.roundId,'r3');
 assert.equal(node('qualityReviewRemark').value,'第三轮');
 assert.equal(node('qualityReviewRound').value,'r3');
+""",
+    "customer_history_shows_chatwoot_contact_profile": r"""
+ui.state.token='session'; ui.state.view='quality'; ui.qualityState.ready=true;
+const opened=ui.openQualityDetail('customer','c1');
+respond(0,{customer:{customer_id:'c1',display_name:'客户甲',contact_id:'42',chatwoot_user_id:'42',
+  phone_number:'+86 13800000000',contact_note:'VIP 联系人备注',business_user_id:'visitor-42',round_count:2,message_count:8},
+  messages:[],total:0,page:1}); await opened;
+const meta=node('qualityDetailMeta').innerHTML;
+for (const value of ['Chatwoot 用户 ID','42','手机号','+86 13800000000','联系人备注','VIP 联系人备注']) assert.equal(meta.includes(value),true,value);
 """,
     "failed_review_save_preserves_draft_and_blocks_export_of_unsaved_changes": r"""
 ui.state.token='session'; ui.state.view='quality'; ui.qualityState.ready=true;

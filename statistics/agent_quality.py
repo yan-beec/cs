@@ -75,17 +75,39 @@ def consultation_ctes(where):
     """
 
 
-def reply_quality(connection, period, agents, now):
-    """Aggregate only rounds replied to by the current page; keep full round history.
+def timing_replies_cte(where):
+    """Find seats in the transfer cohort, including replies after the window."""
+    return f"""
+        timing_replies AS MATERIALIZED (
+            SELECT DISTINCT r.source_key,r.account_id,m.sender_id AS agent_id,m.sender_name,m.round_id
+            FROM ops.round_index r JOIN ops.message_index m USING(round_id) CROSS JOIN bounds
+            WHERE {where} AND {handoff_sql('r')} >= bounds.starts_at
+                AND {handoff_sql('r')} < bounds.ends_at
+                AND m.sent_at >= {handoff_sql('r')} AND m.sent_at < bounds.observed_at
+                AND m.sender_role='agent' AND m.direction='outgoing' AND NOT m.is_private
+                AND COALESCE(m.data->>'is_rating','false') <> 'true' AND m.sender_id IS NOT NULL
+                AND NOT m.is_deleted AND (COALESCE(m.content,'') ~ '[^[:space:]]'
+                    OR jsonb_array_length(CASE WHEN jsonb_typeof(m.data->'attachments')='array'
+                        THEN m.data->'attachments' ELSE '[]'::jsonb END) > 0)
+        )
+    """
 
-    Replies fall in the selected window. Their preceding customer messages and
-    handoff may be earlier. One customer burst ends at its next public human
-    reply, and is credited to that reply's sender. Unanswered tails add no wait.
+
+def reply_quality(connection, period, agents, now):
+    """Keep reply-based ratings/dialogues and transfer-based response timings.
+
+    First waits start at the first valid post-transfer customer message. Later
+    waits start at the last message of a customer burst. Each completed wait is
+    credited to its replying seat, then averaged per round before per-seat means.
+    Timing rounds are selected by handoff time; their full history through now
+    can include replies after the selected window. Unanswered tails add no wait.
     """
     if not agents:
         return {}
     placeholders = ','.join(['(%s::text,%s::bigint,%s::text)'] * len(agents))
     identities = [a[key] for a in agents for key in ('source_key', 'account_id', 'agent_id')]
+    timing_scope = """EXISTS(SELECT 1 FROM selected s WHERE s.source_key=r.source_key
+        AND s.account_id=r.account_id AND s.agent_id=m.sender_id)"""
     cohort = f"""
         WITH selected(source_key,account_id,agent_id) AS (VALUES {placeholders}),
         bounds AS (SELECT %s::timestamptz AS starts_at,%s::timestamptz AS ends_at,
@@ -98,11 +120,13 @@ def reply_quality(connection, period, agents, now):
             WHERE m.sent_at >= bounds.starts_at AND m.sent_at < bounds.ends_at
                 AND m.sender_role='agent' AND m.direction='outgoing' AND NOT m.is_private
                 AND COALESCE(m.data->>'is_rating','false') <> 'true' AND m.round_id IS NOT NULL
-        ), rounds AS MATERIALIZED (
+        ), {timing_replies_cte(timing_scope)}, rounds AS MATERIALIZED (
             SELECT r.round_id,r.rating,r.rating_status,{handoff_sql('r')} AS handoff_at,
                 NULLIF(r.data->>'handoff_requested_at','')::timestamptz AS requested_at,
                 r.data->>'handoff_reason' AS handoff_reason
-            FROM ops.round_index r JOIN (SELECT DISTINCT round_id FROM selected_replies) p USING(round_id)
+            FROM ops.round_index r JOIN (
+                SELECT round_id FROM selected_replies UNION SELECT round_id FROM timing_replies
+            ) p USING(round_id)
         )
     """
     params = [*identities, period.start, min(period.end, now), now]
@@ -141,8 +165,7 @@ def reply_quality(connection, period, agents, now):
                 AND (m.sent_at IS NULL OR m.sent_at < bounds.observed_at)
         ), phases AS (
             SELECT r.round_id,r.handoff_at,r.requested_at,
-                COALESCE(r.handoff_at,min(m.sent_at) FILTER(WHERE m.agent)) AS phase_at,
-                bool_or(m.sent_at IS NULL) AS unknown_time,
+                bool_or(m.sent_at IS NULL AND m.valid_content) AS unknown_time,
                 COALESCE(max(marker.message_id),
                     min(m.message_id) FILTER(WHERE m.customer AND m.sent_at=r.handoff_at)) AS request_message_id
             FROM rounds r JOIN messages m USING(round_id) LEFT JOIN request_markers marker USING(round_id)
@@ -161,31 +184,44 @@ def reply_quality(connection, period, agents, now):
         ), ordered AS (
             SELECT m.*,p.handoff_at,
                 row_number() OVER(PARTITION BY m.round_id ORDER BY m.sent_at,m.message_id) AS ordinal
-            FROM messages m JOIN phases p USING(round_id)
-            WHERE NOT p.unknown_time AND m.sent_at >= p.phase_at
+            FROM messages m JOIN phases p USING(round_id) CROSS JOIN bounds
+            WHERE NOT p.unknown_time AND m.valid_content
+                AND p.handoff_at >= bounds.starts_at AND p.handoff_at < bounds.ends_at
+                AND (m.sent_at > p.handoff_at OR (m.sent_at=p.handoff_at
+                    AND (p.requested_at IS DISTINCT FROM p.handoff_at OR m.message_id > p.request_message_id)))
         ), sequenced AS (
             SELECT o.*,max(ordinal) FILTER(WHERE agent) OVER(PARTITION BY round_id ORDER BY ordinal
                 ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS previous_agent
             FROM ordered o
         ), cycles AS (
-            SELECT round_id,previous_agent,max(handoff_at) AS handoff_at,
-                min(sent_at) FILTER(WHERE customer) AS customer_at,
+            SELECT round_id,previous_agent,
+                min(sent_at) FILTER(WHERE customer) AS first_customer_at,
+                max(sent_at) FILTER(WHERE customer) AS last_customer_at,
                 min(sent_at) FILTER(WHERE agent) AS replied_at,
                 max(sender_id) FILTER(WHERE agent) AS agent_id
             FROM sequenced GROUP BY round_id,previous_agent
+        ), responses AS (
+            SELECT c.*,row_number() OVER(PARTITION BY round_id
+                ORDER BY replied_at,previous_agent NULLS FIRST) AS response_no
+            FROM cycles c WHERE first_customer_at IS NOT NULL AND replied_at IS NOT NULL
         ), completed AS (
             SELECT c.*,
-                extract(epoch FROM replied_at - CASE WHEN previous_agent IS NULL
-                    THEN handoff_at ELSE customer_at END)::double precision AS response_seconds
-            FROM cycles c CROSS JOIN bounds
-            WHERE replied_at >= bounds.starts_at AND replied_at < bounds.ends_at
-        ), timings AS (
-            SELECT r.source_key,r.account_id,c.agent_id,
-                avg(response_seconds) FILTER(WHERE previous_agent IS NULL) AS first_response_seconds,
-                count(response_seconds) FILTER(WHERE previous_agent IS NULL) AS first_response_samples,
+                extract(epoch FROM replied_at - CASE WHEN response_no=1
+                    THEN first_customer_at ELSE last_customer_at END)::double precision AS response_seconds
+            FROM responses c
+        ), round_timings AS (
+            SELECT r.source_key,r.account_id,c.agent_id,c.round_id,
+                max(response_seconds) FILTER(WHERE response_no=1) AS first_response_seconds,
                 avg(response_seconds) AS average_response_seconds,count(response_seconds) AS response_samples
             FROM completed c JOIN ops.round_index r USING(round_id)
-            GROUP BY r.source_key,r.account_id,c.agent_id
+            GROUP BY r.source_key,r.account_id,c.agent_id,c.round_id
+        ), timings AS (
+            SELECT source_key,account_id,agent_id,
+                avg(first_response_seconds) AS first_response_seconds,
+                count(first_response_seconds) AS first_response_samples,
+                avg(average_response_seconds) AS average_response_seconds,
+                sum(response_samples) AS response_samples,count(*) AS response_rounds
+            FROM round_timings GROUP BY source_key,account_id,agent_id
         ), ratings AS (
             SELECT p.source_key,p.account_id,p.agent_id,
                 avg(r.rating)::double precision AS average_rating,
@@ -194,6 +230,7 @@ def reply_quality(connection, period, agents, now):
             WHERE r.rating_status='rated' AND r.rating BETWEEN 1 AND 5 GROUP BY 1,2,3
         ) SELECT s.*,t.first_response_seconds,COALESCE(t.first_response_samples,0) AS first_response_samples,
             t.average_response_seconds,COALESCE(t.response_samples,0) AS response_samples,
+            COALESCE(t.response_rounds,0) AS response_rounds,
             r.average_rating,COALESCE(r.rated_inquiries,0) AS rated_inquiries,COALESCE(r.low_rating,0) AS low_rating,
             COALESCE(d.dialogues,0) AS dialogues,COALESCE(d.high_quality_dialogues,0) AS high_quality_dialogues
         FROM selected s LEFT JOIN timings t USING(source_key,account_id,agent_id)

@@ -201,7 +201,7 @@ class QueryRuntime:
             return {**options, "directory": {"status": "unavailable"},
                     "directory_warning": "Chatwoot 目录暂不可用，筛选暂使用已归档的坐席和收件箱。"}
 
-    async def export(self, mode, filters, **scope) -> ExportFile:
+    async def export(self, mode, filters, *, builder=None, **scope) -> ExportFile:
         if not self.ready or self.settings is None:
             raise ArchiveUnavailable()
         # Allocate lazily and use one dedicated export thread/connection. Large
@@ -225,6 +225,9 @@ class QueryRuntime:
                     repository.close()
                     raise
                 self.export_repository = repository
+            if builder is not None:
+                return builder(self.export_repository.pool, self.settings, mode, filters,
+                               cancelled=cancelled, **scope)
             return self.export_repository.create_export(mode, filters, cancelled=cancelled, **scope)
 
         future = asyncio.get_running_loop().run_in_executor(self.export_executor, work)

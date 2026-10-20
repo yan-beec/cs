@@ -58,6 +58,19 @@ def ics_assignment(event_id, minute=1, *, agent_id=8, trigger_message_id=1,
 
 
 class ProcessingProjectionTest(unittest.TestCase):
+    def test_contact_profile_keeps_chatwoot_user_phone_and_note(self):
+        incoming = event(1)
+        incoming["payload"]["sender"].update(
+            phone_number="+86 13800000000",
+            additional_attributes={"description": "VIP 联系人备注"},
+            custom_attributes={"app_user_id": "visitor-42"},
+        )
+        result = project(incoming)
+        self.assertEqual(result.customer["contact_id"], "42")
+        self.assertEqual(result.customer["data"]["chatwoot_user_id"], "42")
+        self.assertEqual(result.customer["data"]["phone_number"], "+86 13800000000")
+        self.assertEqual(result.customer["data"]["contact_note"], "VIP 联系人备注")
+
     def test_real_chatwoot_untyped_incoming_contact_starts_mapped_round(self):
         incoming = event(1, message_id=100, created_at="2026-10-01T08:00:00.000Z")
         incoming["payload"]["sender"] = {

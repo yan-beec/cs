@@ -30,6 +30,38 @@ def test_calendar_windows_are_contiguous_and_end_exclusive(mode, selected, size,
     assert period.start.utcoffset() == timedelta(hours=8)
 
 
+@pytest.mark.parametrize("first,last,size,exclusive_end", [
+    (date(2026, 10, 20), date(2026, 10, 20), 1, "2026-10-21T00:00:00+08:00"),
+    (date(2026, 9, 29), date(2026, 10, 2), 4, "2026-10-03T00:00:00+08:00"),
+    (date(2025, 12, 30), date(2026, 1, 2), 4, "2026-01-03T00:00:00+08:00"),
+    (date(2024, 2, 28), date(2024, 3, 1), 3, "2024-03-02T00:00:00+08:00"),
+    (date(2099, 12, 31), date(2099, 12, 31), 1, "2100-01-01T00:00:00+08:00"),
+])
+def test_custom_dates_include_both_days_and_use_contiguous_daily_buckets(first, last, size, exclusive_end):
+    period = ReportPeriod.build("custom", first, last)
+    assert period.grain == "day" and period.selected == first
+    assert period.start == datetime.combine(first, datetime.min.time(), BEIJING)
+    assert period.end.isoformat() == exclusive_end
+    assert len(period.buckets) == size
+    assert [b["label"] for b in period.buckets] == [(first + timedelta(days=i)).isoformat() for i in range(size)]
+    assert all(b["end"] - b["start"] == timedelta(days=1) for b in period.buckets)
+    assert all(a["end"] == b["start"] for a, b in zip(period.buckets, period.buckets[1:]))
+    assert period.buckets[-1]["end"] == period.end
+    metadata = period.metadata(period.start + timedelta(hours=12))
+    assert metadata["start_date"] == first.isoformat() and metadata["end_date"] == last.isoformat()
+    assert metadata["buckets"][0]["partial"] and not metadata["buckets"][0]["future"]
+    assert all(b["future"] for b in metadata["buckets"][1:])
+
+
+@pytest.mark.parametrize("first,last", [
+    (date(2026, 10, 20), None), (date(2026, 10, 20), date(2026, 10, 19)),
+    (date(1999, 12, 31), date(2000, 1, 1)), (date(2099, 12, 31), date(2100, 1, 1)),
+])
+def test_custom_period_rejects_incomplete_reversed_and_out_of_bounds_dates(first, last):
+    with pytest.raises(ValueError):
+        ReportPeriod.build("custom", first, last)
+
+
 def minute(at, online, *, samples=2):
     return {"bucket": at, "online": online, "busy": 0, "offline": samples - online,
             "unknown": 0, "peak_online": online, "observed_minutes": 1, "samples": samples}
@@ -60,6 +92,22 @@ def test_monthly_presence_averages_minutes_instead_of_summing_seats():
     assert result["presence_points"][0]["online"] == 2.5
     assert result["presence_rows"][0]["peak_online"] == 3
     assert result["presence_points"][1]["online"] is None
+
+
+def test_custom_presence_uses_daily_averages_and_keeps_missing_days_and_future_empty():
+    period = ReportPeriod.build("custom", date(2026, 9, 30), date(2026, 10, 3))
+    observed = [{**minute(period.start, 2, samples=120), "online": 2.5,
+                 "peak_online": 3, "observed_minutes": 60}]
+    now = period.start + timedelta(days=2, hours=12)
+    result = StatisticsRepository._presence(period, observed,
+        [{"started_minute": period.start, "ended_minute": None}], period.start, now, now)
+    assert [p["label"] for p in result["presence_points"]] == ["2026-09-30", "2026-10-01", "2026-10-02", "2026-10-03"]
+    assert [p["online"] for p in result["presence_points"]] == [2.5, None, None, None]
+    assert [p["future"] for p in result["presence_points"]] == [False, False, False, True]
+    assert result["presence_rows"][0]["peak_online"] == 3
+    assert result["presence_rows"][1]["status"] == "missing"
+    assert result["presence_rows"][-1]["status"] == "future"
+    assert result["presence_summary"]["observed_minutes"] == 60
 
 
 def test_expired_retention_is_not_a_zero_or_an_unmonitored_day():
@@ -123,6 +171,39 @@ def test_reports_use_bounded_archive_executor_and_calendar_filters(client):
     assert args[0].__self__.pool is runtime.repository.pool
     assert args[1].start.day == 1 and len(args[1].buckets) == 29
     assert kwargs == {"source_key": "one", "account_id": 1, "channel_key": "wechat"}
+
+
+@pytest.mark.parametrize("endpoint", ["time", "agents", "quality"])
+def test_custom_range_reaches_each_report_with_inclusive_end_and_existing_filters(client, endpoint):
+    browser, runtime, _ = client
+    params = {"mode": "custom", "start_date": "2025-12-30", "end_date": "2026-01-02",
+              "source_key": "one", "account_id": 1}
+    params.update({"channel_key": "wechat"} if endpoint == "time" else {"page": 2, "page_size": 10})
+    assert browser.get(f"/admin/api/statistics/{endpoint}", params=params).status_code == 200
+    args, kwargs = runtime._execute.call_args
+    period = args[1]
+    assert args[0].__name__ == {"time": "time_report", "agents": "agent_report", "quality": "quality_report"}[endpoint]
+    assert period.start.isoformat() == "2025-12-30T00:00:00+08:00"
+    assert period.end.isoformat() == "2026-01-03T00:00:00+08:00"
+    assert period.grain == "day" and len(period.buckets) == 4
+    assert kwargs == {"source_key": "one", "account_id": 1,
+                      **({"channel_key": "wechat"} if endpoint == "time" else {"page": 2, "page_size": 10})}
+
+
+@pytest.mark.parametrize("endpoint", ["time", "agents", "quality"])
+@pytest.mark.parametrize("params", [
+    {"mode": "custom"}, {"mode": "custom", "start_date": "2026-10-01"},
+    {"mode": "custom", "end_date": "2026-10-20"},
+    {"mode": "custom", "start_date": "2026-10-20", "end_date": "2026-10-01"},
+    {"mode": "custom", "start_date": "2026-02-30", "end_date": "2026-03-01"},
+    {"mode": "custom", "start_date": "1999-12-31", "end_date": "2000-01-01"},
+    {"mode": "custom", "start_date": "2099-12-31", "end_date": "2100-01-01"},
+    {"mode": "month", "start_date": "2026-10-01", "end_date": "2026-10-20"},
+])
+def test_invalid_custom_ranges_are_rejected_before_any_database_query(client, endpoint, params):
+    browser, runtime, _ = client
+    assert browser.get(f"/admin/api/statistics/{endpoint}", params=params).status_code == 422
+    runtime._execute.assert_not_called()
 
 
 def test_report_failure_does_not_disable_archive_and_can_retry(client):

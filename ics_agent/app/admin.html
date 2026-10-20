@@ -1381,6 +1381,7 @@
       return scoped.toString();
     };
     const api = async (url, options = {}) => {
+      const {responseType, ...fetchOptions} = options;
       const requestToken = state.token;
       const headers = new Headers(options.headers || {});
       if (requestToken) headers.set("Authorization", `Bearer ${requestToken}`);
@@ -1390,11 +1391,12 @@
         setNavigationBusy();
       }
       try {
-        const response = await fetch(channelUrl(url), { ...options, headers });
+        const response = await fetch(channelUrl(url), { ...fetchOptions, headers });
         if (response.status === 401) {
           if (requestToken === state.token && !options.signal?.aborted) logout(false);
           throw new Error("登录已失效，请重新登录。");
         }
+        if (response.ok && responseType === "blob") return response.blob();
         let payload = null;
         try { payload = await response.json(); } catch (_) {}
         if (!response.ok) throw new Error(payload?.detail || "请求失败，请稍后重试。");
@@ -1428,7 +1430,7 @@
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
     }[char]));
     const statisticsReports = window.ICSReports?.create({api, escapeHtml, getToken: () => state.token,
-      isActive: () => state.view.startsWith("statistics-")});
+      isActive: () => state.view.startsWith("statistics-"), download: (blob, filename) => downloadBlob(blob, filename)});
 
     const qualityState = {
       generation: 0, controllers: new Map(), ready: false, mode: "customers", page: 1, pageSize: 30,
@@ -2524,9 +2526,13 @@
     const qualityDetailMetadata = (item, type) => {
       const fields = [["来源", item.source_key], ["账号", item.account_id]];
       if (type === "customer") {
-        fields.push(["联系人", item.contact_id || "未知"], ["业务用户", item.business_user_id || "未关联"], ["归档轮次", item.round_count ?? "未知"], ["归档消息", item.message_count ?? "未知"]);
+        fields.push(["Chatwoot 用户 ID", item.chatwoot_user_id || item.contact_id || "未知"],
+          ["手机号", item.phone_number || "未记录"], ["联系人备注", item.contact_note || "无"],
+          ["业务用户", item.business_user_id || "未关联"], ["归档轮次", item.round_count ?? "未知"], ["归档消息", item.message_count ?? "未知"]);
       } else {
-        fields.push(["Chatwoot 收件箱", qualityInboxName(item)], ["ICS 业务渠道", qualityChannelName(item.channel_key)], ["开始", qualityTime(item.started_at)], ["最近消息", qualityTime(item.last_message_at)], ["状态", qualityStatusLabel(item.status)], ["接待分类", qualityReceptionLabel(item)]);
+        fields.push(["Chatwoot 用户 ID", item.chatwoot_user_id || item.contact_id || "未知"],
+          ["手机号", item.phone_number || "未记录"], ["联系人备注", item.contact_note || "无"],
+          ["Chatwoot 收件箱", qualityInboxName(item)], ["ICS 业务渠道", qualityChannelName(item.channel_key)], ["开始", qualityTime(item.started_at)], ["最近消息", qualityTime(item.last_message_at)], ["状态", qualityStatusLabel(item.status)], ["接待分类", qualityReceptionLabel(item)]);
         fields.push(["本轮责任坐席", qualityResponsibleAgentLabel(item)], ["责任依据", { ics_assignment: "本轮 ICS 原始分配", assignment_unobserved: "未记录 ICS 分配", assignment_conflict: "ICS 分配记录冲突，待确认" }[item.responsibility_basis] || "待确认"]);
         if (item.responsibility_basis === "ics_assignment") {
           fields.push(["ICS 原始分配时间", qualityTime(item.responsible_assigned_at)], ["分配事件 ID", item.responsibility_event_id ?? "待确认"], ["ICS 轮次标识", item.responsibility_external_round_id ?? "待确认"], ["触发消息 ID", item.responsibility_trigger_message_id ?? "待确认"]);
