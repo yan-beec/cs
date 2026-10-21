@@ -206,6 +206,16 @@ class StatisticsDatabaseTest(unittest.TestCase):
         self.assertEqual((a["inquiries"], a["rated_inquiries"], a["average_rating"], a["low_rating"]), (2, 2, 4, 1))
         self.assertEqual(report["total_lost_inquiries"], 0)
 
+    def test_reply_timings_start_after_successful_assignment_not_busy_refusal(self):
+        self.receive(event(1, content="我要转人工"),
+            event(2, 1, sender="agent_bot", direction="outgoing", content=BUSY_NOTICE),
+            event(3, 2, content="我要转人工"), event(4, 3), agent_reply(5, 4))
+        self.receive_assignment("8", trigger_message_id=3, minute=2, business_round="retry-success", session_minute=2)
+        self.drain()
+        _, seats = self.seats()
+        self.assertEqual((seats["8"]["first_response_seconds"], seats["8"]["average_response_seconds"]), (60, 60))
+        self.assertEqual((seats["8"]["first_response_samples"], seats["8"]["response_samples"]), (1, 1))
+
     def test_quality_credits_the_replying_seat_without_repeating_the_first_wait(self):
         self.receive(event(1, content="我要转人工"), event(2, 1), agent_reply(3, 2),
             event(4, 3), event(5, 4), agent_reply(6, 6, agent_id=8), agent_reply(7, 7, agent_id=8),

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import unittest
 
 from quality.processing.config import ProcessingSettings
-from quality.processing.projector import project_conversation
+from quality.processing.projector import HANDOFF_BUSY_NOTICE, project_conversation
 
 
 START = datetime(2026, 10, 1, 8, tzinfo=timezone.utc)
@@ -566,6 +566,16 @@ class ProcessingProjectionTest(unittest.TestCase):
         self.assertFalse(round_row["data"]["classification_finalized"])
         self.assertFalse(round_row["data"]["has_agent_reply"])
         self.assertNotIn("handoff_completed_at", round_row["data"])
+
+    def test_busy_refusal_discards_the_failed_request_clock_before_a_retry(self):
+        result = project(event(1, content="我要转人工"),
+                         event(2, 1, sender="agent_bot", direction="outgoing", content=HANDOFF_BUSY_NOTICE),
+                         event(3, 2, content="我要转人工"), event(4, 3), agent_reply(5, 4))
+        data = result.rounds[0]["data"]
+        self.assertEqual(data["handoff_requested_at"], (START + timedelta(minutes=2)).isoformat())
+        self.assertEqual(data["handoff_result"], "completed")
+        self.assertEqual(data["handoff_completed_at"], (START + timedelta(minutes=4)).isoformat())
+        self.assertNotIn("handoff_failed_at", data)
 
     def test_handoff_request_attributes_classify_human_and_ai_does_not_revert(self):
         for key in ("handoff_requested", "handoff_required"):

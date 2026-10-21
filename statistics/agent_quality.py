@@ -5,12 +5,16 @@ from ics_agent.app.chatwoot.payload import is_explicit_handoff_request
 
 def handoff_sql(alias):
     # Projection timestamps are ISO timestamps produced by quality's projector.
+    # A request can be refused one or more times before ICS records the actual
+    # assignment.  The assignment timestamp is the successful transfer clock;
+    # using the earlier request timestamp would include the failed wait.
     return f"""COALESCE(
-        CASE WHEN NULLIF({alias}.data->>'handoff_requested_at','')::timestamptz >= {alias}.started_at
-            THEN NULLIF({alias}.data->>'handoff_requested_at','')::timestamptz END,
         CASE WHEN {alias}.data->>'responsibility_basis'='ics_assignment'
             AND NULLIF({alias}.data->>'responsible_assigned_at','')::timestamptz >= {alias}.started_at
             THEN NULLIF({alias}.data->>'responsible_assigned_at','')::timestamptz END,
+        CASE WHEN {alias}.data->>'responsibility_basis' IS DISTINCT FROM 'ics_assignment'
+            AND NULLIF({alias}.data->>'handoff_requested_at','')::timestamptz >= {alias}.started_at
+            THEN NULLIF({alias}.data->>'handoff_requested_at','')::timestamptz END,
         CASE WHEN {alias}.data->>'takeover_inherited'='true' THEN {alias}.started_at END)"""
 
 
@@ -122,7 +126,12 @@ def reply_quality(connection, period, agents, now):
                 AND COALESCE(m.data->>'is_rating','false') <> 'true' AND m.round_id IS NOT NULL
         ), {timing_replies_cte(timing_scope)}, rounds AS MATERIALIZED (
             SELECT r.round_id,r.rating,r.rating_status,{handoff_sql('r')} AS handoff_at,
-                NULLIF(r.data->>'handoff_requested_at','')::timestamptz AS requested_at,
+                NULLIF(r.data->>'handoff_requested_at','')::timestamptz AS raw_requested_at,
+                CASE WHEN r.data->>'responsibility_basis'='ics_assignment'
+                    THEN {handoff_sql('r')}
+                    ELSE NULLIF(r.data->>'handoff_requested_at','')::timestamptz END AS requested_at,
+                CASE WHEN r.data->>'responsibility_trigger_message_id' ~ '^[0-9]+$'
+                    THEN (r.data->>'responsibility_trigger_message_id')::bigint END AS assignment_trigger_message_id,
                 r.data->>'handoff_reason' AS handoff_reason
             FROM ops.round_index r JOIN (
                 SELECT round_id FROM selected_replies UNION SELECT round_id FROM timing_replies
@@ -138,7 +147,7 @@ def reply_quality(connection, period, agents, now):
             ORDER BY m.message_id) AS candidates
         FROM rounds r JOIN ops.message_index m USING(round_id)
             JOIN archive.message_snapshots o ON o.id=m.original_snapshot_id
-        WHERE r.handoff_reason='explicit_request' AND r.requested_at=r.handoff_at
+        WHERE r.handoff_reason='explicit_request' AND r.raw_requested_at=r.handoff_at
             AND m.sent_at=r.handoff_at AND m.sender_role='contact' AND m.direction='incoming'
             AND NOT m.is_private AND COALESCE(m.data->>'is_rating','false') <> 'true'
         GROUP BY r.round_id HAVING count(*) > 1
@@ -166,7 +175,7 @@ def reply_quality(connection, period, agents, now):
         ), phases AS (
             SELECT r.round_id,r.handoff_at,r.requested_at,
                 bool_or(m.sent_at IS NULL AND m.valid_content) AS unknown_time,
-                COALESCE(max(marker.message_id),
+                COALESCE(max(marker.message_id), max(r.assignment_trigger_message_id),
                     min(m.message_id) FILTER(WHERE m.customer AND m.sent_at=r.handoff_at)) AS request_message_id
             FROM rounds r JOIN messages m USING(round_id) LEFT JOIN request_markers marker USING(round_id)
             GROUP BY r.round_id,r.handoff_at,r.requested_at

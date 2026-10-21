@@ -27,9 +27,17 @@ class RoundServiceMetrics:
         started = _time(round_item.get("started_at"))
         self.handoff_at = None
         self.phase_basis = None
-        candidates = [(round_item.get("handoff_requested_at"), "handoff_request")]
+        self.handoff_trigger_message_id = (
+            str(round_item.get("responsibility_trigger_message_id"))
+            if round_item.get("responsibility_trigger_message_id") not in (None, "") else None
+        )
         if round_item.get("responsibility_basis") == "ics_assignment":
-            candidates.append((round_item.get("responsible_assigned_at"), "ics_assignment"))
+            # A round may contain one or more refused requests before the
+            # successful assignment.  The assignment timestamp is the first
+            # reliable successful-transfer boundary.
+            candidates = [(round_item.get("responsible_assigned_at"), "ics_assignment")]
+        else:
+            candidates = [(round_item.get("handoff_requested_at"), "handoff_request")]
         if round_item.get("takeover_inherited"):
             candidates.append((started, "inherited_takeover"))
         for value, basis in candidates:
@@ -67,6 +75,12 @@ class RoundServiceMetrics:
             return
         self.last_role = role
         self.last_is_agent = agent if role in {"agent", "contact", "bot"} else None
+        if (contact and self.handoff_trigger_message_id is not None
+                and at == self.phase_at
+                and str(message.get("message_id")) == self.handoff_trigger_message_id):
+            # The message that caused a successful ICS assignment is the
+            # transfer request, not the first post-transfer customer reply.
+            return
         if self.phase_at is None and agent:
             # Without an observed transfer, only the first actual human reply
             # proves when a human phase was underway. Its first wait is unknown.

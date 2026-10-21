@@ -74,6 +74,17 @@ def test_original_ics_assignment_supplies_an_observed_transfer_time():
     assert result["human_phase_basis"] == "ics_assignment"
 
 
+def test_successful_assignment_replaces_an_earlier_request_clock():
+    result = metrics([message(1, message_id=10), message(2, "agent")],
+                     handoff_requested_at=START,
+                     responsibility_basis="ics_assignment",
+                     responsible_assigned_at=START + timedelta(minutes=1),
+                     responsibility_trigger_message_id="10")
+    assert result["first_response_seconds"] == 60
+    assert result["average_response_seconds"] == 60
+    assert result["human_phase_basis"] == "ics_assignment"
+
+
 def test_legacy_assignment_and_current_assignee_do_not_supply_transfer_time():
     result = metrics([message(0), message(2, "agent")], handoff_requested_at=None,
                      responsibility_basis="last_public_agent_reply", responsible_assigned_at=START,

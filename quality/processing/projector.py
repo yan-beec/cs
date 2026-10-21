@@ -15,6 +15,15 @@ import math
 
 UTC = timezone.utc
 
+# This is the durable Chatwoot message emitted when a handoff cannot be
+# accepted.  It is the only message that proves a transfer attempt failed;
+# an unanswered request alone must remain unknown rather than being treated as
+# a failed or successful transfer.
+HANDOFF_BUSY_NOTICE = (
+    "当前人工坐席繁忙，您可以先继续描述问题，我会尽力帮您解答。"
+    "如仍需人工客服，请稍后再次尝试「转人工」。"
+)
+
 
 def obj(value):
     return value if isinstance(value, dict) else {}
@@ -423,9 +432,13 @@ def project_conversation(events: list[dict], idle_timeout_seconds=21600, channel
             from ics_agent.app.chatwoot.payload import is_explicit_handoff_request
             if is_explicit_handoff_request(snapshot["content"]):
                 current["reception_type"] = "human"
-                current["data"].setdefault("handoff_requested_at", iso(at))
-                current["data"].setdefault("handoff_reason", "explicit_request")
-                current["data"].setdefault("handoff_result", "requested")
+                # A later explicit request is a new attempt after a busy
+                # refusal.  Keep its timestamp so timing starts from the
+                # attempt that can actually reach a human seat.
+                current["data"].update(handoff_requested_at=iso(at),
+                                       handoff_reason="explicit_request",
+                                       handoff_result="requested")
+                current["data"].pop("handoff_failed_at", None)
         if current is None:
             continue
         message = logical[message_id]
@@ -446,6 +459,13 @@ def project_conversation(events: list[dict], idle_timeout_seconds=21600, channel
             role = snapshot["sender_role"]
             if role in ("contact", "bot", "agent"):
                 counts[role] += 1
+            if (role == "bot" and snapshot["direction"] == "outgoing"
+                    and snapshot["content"] == HANDOFF_BUSY_NOTICE):
+                # The bot's busy notice is durable evidence that the current
+                # transfer attempt was refused.  Do not let that attempt be
+                # used as the first-response clock for a later retry.
+                current["data"].pop("handoff_requested_at", None)
+                current["data"].update(handoff_result="failed", handoff_failed_at=iso(at))
             if role == "agent" and snapshot["direction"] == "outgoing":
                 human_taken_over = True
                 current["reception_type"] = "human"
