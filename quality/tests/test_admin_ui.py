@@ -287,6 +287,8 @@ ui.qualityState.items=[{customer_id:'c1',display_name:'Customer',contact_id:42,b
  human_phase_basis:'handoff_request'}}}];
 ui.renderQualityList(); const html=node('qualityList').innerHTML;
 for (const label of ['转人工首响','人工平均响应','最后一句为人工','本轮总时长','访客评价','人工对话数']) assert.equal(html.includes(label),true,label);
+assert.equal(html.includes('首响超过600秒不计入统计，600秒保留'),true);
+assert.equal(html.includes('单次响应超过600秒不计入时长及样本数，600秒保留'),true);
 for (const value of ['12 轮 · 86 条消息','最近一轮 · 会话 3108 · 第 3 轮','2分','2分30秒','否 · 客户','12分','5 分','8（5：3）']) assert.equal(html.includes(value),true,value);
 assert.equal(html.includes('PRIVATE_ORIGIN'),false); assert.equal(html.includes('账号'),false);
 assert.equal(html.includes('<img'),false); assert.equal(html.includes('&lt;img'),true);
@@ -302,8 +304,11 @@ ui.qualityState.items=[{customer_id:'c',latest_round:{...round,service_metrics:{
 ui.renderQualityList(); let html=node('qualityList').innerHTML;
 for (const text of ['待人工回复','待确认','0秒','0（0：0）','未评价']) assert.equal(html.includes(text),true,text);
 assert.equal(html.includes('NaN'),false); assert.equal(html.includes('undefined'),false);
+ui.qualityState.items[0].latest_round.service_metrics.first_response_status='over_limit';
+ui.renderQualityList(); html=node('qualityList').innerHTML;
+assert.equal(html.includes('超时不计'),true);
 ui.qualityState.items=[{customer_id:'empty'}]; ui.renderQualityList(); html=node('qualityList').innerHTML;
-assert.equal(html.includes('暂无可确认的对话轮次'),true); assert.equal(html.includes('0秒'),false);
+assert.equal(html.includes('暂无可确认的对话轮次'),true); assert.equal(html.includes('>0秒</strong>'),false);
 """,
     "customer_default_collapsible_filters_and_compact_cards": r"""
 assert.equal(ui.qualityState.mode,'customers');

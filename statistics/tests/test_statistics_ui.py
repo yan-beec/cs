@@ -136,6 +136,8 @@ assert.ok(table.includes('有效首响对话 2 通'));
 assert.ok(table.includes('有效响应对话 2 通，已完成响应 3 次'));
 assert.ok(table.includes('先算每通对话中该坐席的平均响应，再对各通对话等权平均'));
 assert.ok(table.includes('用户第一条有效消息'));
+assert.ok(table.includes('首响超过600秒不计入统计，600秒保留'));
+assert.ok(table.includes('单次响应超过600秒不计入时长及样本数，600秒保留'));
 assert.ok(node('reportTableSubtitle').textContent.includes('转人工时间'));
 assert.ok(node('reportRules').innerHTML.includes('最后一条有效消息'));
 assert.ok(!node('reportRules').innerHTML.includes('首次等待从转人工开始'));

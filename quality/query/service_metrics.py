@@ -3,6 +3,9 @@
 from datetime import datetime, timezone
 
 
+MAX_RESPONSE_SECONDS = 600
+
+
 def _time(value):
     if isinstance(value, str):
         try:
@@ -20,6 +23,7 @@ class RoundServiceMetrics:
     A customer burst waits from its first unanswered message until the next
     public human reply. Consecutive agent replies add no response samples. The
     first wait starts at an observed handoff, never in the earlier bot phase.
+    Completed waits over 600 seconds are excluded from timing samples.
     """
 
     def __init__(self, round_item):
@@ -96,8 +100,12 @@ class RoundServiceMetrics:
             if self.first_reply_at is None:
                 self.first_reply_at = at
             if self.pending_at is not None:
-                self.response_seconds += (at - self.pending_at).total_seconds()
-                self.response_count += 1
+                seconds = (at - self.pending_at).total_seconds()
+                if 0 <= seconds <= MAX_RESPONSE_SECONDS:
+                    self.response_seconds += seconds
+                    self.response_count += 1
+                # Even an excluded wait is complete; the next reply must not
+                # reuse its customer message or become a replacement first.
                 self.pending_at = None
 
     def result(self):
@@ -110,8 +118,11 @@ class RoundServiceMetrics:
         elif self.first_reply_at is None:
             first_status = "awaiting_agent"
         else:
-            first = (self.first_reply_at - self.handoff_at).total_seconds()
-            first_status = "recorded"
+            seconds = (self.first_reply_at - self.handoff_at).total_seconds()
+            if seconds > MAX_RESPONSE_SECONDS:
+                first_status = "over_limit"
+            else:
+                first, first_status = seconds, "recorded"
         average = None
         if self.response_count and not (self.unknown_customer_time or self.unknown_agent_time):
             average = self.response_seconds / self.response_count

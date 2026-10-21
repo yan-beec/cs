@@ -1617,7 +1617,7 @@
     };
     const qualityCustomerRound = (item) => {
       const round = item.latest_round, metrics = round?.service_metrics || {};
-      const firstLabels = { not_handed_off: "未转人工", missing_handoff_time: "时间待确认", unknown_time: "时间待确认", awaiting_agent: "待人工回复" };
+      const firstLabels = { not_handed_off: "未转人工", missing_handoff_time: "时间待确认", unknown_time: "时间待确认", awaiting_agent: "待人工回复", over_limit: "超时不计" };
       const first = metrics.first_response_status === "recorded" ? qualityDuration(metrics.first_response_seconds) : firstLabels[metrics.first_response_status] || "待确认";
       const last = metrics.last_message_by_agent === true ? "是" : metrics.last_message_by_agent === false ? `否 · ${qualityRoleLabel(metrics.last_message_sender_role)}` : "待确认";
       const rating = round && qualityRatingLabel(round) !== "—" ? qualityRatingLabel(round) : "未评价";
@@ -1626,8 +1626,8 @@
       const messages = counts.every((value) => value !== null && value !== undefined) ? `${counts[0]}（${counts[1]}：${counts[2]}）` : "待确认";
       const firstBasis = { handoff_request: "从转人工请求到首条人工公开回复", ics_assignment: "从 ICS 分配成功到首条人工公开回复", inherited_takeover: "沿用人工接待，从本轮开始到首条人工公开回复" };
       const cells = [
-        ["转人工首响", first, firstBasis[metrics.human_phase_basis] || "缺少转人工时间时不推算首响时长"],
-        ["人工平均响应", qualityDuration(metrics.average_response_seconds), `基于 ${metrics.response_sample_count ?? 0} 次已完成响应。连续访客消息从首条未回复消息计时；首次等待从转人工时间起计。`],
+        ["转人工首响", first, `${firstBasis[metrics.human_phase_basis] || "缺少转人工时间时不推算首响时长"}；首响超过600秒不计入统计，600秒保留，后续回复不替代首响。`],
+        ["人工平均响应", qualityDuration(metrics.average_response_seconds), `基于 ${metrics.response_sample_count ?? 0} 次有效已完成响应。连续访客消息从首条未回复消息计时；首次等待从转人工时间起计。单次响应超过600秒不计入时长及样本数，600秒保留。`],
         ["最后一句为人工", last, "按本轮最后一条公开聊天消息判断，忽略内部备注、系统活动和评价卡"],
         ["本轮总时长", qualityDuration(metrics.duration_seconds), "从本轮开始至解决时间；未解决或超时分轮按最后一条聊天消息计时"],
         ["访客评价", feedback ? `${rating} · ${feedback}` : rating, feedback ? `${rating} · ${feedback}` : rating],

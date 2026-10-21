@@ -1,6 +1,7 @@
 """Per-seat quality from completed reply waits and observed ICS assignments."""
 
 from ics_agent.app.chatwoot.payload import is_explicit_handoff_request
+from quality.query.service_metrics import MAX_RESPONSE_SECONDS
 
 
 def handoff_sql(alias):
@@ -223,6 +224,9 @@ def reply_quality(connection, period, agents, now):
                 max(response_seconds) FILTER(WHERE response_no=1) AS first_response_seconds,
                 avg(response_seconds) AS average_response_seconds,count(response_seconds) AS response_samples
             FROM completed c JOIN ops.round_index r USING(round_id)
+            -- Keep original response numbers: excluding a slow first reply
+            -- must not promote a later reply to the round's first response.
+            WHERE c.response_seconds BETWEEN 0 AND {MAX_RESPONSE_SECONDS}
             GROUP BY r.source_key,r.account_id,c.agent_id,c.round_id
         ), timings AS (
             SELECT source_key,account_id,agent_id,

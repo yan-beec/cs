@@ -209,12 +209,37 @@ class StatisticsDatabaseTest(unittest.TestCase):
     def test_reply_timings_start_after_successful_assignment_not_busy_refusal(self):
         self.receive(event(1, content="我要转人工"),
             event(2, 1, sender="agent_bot", direction="outgoing", content=BUSY_NOTICE),
-            event(3, 2, content="我要转人工"), event(4, 3), agent_reply(5, 4))
+            event(3, 2, content="我要转人工"), event(4, 3), agent_reply(5, 4, agent_id=8))
         self.receive_assignment("8", trigger_message_id=3, minute=2, business_round="retry-success", session_minute=2)
         self.drain()
         _, seats = self.seats()
         self.assertEqual((seats["8"]["first_response_seconds"], seats["8"]["average_response_seconds"]), (60, 60))
         self.assertEqual((seats["8"]["first_response_samples"], seats["8"]["response_samples"]), (1, 1))
+
+    def test_response_limit_excludes_samples_before_equal_weight_round_averages(self):
+        # Round 12: first wait 601s is excluded, later waits 30s and 90s
+        # average to 60s. Round 22 retains exactly 600s. Round 32 has no
+        # valid samples and must not become a zero-valued third round.
+        self.receive(event(1, content="我要转人工"), event(2, 1),
+            agent_reply(3, 1 + 601 / 60), event(4, 12), agent_reply(5, 12.5),
+            event(6, 13), agent_reply(7, 23 + 1 / 60),
+            event(8, 24), event(9, 24.5), agent_reply(10, 26),
+            event(21, conversation_id=22, content="我要转人工"),
+            event(22, 1, conversation_id=22), agent_reply(23, 11, conversation_id=22),
+            event(31, conversation_id=32, content="我要转人工"),
+            event(32, 1, conversation_id=32), agent_reply(33, 1 + 600.001 / 60, conversation_id=32),
+            event(41, conversation_id=42, content="我要转人工"),
+            event(42, 1, conversation_id=42), agent_reply(43, 12, conversation_id=42, agent_id=8))
+        self.drain()
+        _, seats = self.seats()
+        a = seats["7"]
+        self.assertEqual((a["first_response_seconds"], a["first_response_samples"]), (600, 1))
+        self.assertEqual((a["average_response_seconds"], a["response_samples"], a["response_rounds"]), (330, 3, 2))
+        self.assertEqual(a["inquiries"], 3)
+        self.assertEqual((seats["8"]["first_response_seconds"], seats["8"]["first_response_samples"]), (None, 0))
+        self.assertEqual((seats["8"]["average_response_seconds"], seats["8"]["response_samples"],
+                          seats["8"]["response_rounds"]), (None, 0, 0))
+        self.assertEqual(seats["8"]["inquiries"], 1)
 
     def test_quality_credits_the_replying_seat_without_repeating_the_first_wait(self):
         self.receive(event(1, content="我要转人工"), event(2, 1), agent_reply(3, 2),
@@ -260,15 +285,15 @@ class StatisticsDatabaseTest(unittest.TestCase):
         self.assertEqual((first["total"], first["total_lost_inquiries"]), (3, 3))
 
     def test_reply_timings_select_transfers_and_keep_completed_replies_after_the_window(self):
-        self.receive(event(1, content="我要转人工"), event(3, 1), agent_reply(2, 480))
+        self.receive(event(1, 470, content="我要转人工"), event(3, 471), agent_reply(2, 480))
         self.drain()
         tomorrow = ReportPeriod.build("day", date(2026, 10, 2))
         for period in [self.period, ReportPeriod.build("month", date(2026, 10, 1)),
                        ReportPeriod.build("year", date(2026, 10, 1)),
                        ReportPeriod.build("custom", date(2026, 10, 1), date(2026, 10, 1))]:
             _, seats = self.seats(period=period, now=START + timedelta(days=2))
-            self.assertEqual(seats["7"]["first_response_seconds"], 479 * 60)
-            self.assertEqual(seats["7"]["average_response_seconds"], 479 * 60)
+            self.assertEqual(seats["7"]["first_response_seconds"], 540)
+            self.assertEqual(seats["7"]["average_response_seconds"], 540)
             self.assertEqual(seats["7"]["response_samples"], 1)
             self.assertEqual(seats["7"]["response_rounds"], 1)
         _, seats = self.seats(period=tomorrow, now=START + timedelta(days=2))
@@ -359,8 +384,8 @@ class StatisticsDatabaseTest(unittest.TestCase):
         events = []
         for i in range(3):
             conversation, base = 100 + i, 100 + i * 10
-            events.extend([event(base, conversation_id=conversation, content="我要转人工"),
-                event(base + 1, 1, conversation_id=conversation),
+            events.extend([event(base, 470, conversation_id=conversation, content="我要转人工"),
+                event(base + 1, 471, conversation_id=conversation),
                 agent_reply(base + 2, 480, conversation_id=conversation, agent_id=i + 7)])
         self.receive(*events)
         self.drain()
@@ -368,7 +393,7 @@ class StatisticsDatabaseTest(unittest.TestCase):
         _, second = self.seats(page=2, page_size=2, now=START + timedelta(days=2))
         self.assertEqual((report["total"], len(first), len(second)), (3, 2, 1))
         for a in [*first.values(), *second.values()]:
-            self.assertEqual((a["inquiries"], a["first_response_seconds"], a["response_rounds"]), (0, 479 * 60, 1))
+            self.assertEqual((a["inquiries"], a["first_response_seconds"], a["response_rounds"]), (0, 540, 1))
         empty = self.reports.agent_report(self.period, source_key=self.source + "-absent", account_id=1,
             now=START + timedelta(days=2))
         self.assertEqual(empty["total"], 0)

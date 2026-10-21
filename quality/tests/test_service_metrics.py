@@ -148,3 +148,43 @@ def test_zero_second_response_and_subsecond_average_remain_valid():
     result = metrics([message(1), message(1, "agent"), message(2), message(2 + .5/60, "agent")])
     assert result["first_response_status"] == "recorded" and result["first_response_seconds"] == 0
     assert result["average_response_seconds"] == .25
+
+
+@pytest.mark.parametrize("seconds,expected_count", [(600, 1), (600.001, 0)])
+def test_response_limit_retains_exactly_600_seconds(seconds, expected_count):
+    result = metrics([message(1), message(1 + seconds / 60, "agent")])
+    assert result["response_sample_count"] == expected_count
+    if expected_count:
+        assert result["first_response_status"] == "recorded"
+        assert result["first_response_seconds"] == result["average_response_seconds"] == seconds
+    else:
+        assert result["first_response_status"] == "over_limit"
+        assert result["first_response_seconds"] is None
+        assert result["average_response_seconds"] is None
+
+
+def test_excluded_first_response_is_not_replaced_by_a_later_valid_response():
+    result = metrics([message(1), message(1 + 601 / 60, "agent"),
+                      message(12), message(12.5, "agent"), message(13, "agent")])
+    assert result["first_response_seconds"] is None
+    assert result["first_response_status"] == "over_limit"
+    assert result["average_response_seconds"] == 30
+    assert result["response_sample_count"] == 1
+    assert result["human_phase_agent_count"] == 3
+
+
+def test_excluded_later_response_does_not_contribute_to_sum_or_sample_count():
+    result = metrics([message(1), message(2, "agent"), message(3),
+                      message(3 + 601 / 60, "agent"),
+                      message(14), message(14.5, "agent")])
+    assert result["first_response_seconds"] == 60
+    assert result["average_response_seconds"] == 45
+    assert result["response_sample_count"] == 2
+
+
+def test_all_over_limit_responses_leave_no_timing_samples():
+    result = metrics([message(1), message(12, "agent"), message(13), message(24, "agent")])
+    assert result["first_response_seconds"] is None
+    assert result["average_response_seconds"] is None
+    assert result["response_sample_count"] == 0
+    assert result["human_phase_message_count"] == 4
