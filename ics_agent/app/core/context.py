@@ -24,6 +24,7 @@ contact_block_repository = get_contact_block_repository()
 
 EMOJI_ACK_MESSAGE = "如果有什么需要帮助，可以直接问我哦，我会尽力帮您解答的~"
 HANDOFF_NOTICE_MESSAGE = "正在为您转接人工客服，请稍等..."
+HANDOFF_SUCCESS_MESSAGE = "已经成功为您转接人工客服，请直接描述您遇到的问题！"
 IMAGE_HANDOFF_NOTICE_MESSAGE = (
     "观察到用户需要人工协助，正在转接人工客服，请稍后"
 )

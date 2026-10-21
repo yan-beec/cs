@@ -361,7 +361,7 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
                 complete_handoff.assert_awaited_once()
                 self.assertEqual(
                     complete_handoff.call_args.kwargs["notice_message"],
-                    main.IMAGE_HANDOFF_NOTICE_MESSAGE,
+                    main._handoff_success_message(event),
                 )
                 answer.assert_not_awaited()
                 self.assertEqual(result["route"], "handoff")
@@ -746,14 +746,9 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
                 else:
                     client.send_message.assert_not_called()
 
-    async def test_successful_handoff_sends_only_its_normal_notice(self) -> None:
+    async def test_successful_handoff_sends_success_notice(self) -> None:
         for media_type in (None, "image", "video"):
             with self.subTest(media_type=media_type):
-                notice = (
-                    "观察到用户需要人工协助，正在转接人工客服，请稍后"
-                    if media_type
-                    else main.HANDOFF_NOTICE_MESSAGE
-                )
                 control = replace(_control(handoff_required=True), handoff_notice_sent=False)
                 client = Mock()
                 client.send_message.return_value = {"id": 201}
@@ -762,6 +757,7 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
                     content="" if media_type else "转人工", message_type="incoming",
                     raw={"attachments": [{"file_type": media_type}]} if media_type else {},
                 )
+                notice = main._handoff_success_message(event)
                 with (
                     patch.object(main, "get_chatwoot_client", return_value=client),
                     patch.object(main, "conversation_control_repository", Mock()),
@@ -774,11 +770,54 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
                         event=event, job=main.WebhookJob(event_key="success", event=event),
                         control=control, content=event.content or "",
                     )
-                client.send_message.assert_called_once_with(
-                    account_id="1", conversation_id="56", content=notice,
+                self.assertEqual(
+                    client.send_message.call_args_list,
+                    [
+                        call(
+                            account_id="1", conversation_id="56",
+                            content=main._handoff_notice_message(event),
+                        ),
+                        call(
+                            account_id="1", conversation_id="56",
+                            content=main.HANDOFF_SUCCESS_MESSAGE,
+                        ),
+                    ],
                 )
                 self.assertEqual(result["route"], "handoff")
                 self.assertEqual(result["answer"], notice)
+
+    async def test_success_notice_retry_does_not_repeat_trigger_notice(self) -> None:
+        control = replace(
+            _control(handoff_required=True),
+            handoff_notice_sent=False,
+            handoff_trigger_notice_sent=True,
+        )
+        client = Mock()
+        client.send_message.return_value = {"id": 202}
+        repository = Mock()
+        event = ChatwootWebhookEvent(
+            event="message_created", account={"id": 1}, conversation={"id": 56},
+            content="转人工", message_type="incoming",
+        )
+        with (
+            patch.object(main, "get_chatwoot_client", return_value=client),
+            patch.object(main, "conversation_control_repository", repository),
+            patch.object(main, "settings", main.settings.model_copy(update={
+                "chatwoot_handoff_enabled": True,
+                "chatwoot_handoff_notice_enabled": True,
+            })),
+        ):
+            await main._complete_handoff(
+                event=event, job=main.WebhookJob(event_key="success-retry", event=event),
+                control=control, content="转人工",
+            )
+        client.send_message.assert_called_once_with(
+            account_id="1", conversation_id="56", content=main.HANDOFF_SUCCESS_MESSAGE,
+        )
+        repository.mark_handoff_action.assert_called_once_with(
+            account_id="1", conversation_id="56", action="notice_sent",
+            message_id="202",
+        )
 
     async def test_agent_availability_is_read_from_chatwoot(self) -> None:
         event = ChatwootWebhookEvent(

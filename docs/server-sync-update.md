@@ -2,11 +2,13 @@
 
 本文用于项目已经部署完成后的日常发布：在 Windows 开发端修改代码，推送到 Git 远端，同步到 Ubuntu 的 /opt/cs，重新构建并验证机器人。
 
-**归档与客服状态模块首次上线或更新，请按[归档功能更新文档](archive-feature-update.md)执行。** 该文档覆盖独立归档数据库、001–007迁移、专用Webhook、解析服务、环境配置和验收；只重建原ICS容器不能完成归档模块发布。
+**归档与客服状态模块首次上线或更新，请按[归档功能更新文档](archive-feature-update.md)执行。** 该文档覆盖独立归档数据库、001–009迁移、专用Webhook、解析服务、环境配置和验收；只重建原ICS容器不能完成归档模块发布。
 
 **本次从单渠道升级为多渠道，请直接按[第十节：本次多渠道版本覆盖升级](#十本次多渠道版本覆盖升级首次执行)执行。** 该节提供直接上传本地版本和 Git 同步两种方式，包含首次资料目录迁移、渠道配置、启动校验及后台导入操作；仅执行日常代码同步不会补齐服务器的渠道数据目录。
 
 转人工强弹窗提醒、工作台按钮及浏览器页面复用的专项更新，按[提醒功能服务器更新部署手册](reminder-server-update.md)执行；除服务器代码和配置外，还需更新客服电脑上的 Windows 客户端与浏览器插件。
+
+统计报表、客服质检、坐席分配和在线状态相关的后台更新属于当前后端版本的一部分，日常发布必须同时同步 `quality/`、`statistics/` 和 `ics_agent/`。若首次上线独立归档库、归档接收器或新增 `quality/database/migrations/`，先按[归档功能更新文档](archive-feature-update.md)完成初始化和迁移；统计报表的专项验收另见[统计报表服务器增量更新手册](statistics-feature-update.md)。
 
 当前部署约定：
 
@@ -28,11 +30,12 @@
 
 | 改动 | 动作 | 是否 build |
 | --- | --- | --- |
-| ics_agent/、knowledge_base_in/ Python 代码 | Git 拉取、同步、构建、重建应用 | 是 |
+| ics_agent/、knowledge_base_in/、quality/、statistics/ Python 代码 | Git 拉取、同步、构建、重建应用；若 `quality-worker` 正在运行还要重建该进程 | 是 |
 | reminder/backend/、reminder/protocol.py 服务端代码 | Git 拉取、同步 reminder、构建、重建应用 | 是 |
 | reminder/client/、extension/、packaging/ 客户端或插件 | 按专项手册构建安装包、升级客服电脑、重新加载浏览器插件 | 服务器通常无需 build；混合后端变更时需要 |
 | requirements.txt、Dockerfile | Git 拉取、同步、构建、重建应用 | 是 |
 | docker-compose.yml | Git 拉取、同步、重建应用 | 建议执行 |
+| docker-compose.archive.yml、deploy/archive/、quality/database/、quality/deploy/ | 按归档/质检流程同步；执行质量数据库迁移和校验，再构建应用 | 迁移或服务代码变化时是 |
 | 服务器 /opt/cs/.env | 编辑后 force-recreate | 否 |
 | deploy/server/bot.env.example | 拉取后人工合并到 .env | 否 |
 | docs/、README | 拉取即可 | 否 |
@@ -43,7 +46,7 @@
 | models/ 模型权重 | 单独打包、上传、校验、解压、重启预热 | 通常否 |
 | 意图模型和 intent_dataset_4000.csv | 配套发布并检查指纹 | 代码需 build |
 
-普通源码同步不会覆盖以下运行数据：/opt/cs/.env、models、database、log、knowledge_base_in/output、knowledge_base_in/vector_store 和 PostgreSQL volume。后端更新也不会改变已经单独部署的前端。
+普通源码同步不会覆盖以下运行数据：/opt/cs/.env、models、database、log、knowledge_base_in/output、knowledge_base_in/vector_store、主 PostgreSQL volume 和独立归档 PostgreSQL volume。后端更新也不会改变已经单独部署的前端；`quality/`、`statistics/` 是镜像内代码，不能只同步 `ics_agent/`。
 
 ## 二、开发端发布
 
@@ -65,14 +68,19 @@ git remote get-url origin
 
 ~~~powershell
 & C:\Users\lenovo\Anaconda3\envs\cs\python.exe -m unittest discover -s tests -v
-if ($LASTEXITCODE -ne 0) { throw '本地测试失败，停止发布。' }
-& C:\Users\lenovo\Anaconda3\envs\cs\python.exe -m py_compile ics_agent\rag\retrieval\dense_search.py ics_agent\rag\config.py
+if ($LASTEXITCODE -ne 0) { throw '基础测试失败，停止发布。' }
+$releaseTestStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+& C:\Users\lenovo\Anaconda3\envs\cs\python.exe -m pytest tests quality\tests statistics\tests -q -p no:cacheprovider --basetemp "tmp/pytest-release-$releaseTestStamp"
+if ($LASTEXITCODE -ne 0) { throw '质量或统计测试失败，停止发布。' }
+& C:\Users\lenovo\Anaconda3\envs\cs\python.exe -m compileall -q ics_agent knowledge_base_in reminder quality statistics
 if ($LASTEXITCODE -ne 0) { throw 'Python 编译失败，停止发布。' }
+& C:\Users\lenovo\Anaconda3\envs\cs\python.exe -c "from pathlib import Path; paths=[*Path('deploy/server').glob('*.sh'),*Path('deploy/archive/init').glob('*.sh'),*Path('quality').rglob('*.sh')]; bad=[str(p) for p in paths if b'\r' in p.read_bytes()]; print('Shell CRLF files:',bad); raise SystemExit(bool(bad))"
+if ($LASTEXITCODE -ne 0) { throw '部署 Shell 文件存在 CRLF，停止发布。' }
 git diff --check
 if ($LASTEXITCODE -ne 0) { throw 'Git 检查失败，停止发布。' }
 ~~~
 
-部分测试因本地 PostgreSQL 未启动而 skipped 时，要记录原因，不能将 skipped 当作完整联调通过。
+部分测试因本地 PostgreSQL 未启动而 skipped 时，要记录原因，不能将 skipped 当作完整联调通过。不要对 `quality/database/migrations/` 批量转换换行；已应用迁移文件的字节变化会造成校验和不一致。
 
 ### 3．检查新增配置
 
@@ -90,6 +98,16 @@ KNOWLEDGE_BASE_EMBEDDING_MICRO_BATCH_MAX_SIZE=4
 ~~~
 
 模板不会自动覆盖服务器实际 .env；需要时在服务器手工补齐。
+
+当前版本还要求部署模板和质量迁移入口存在：
+
+~~~powershell
+@('docker-compose.archive.yml','deploy\server\sync-code.sh','deploy\server\release.sh','deploy\archive\init\01-archive-roles.sh','quality\deploy\migrate.sh','quality\database\apply-migrations.sh','quality\database\verify-schema.sh') | ForEach-Object {
+  if (-not (Test-Path $_)) { throw "缺少发布文件：$_" }
+}
+~~~
+
+如果服务器尚未部署独立归档库，先按归档功能更新文档完成初始化；不要在未配置归档凭据的服务器上直接执行质量迁移。
 
 ### 4．提交并推送
 
@@ -181,31 +199,37 @@ test "$actual_commit" = "$expected_commit" && echo '源码 SHA 校验通过' || 
 
 ### 3．同步指定目录
 
+日常发布统一调用仓库内的同步入口，避免手写目录清单漏掉新模块。该脚本只对应用代码目录使用 `--delete`，并显式保留运行数据；它当前会同步 `ics_agent/`、`knowledge_base_in/`、`reminder/`、`quality/`、`statistics/`、`deploy/`、`docs/`、两份 Compose 文件、依赖文件、归档初始化脚本和后端 Dockerfile。
+
 ~~~bash
 (
   set -e
-  test -f /opt/cs-src/deploy/server/Dockerfile.backend-only
-  mkdir -p /opt/cs/ics_agent /opt/cs/knowledge_base_in /opt/cs/reminder /opt/cs/deploy /opt/cs/docs
-  rsync -a --delete --exclude='__pycache__/' --exclude='*.pyc' /opt/cs-src/ics_agent/ /opt/cs/ics_agent/
-  rsync -a --delete --exclude='/output/' --exclude='/vector_store/' --exclude='__pycache__/' --exclude='*.pyc' /opt/cs-src/knowledge_base_in/ /opt/cs/knowledge_base_in/
-  rsync -a --delete --exclude='/build/' --exclude='/dist/' --exclude='__pycache__/' --exclude='*.pyc' --exclude='.pytest_cache/' /opt/cs-src/reminder/ /opt/cs/reminder/
-  rsync -a /opt/cs-src/deploy/ /opt/cs/deploy/
-  rsync -a /opt/cs-src/docs/ /opt/cs/docs/
-  cp /opt/cs-src/docker-compose.yml /opt/cs-src/.dockerignore /opt/cs-src/requirements.txt /opt/cs-src/.env.example /opt/cs/
-  cp /opt/cs-src/deploy/server/Dockerfile.backend-only /opt/cs/Dockerfile
+  test -f /opt/cs-src/deploy/server/sync-code.sh
+  bash /opt/cs-src/deploy/server/sync-code.sh /opt/cs-src /opt/cs
 )
 ~~~
 
-这段命令不会覆盖 .env、模型、数据库、日志或向量库。--delete 只用于应用代码目录，不能加 --delete-excluded，也不能把目标改成整个 /opt/cs。
+这段命令不会覆盖 `.env`、模型、数据库资料、日志或向量库。`quality/` 和 `statistics/` 必须与 `ics_agent/` 同步，否则新后台路由会引用旧模块；`--delete` 只用于应用代码目录，不能加 `--delete-excluded`，也不能把目标改成整个 `/opt/cs`。
 
 同步后：
 
 ~~~bash
 git -C /opt/cs-src rev-parse HEAD > /opt/cs/deployment-records/source-commit-pending.txt
 cmp -s /opt/cs/Dockerfile /opt/cs-src/deploy/server/Dockerfile.backend-only && echo 'Dockerfile 模板同步通过'
+test -f /opt/cs/docker-compose.archive.yml
+test -f /opt/cs/quality/deploy/migrate.sh
+test -f /opt/cs/quality/database/apply-migrations.sh
+test -f /opt/cs/quality/database/verify-schema.sh
+test -d /opt/cs/statistics
 ~~~
 
-首次升级多渠道时，启动应用前还必须完成第十节的资料目录迁移和渠道配置。上面的代码同步故意保留 `database/`，不会自动复制 `channels.json` 或渠道提示词。
+如果服务器已启用独立归档/质检数据库，代码同步后、应用构建前执行一次质量数据库迁移和校验：
+
+~~~bash
+bash /opt/cs/quality/deploy/migrate.sh /opt/cs
+~~~
+
+该脚本会按迁移编号补齐缺失版本并校验已应用版本的 SHA256；任何迁移失败或校验不一致都要停止发布。首次部署归档库、接收器或解析进程时，必须改按[归档功能更新文档](archive-feature-update.md)的完整流程执行。首次升级多渠道时，启动应用前还必须完成第十节的资料目录迁移和渠道配置。上面的代码同步故意保留 `database/`，不会自动复制运行中的 `channels.json` 或渠道提示词。
 
 不要执行：
 
@@ -219,6 +243,8 @@ rm -rf /opt/cs/knowledge_base_in/vector_store
 ## 五、构建和重建
 
 ### A．代码、依赖、Dockerfile 或 Compose 改动
+
+未启用独立归档/质检 Compose 时执行本节；已启用时改执行下面的 A.1，确保构建、迁移和质量进程使用同一组 Compose 文件。
 
 ~~~bash
 cd /opt/cs
@@ -244,6 +270,35 @@ docker compose --progress plain -f docker-compose.yml up -d --build --no-deps --
 `--build` 负责构建镜像；只有挂载的 `database/channels.json` 改变时，镜像可能仍使用缓存，已有容器也可能被复用。发布命令明确加 `--force-recreate`，确保重新启动应用并加载配置。单独修改渠道 JSON 时，使用 `docker compose -f docker-compose.yml restart ics-agent` 即可；修改 `.env` 则必须 recreate。
 
 不要用 docker compose down 作为普通更新步骤，否则可能中断 PostgreSQL。
+
+### A.1．当前质量/统计模块和归档进程
+
+当前镜像同时包含 `ics_agent/`、`quality/` 和 `statistics/`。服务器已启用归档 Compose 时，构建和重建应用要使用与迁移相同的两份 Compose 文件：
+
+~~~bash
+cd /opt/cs
+compose=(docker compose --project-directory /opt/cs --env-file /opt/cs/.env \
+  -f /opt/cs/docker-compose.yml -f /opt/cs/docker-compose.archive.yml)
+"${compose[@]}" config --quiet
+"${compose[@]}" build ics-agent
+"${compose[@]}" up -d --no-deps --force-recreate ics-agent
+~~~
+
+`quality-receiver` 和 `quality-worker` 使用同一个 `ics-agent:py310` 镜像。只重建 `ics-agent` 不会自动替换已经运行的解析/接收进程；发布前先记录它们的状态，只对原本运行中的服务执行对应的强制重建，原本停止的服务保持停止：
+
+~~~bash
+quality_receiver_id=$("${compose[@]}" --profile quality-capture ps -q quality-receiver || true)
+if test -n "$quality_receiver_id" && test "$(docker inspect -f '{{.State.Status}}' "$quality_receiver_id")" = running; then
+  "${compose[@]}" --profile quality-capture up -d --no-deps --force-recreate quality-receiver
+fi
+quality_worker_id=$("${compose[@]}" --profile quality-query ps -q quality-worker || true)
+if test -n "$quality_worker_id" && test "$(docker inspect -f '{{.State.Status}}' "$quality_worker_id")" = running; then
+  "${compose[@]}" --profile quality-query up -d --no-deps --force-recreate quality-worker
+fi
+"${compose[@]}" --profile quality-capture --profile quality-query ps -a
+~~~
+
+如果服务器从未启用归档 Compose，不能为了统计页面临时启动 `quality-receiver` 或 `quality-worker`；先按归档文档完成数据库、凭据、Webhook 和迁移，再使用本节的完整 Compose 命令。只改统计页面且归档服务已正常运行时，也要重建 `ics-agent`，因为 `statistics/` 会在镜像构建时复制到 `/app/statistics`。
 
 ### B．只改服务器 .env
 
@@ -301,11 +356,19 @@ curl -i --max-time 20 http://172.20.48.12:3001/health
 
 预期 ics-agent 为 Up，端口显示 172.20.48.12:3001->3001/tcp，健康接口返回 HTTP 200。
 
+服务器已启用归档/质检服务时，再用完整 Compose 查看所有相关进程；不要只看基础 Compose 的 `ics-agent`：
+
+~~~bash
+docker compose --project-directory /opt/cs --env-file /opt/cs/.env \
+  -f /opt/cs/docker-compose.yml -f /opt/cs/docker-compose.archive.yml \
+  --profile quality-capture --profile quality-query ps -a
+~~~
+
 ### 2．启动、预热和微批日志
 
 ~~~bash
 tail -n 160 /opt/cs/log/uvicorn-admin.stderr.log
-grep -E 'Application startup complete|app.lifecycle.started|app.rag_warmup|embedding.micro_batch|Traceback|ERROR|failed_fallback' /opt/cs/log/uvicorn-admin.stderr.log | tail -n 100
+grep -E 'Application startup complete|app.lifecycle.started|app.rag_warmup|embedding.micro_batch|statistics|quality|Traceback|ERROR|failed_fallback' /opt/cs/log/uvicorn-admin.stderr.log | tail -n 120
 ~~~
 
 看到应用生命周期启动完成后再做业务验证。微批正常日志示例：
@@ -315,6 +378,16 @@ event=knowledge_base.embedding.micro_batch.completed batch_size=4 elapsed_ms=...
 ~~~
 
 batch_size=1 也正常，表示 20 毫秒窗口内没有收集到更多 Query。
+
+质量接收器和解析进程的日志单独检查：
+
+~~~bash
+docker compose --project-directory /opt/cs --env-file /opt/cs/.env \
+  -f /opt/cs/docker-compose.yml -f /opt/cs/docker-compose.archive.yml \
+  --profile quality-capture --profile quality-query logs --tail 120 quality-receiver quality-worker
+~~~
+
+只检查实际启用的服务；若某个 profile 从未启用，日志命令提示服务不存在时不要为了通过检查而启动它。
 
 ### 3．核对非敏感配置
 
@@ -338,6 +411,16 @@ print("rag_timeout_seconds=", r.webhook_rag_timeout_seconds)
 这条命令不打印 API Key、Token 或密码。
 
 `RAG_RERANKER_ENABLED=false` 表示直接使用双塔 Top5，启动时不加载或预热 reranker；`true` 沿用已有召回与精排参数。未配置的旧环境默认 `true`。修改服务器 `.env` 后需重新创建 `ics-agent` 容器，再用上面的命令确认实际值。
+
+### 3.1．核对镜像内质量和统计模块
+
+~~~bash
+docker compose -f docker-compose.yml run --rm -T --no-deps \
+  --entrypoint python ics-agent -c \
+  'from pathlib import Path; import quality, ics_agent.statistics as stats; assert Path("/app/quality").is_dir(); assert Path("/app/statistics").is_dir(); assert "/app/statistics" in stats.__path__; print("quality/statistics import OK")'
+~~~
+
+看到 `quality/statistics import OK` 才表示新目录已进入镜像。若这里失败，回到第四节确认 `quality/`、`statistics/` 已同步，再重新构建；不要只重启旧容器。
 
 ### 4．验证管理后台和 Webhook
 
@@ -417,7 +500,28 @@ docker compose -f docker-compose.yml up -d --force-recreate ics-agent
 
 ### 改了代码但服务仍是旧版本
 
-依次确认：开发端已 push；服务器源码 SHA 正确；rsync/cp 成功；执行了 build；执行了 up -d --force-recreate。只执行 git pull 不会改变 Docker 镜像，只执行 build 也不会替换运行中的容器。
+依次确认：开发端已 push；服务器源码 SHA 正确；`sync-code.sh` 成功；`quality/deploy/migrate.sh`（已启用归档时）成功；执行了 build；执行了 up -d --force-recreate。只执行 git pull 不会改变 Docker 镜像，只执行 build 也不会替换运行中的容器。统计或质检代码发布后，还要确认原本运行中的 `quality-receiver`、`quality-worker` 已按 A.1 重建。
+
+### 统计页面空白、接口 404 或显示旧数据
+
+确认 `statistics/` 和 `quality/` 都已同步到 `/opt/cs`，并通过第六节的镜像导入检查。检查浏览器是否缓存旧的 `admin.html`，再执行强制刷新；统计代码在镜像内，单独修改宿主机 `database/` 或 `docs/` 不会更新页面。
+
+### 质检或归档进程启动失败
+
+先查看质量数据库迁移输出和独立服务日志：
+
+~~~bash
+cd /opt/cs
+bash quality/deploy/migrate.sh /opt/cs
+docker compose --project-directory /opt/cs --env-file /opt/cs/.env \
+  -f docker-compose.yml -f docker-compose.archive.yml \
+  --profile quality-capture --profile quality-query ps -a
+docker compose --project-directory /opt/cs --env-file /opt/cs/.env \
+  -f docker-compose.yml -f docker-compose.archive.yml \
+  --profile quality-capture --profile quality-query logs --tail 160 quality-receiver quality-worker
+~~~
+
+迁移校验失败时不要删除归档卷、跳过迁移或手工修改已应用 SQL；按归档文档恢复对应版本文件后再重试。
 
 ### 改了 .env 但行为没变化
 
@@ -473,6 +577,7 @@ grep -E 'webhook.received|job.answer_ready|failed_fallback|chatwoot_reply|llm_re
 Set-Location D:\project\CS
 git status --short
 & C:\Users\lenovo\Anaconda3\envs\cs\python.exe -m unittest discover -s tests -v
+& C:\Users\lenovo\Anaconda3\envs\cs\python.exe -m pytest tests quality\tests statistics\tests -q -p no:cacheprovider
 git add -A
 git diff --cached --stat
 git commit -m "feat: update chatbot service"
@@ -490,7 +595,9 @@ git -C /opt/cs-src fetch origin test
 git -C /opt/cs-src checkout test
 git -C /opt/cs-src pull --ff-only origin test
 
-# 执行第四节的 rsync/cp 同步代码块
+# 执行第四节的 sync-code.sh 同步代码块
+bash /opt/cs-src/deploy/server/sync-code.sh /opt/cs-src /opt/cs
+bash /opt/cs/quality/deploy/migrate.sh /opt/cs  # 已启用归档/质检时执行
 docker compose -f docker-compose.yml config --quiet
 docker compose --progress plain -f docker-compose.yml build ics-agent
 docker compose -f docker-compose.yml up -d --force-recreate ics-agent
@@ -533,8 +640,8 @@ tar.exe -czf $multiChannelPackage `
   --exclude=__pycache__ --exclude=*.pyc `
   --exclude=knowledge_base_in/output --exclude=knowledge_base_in/vector_store `
   --exclude=reminder/build --exclude=reminder/dist --exclude=.pytest_cache `
-  ics_agent knowledge_base_in reminder deploy docs `
-  docker-compose.yml .dockerignore requirements.txt .env.example `
+  ics_agent knowledge_base_in reminder quality statistics deploy docs `
+  docker-compose.yml docker-compose.archive.yml .dockerignore requirements.txt .env.example `
   database/channels.json `
   database/channel_xingliao/prompt_xingliao.md `
   database/channel_yanliao/prompt_yanliao.md `
@@ -547,7 +654,7 @@ scp -o ServerAliveInterval=30 $multiChannelPackage ics:~/cs-multichannel-update.
 if ($LASTEXITCODE -ne 0) { throw '更新包上传失败。' }
 ~~~
 
-记录输出的 SHA256，稍后与服务器核对。包内没有本机 `.env`、模型权重、日志、向量库、`docker-compose.override.yml` 或独立 H5 页面。应用内管理后台随 `ics_agent/` 一起更新。后端镜像使用 `deploy/server/Dockerfile.backend-only`，服务器无需安装 Anaconda。
+记录输出的 SHA256，稍后与服务器核对。包内没有本机 `.env`、模型权重、日志、向量库、`docker-compose.override.yml` 或独立 H5 页面；`quality/`、`statistics/` 与 `ics_agent/` 一起进入镜像。应用内管理后台随 `ics_agent/` 一起更新。后端镜像使用 `deploy/server/Dockerfile.backend-only`，服务器无需安装 Anaconda。
 
 #### 方式 B：沿用 Git 发布
 
@@ -603,7 +710,7 @@ docker compose -f docker-compose.yml stop ics-agent
     database knowledge_base_in/output knowledge_base_in/vector_store
 
   multi_code_paths=()
-  for path in ics_agent reminder knowledge_base_in deploy docs Dockerfile docker-compose.yml .dockerignore requirements.txt .env.example; do
+  for path in ics_agent reminder knowledge_base_in quality statistics deploy docs Dockerfile docker-compose.yml docker-compose.archive.yml .dockerignore requirements.txt .env.example; do
     if [ -e "$path" ]; then multi_code_paths+=("$path"); fi
   done
   sudo tar --exclude='__pycache__' --exclude='*.pyc' \
@@ -641,9 +748,12 @@ sha256sum ~/cs-multichannel-update.tar.gz
   mkdir -p /opt/cs/deployment-records /opt/cs/tmp
   multi_source_dir=$(mktemp -d /opt/cs/tmp/multichannel-source.XXXXXX)
   tar -xzf ~/cs-multichannel-update.tar.gz -C "$multi_source_dir"
+  test -f "$multi_source_dir/deploy/server/sync-code.sh"
   test -f "$multi_source_dir/deploy/server/Dockerfile.backend-only"
   test -f "$multi_source_dir/database/channels.json"
   test -f "$multi_source_dir/ics_agent/channels/config.py"
+  test -d "$multi_source_dir/quality"
+  test -d "$multi_source_dir/statistics"
   printf '%s\n' "$multi_source_dir" > /opt/cs/deployment-records/multichannel-source-dir.txt
   sha256sum ~/cs-multichannel-update.tar.gz > /opt/cs/deployment-records/multichannel-package.sha256
   echo "新版源码目录：$multi_source_dir"
@@ -672,6 +782,9 @@ git -C /opt/cs-src pull --ff-only https://code-sayu.xingyongshe.com/backend/chat
 ~~~bash
 test -f /opt/cs-src/database/channels.json
 test -f /opt/cs-src/ics_agent/channels/config.py
+test -f /opt/cs-src/deploy/server/sync-code.sh
+test -d /opt/cs-src/quality
+test -d /opt/cs-src/statistics
 printf '%s\n' /opt/cs-src > /opt/cs/deployment-records/multichannel-source-dir.txt
 git -C /opt/cs-src rev-parse HEAD > /opt/cs/deployment-records/multichannel-new-source-commit.txt
 ~~~
@@ -685,21 +798,18 @@ git -C /opt/cs-src rev-parse HEAD > /opt/cs/deployment-records/multichannel-new-
   set -e
   test -s /opt/cs/deployment-records/multichannel-source-dir.txt || { echo '请先完成 10.3，生成新版源码目录记录。'; exit 1; }
   multi_source_dir=$(cat /opt/cs/deployment-records/multichannel-source-dir.txt)
+  test -f "$multi_source_dir/deploy/server/sync-code.sh"
   test -f "$multi_source_dir/deploy/server/Dockerfile.backend-only"
-  mkdir -p /opt/cs/ics_agent /opt/cs/knowledge_base_in /opt/cs/reminder /opt/cs/deploy /opt/cs/docs
-  rsync -a --delete --exclude='__pycache__/' --exclude='*.pyc' "$multi_source_dir/ics_agent/" /opt/cs/ics_agent/
-  rsync -a --delete --exclude='/output/' --exclude='/vector_store/' --exclude='__pycache__/' --exclude='*.pyc' "$multi_source_dir/knowledge_base_in/" /opt/cs/knowledge_base_in/
-  rsync -a --delete --exclude='/build/' --exclude='/dist/' --exclude='__pycache__/' --exclude='*.pyc' --exclude='.pytest_cache/' "$multi_source_dir/reminder/" /opt/cs/reminder/
-  rsync -a "$multi_source_dir/deploy/" /opt/cs/deploy/
-  rsync -a "$multi_source_dir/docs/" /opt/cs/docs/
-  cp "$multi_source_dir/docker-compose.yml" "$multi_source_dir/.dockerignore" "$multi_source_dir/requirements.txt" "$multi_source_dir/.env.example" /opt/cs/
-  cp "$multi_source_dir/deploy/server/Dockerfile.backend-only" /opt/cs/Dockerfile
+  bash "$multi_source_dir/deploy/server/sync-code.sh" "$multi_source_dir" /opt/cs
   cmp -s /opt/cs/Dockerfile "$multi_source_dir/deploy/server/Dockerfile.backend-only"
+  test -d /opt/cs/quality
+  test -d /opt/cs/statistics
+  test -f /opt/cs/docker-compose.archive.yml
   echo '后端代码及构建模板已同步'
 )
 ~~~
 
-后续全部显式使用 `-f docker-compose.yml`，避免把本地开发热重载 override 带到服务器。原服务器若有 Compose 自定义项，核对后保留仍需使用的设置；端口和服务地址优先沿用服务器 `.env`。
+后续全部显式使用 `-f docker-compose.yml`；服务器已启用归档/质检时同时加 `-f docker-compose.archive.yml`，避免把本地开发热重载 override 带到服务器。原服务器若有 Compose 自定义项，核对后保留仍需使用的设置；端口和服务地址优先沿用服务器 `.env`。
 
 ### 10.5 补充渠道框架并复制服务器兴聊资料
 
@@ -846,6 +956,16 @@ docker compose -f docker-compose.yml config --quiet
 
 ### 10.7 构建、校验，再强制重建应用
 
+如果本次源码包包含 `quality/`、`statistics/` 或 `quality/database/migrations/` 更新，先使用服务器实际启用的 Compose 文件执行质量数据库迁移；已有归档库只补齐缺失迁移，未启用归档库则回到归档功能更新文档，不在本节临时创建凭据或数据库：
+
+~~~bash
+cd /opt/cs
+if test -f quality/deploy/migrate.sh && test -f docker-compose.archive.yml \
+   && docker compose -f docker-compose.yml -f docker-compose.archive.yml config --services | grep -qx archive-postgres; then
+  bash quality/deploy/migrate.sh /opt/cs
+fi
+~~~
+
 先构建新版镜像：
 
 ~~~bash
@@ -905,6 +1025,8 @@ curl -i --max-time 20 http://172.20.48.12:3001/health
 模型预热期间可能暂时无法访问，等本次启动日志出现 `Application startup complete` 后再次请求 `/health`，预期 HTTP 200、`"status":"ok"`。只看到容器 `Up` 不代表应用已经成功启动。
 
 应用启动时自动创建四个 FAQ 表和知识库集合。默认旧表 `faq_qna_optimized` 在首次迁移时复制到空的 `faq_channel_xingliao`，旧表保留，并记录一次迁移标记。兴聊的 `kb_channel_xingliao` 通过 active 指针复用服务器原 `knowledge_base` 物理集合，保留原向量；三个新渠道初始为空。首次升级不需要重新导入兴聊 Excel 或重算向量，先验收现有链路，避免把旧源 Excel 再次全量覆盖到更新过的数据库。
+
+若本次同时更新了质量或统计代码，完成 `ics-agent` 验收后，按第五节 A.1 只重建原本运行中的 `quality-receiver` 和 `quality-worker`，随后检查归档服务日志和统计/质检页面；这两个进程不会因 `ics-agent` 的 `--force-recreate` 自动更新。
 
 ### 10.8 验证四个渠道和新后台
 

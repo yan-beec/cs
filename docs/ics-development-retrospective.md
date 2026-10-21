@@ -84,6 +84,8 @@ Chatwoot 与项目目标的匹配度最高：
 
 ### 4.2 目标架构
 
+最终版的分层架构图已单独整理为：[ICS 最终版项目架构图](ics-final-architecture.md)；需要放大查看时可打开[可缩放版架构图](ics-final-architecture.html)。下方保留核心消息链路，便于在复盘正文中快速阅读。
+
 ```mermaid
 flowchart LR
     C[微信 / APP / H5] --> A[渠道适配与身份映射]

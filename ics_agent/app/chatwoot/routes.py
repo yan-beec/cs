@@ -19,6 +19,7 @@ from ics_agent.app.core.context import (
     HANDOFF_NO_AGENT_MESSAGE,
     IMAGE_HANDOFF_NOTICE_MESSAGE,
     HANDOFF_NOTICE_MESSAGE,
+    HANDOFF_SUCCESS_MESSAGE,
     HANDOFF_RELEASE_STATUSES,
     MUTED_HANDOFF_MESSAGE,
     contact_block_repository,
@@ -465,6 +466,11 @@ def _handoff_notice_message(event: ChatwootWebhookEvent) -> str:
     if has_image_attachment(event) or has_video_attachment(event):
         return IMAGE_HANDOFF_NOTICE_MESSAGE
     return HANDOFF_NOTICE_MESSAGE
+
+
+def _handoff_success_message(event: ChatwootWebhookEvent) -> str:
+    """构造成功接管后的最终提示，避免转接前提前报成功。"""
+    return f"{_handoff_notice_message(event)}\n{HANDOFF_SUCCESS_MESSAGE}"
 
 
 async def _send_handoff_trigger_notice(
@@ -1378,7 +1384,7 @@ async def _process_webhook_job_unlocked(
                 job=job,
                 control=control,
                 content=content,
-                notice_message=_handoff_notice_message(event),
+                notice_message=_handoff_success_message(event),
             )
 
         if handoff_requested:
@@ -1452,7 +1458,7 @@ async def _process_webhook_job_unlocked(
             job=job,
             control=control,
             content=content,
-            notice_message=_handoff_notice_message(event),
+            notice_message=_handoff_success_message(event),
         )
 
     auto_reply_enabled = _can_auto_reply(
@@ -1834,7 +1840,7 @@ async def _complete_handoff(
 ) -> dict[str, object]:
     """执行一次可重试、动作级幂等的 Chatwoot 人工接管。"""
     if notice_message is None:
-        notice_message = _handoff_notice_message(event)
+        notice_message = _handoff_success_message(event)
     account_id, conversation_id = _webhook_conversation_reference(event)
     if not account_id or not conversation_id:
         raise ValueError(
@@ -1995,17 +2001,37 @@ async def _complete_handoff(
 
     notice_sent = control.handoff_notice_sent
     notice_message_id: str | None = None
+    if not control.handoff_trigger_notice_sent and not control.handoff_notice_sent:
+        if not await _handoff_session_is_current(control):
+            return _session_suppressed_result("consultation_ended_or_changed")
+        if settings.chatwoot_handoff_notice_enabled:
+            trigger_notice_result = await asyncio.to_thread(
+                client.send_message,
+                account_id=account_id,
+                conversation_id=conversation_id,
+                content=_handoff_notice_message(event),
+            )
+            trigger_notice_id = _chatwoot_message_id(trigger_notice_result)
+        else:
+            trigger_notice_id = None
+        await asyncio.to_thread(
+            conversation_control_repository.mark_handoff_action,
+            account_id=account_id,
+            conversation_id=conversation_id,
+            action="trigger_notice_sent",
+            message_id=trigger_notice_id,
+        )
     if not control.handoff_notice_sent:
         if not await _handoff_session_is_current(control):
             return _session_suppressed_result("consultation_ended_or_changed")
         if settings.chatwoot_handoff_notice_enabled:
-            notice_result = await asyncio.to_thread(
+            success_notice_result = await asyncio.to_thread(
                 client.send_message,
                 account_id=account_id,
                 conversation_id=conversation_id,
-                content=notice_message,
+                content=HANDOFF_SUCCESS_MESSAGE,
             )
-            notice_message_id = _chatwoot_message_id(notice_result)
+            notice_message_id = _chatwoot_message_id(success_notice_result)
         await asyncio.to_thread(
             conversation_control_repository.mark_handoff_action,
             account_id=account_id,

@@ -25,7 +25,7 @@ _CONTROL_COLUMNS = """
     last_ai_message_id, last_handoff_message_id,
     handoff_conversation_updated, handoff_label_applied,
     handoff_note_created, handoff_assignment_applied,
-    handoff_notice_sent, handoff_trigger_message_id,
+    handoff_notice_sent, handoff_trigger_notice_sent, handoff_trigger_message_id,
     session_started_at, session_closed_at, last_user_message_at,
     last_status_event_at
 """.strip()
@@ -53,6 +53,8 @@ class ConversationControl:
     handoff_note_created: bool
     handoff_assignment_applied: bool
     handoff_notice_sent: bool
+    # 成功接管提示的第一条“正在转接”消息是否已发送。
+    handoff_trigger_notice_sent: bool = False
     # 触发当前人工轮次的入站消息；用于队列重试续跑未完成动作。
     handoff_trigger_message_id: str | None = None
     session_started_at: datetime | None = None
@@ -110,6 +112,7 @@ class ConversationControlRepository:
                             handoff_assignment_applied BOOLEAN NOT NULL
                                 DEFAULT FALSE,
                             handoff_notice_sent BOOLEAN NOT NULL DEFAULT FALSE,
+                            handoff_trigger_notice_sent BOOLEAN NOT NULL DEFAULT FALSE,
                             handoff_trigger_message_id TEXT,
                             handoff_round_id TEXT,
                             session_started_at TIMESTAMPTZ,
@@ -146,6 +149,11 @@ class ConversationControlRepository:
                     cursor.execute(
                         f"ALTER TABLE {CONVERSATION_CONTROL_TABLE} "
                         "ADD COLUMN IF NOT EXISTS handoff_round_id TEXT"
+                    )
+                    cursor.execute(
+                        f"ALTER TABLE {CONVERSATION_CONTROL_TABLE} "
+                        "ADD COLUMN IF NOT EXISTS handoff_trigger_notice_sent "
+                        "BOOLEAN NOT NULL DEFAULT FALSE"
                     )
                     # Never infer an old handoff's round from processing clocks.
                     # Idle rollover keeps this proof attached to its original round.
@@ -258,6 +266,7 @@ class ConversationControlRepository:
                             handoff_note_created = FALSE,
                             handoff_assignment_applied = FALSE,
                             handoff_notice_sent = FALSE,
+                            handoff_trigger_notice_sent = FALSE,
                             handoff_trigger_message_id = NULL,
                             handoff_round_id = NULL,
                             updated_at = CURRENT_TIMESTAMP
@@ -1152,6 +1161,7 @@ class ConversationControlRepository:
             "note_created": "handoff_note_created",
             "assignment_applied": "handoff_assignment_applied",
             "notice_sent": "handoff_notice_sent",
+            "trigger_notice_sent": "handoff_trigger_notice_sent",
         }
         column = fields.get(action)
         if column is None:
@@ -1332,6 +1342,7 @@ class ConversationControlRepository:
                 handoff_note_created = FALSE,
                 handoff_assignment_applied = FALSE,
                 handoff_notice_sent = FALSE,
+                handoff_trigger_notice_sent = FALSE,
                 handoff_trigger_message_id = NULL,
                 handoff_round_id = NULL,
                 updated_at = CURRENT_TIMESTAMP
@@ -1410,19 +1421,22 @@ def _control_from_row(row: Any) -> ConversationControl | None:
         handoff_assignment_applied=bool(row[16]),
         handoff_notice_sent=bool(row[17]),
         handoff_trigger_message_id=(
-            None if len(row) <= 18 or row[18] is None else str(row[18])
+            None if len(row) <= 19 or row[19] is None else str(row[19])
+        ),
+        handoff_trigger_notice_sent=(
+            bool(row[18]) if len(row) > 18 else False
         ),
         session_started_at=(
-            None if len(row) <= 19 or row[19] is None else _utc_datetime(row[19])
-        ),
-        session_closed_at=(
             None if len(row) <= 20 or row[20] is None else _utc_datetime(row[20])
         ),
-        last_user_message_at=(
+        session_closed_at=(
             None if len(row) <= 21 or row[21] is None else _utc_datetime(row[21])
         ),
-        last_status_event_at=(
+        last_user_message_at=(
             None if len(row) <= 22 or row[22] is None else _utc_datetime(row[22])
+        ),
+        last_status_event_at=(
+            None if len(row) <= 23 or row[23] is None else _utc_datetime(row[23])
         ),
     )
 
