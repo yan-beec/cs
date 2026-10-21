@@ -1,12 +1,12 @@
 # 服务器同步更新操作手册
 
-本文用于项目已经部署完成后的日常发布：在 Windows 开发端修改代码，推送到 Git 远端，同步到 Ubuntu 的 /opt/cs，重新构建并验证机器人。
+本文用于项目已经部署完成后的日常发布：在 Windows 开发端修改代码，推送到 Git 远端，同步到 Ubuntu 的 /opt/cs，执行迁移、重新构建并验证机器人。服务器已经启用独立归档/质检库时，优先使用[服务器统一发布](server-release.md)中的 `deploy/server/release.sh`；本手册保留手动步骤，适用于未启用归档库的旧服务器或需要逐步排查的场景。
 
 **归档与客服状态模块首次上线或更新，请按[归档功能更新文档](archive-feature-update.md)执行。** 该文档覆盖独立归档数据库、001–009迁移、专用Webhook、解析服务、环境配置和验收；只重建原ICS容器不能完成归档模块发布。
 
 **本次从单渠道升级为多渠道，请直接按[第十节：本次多渠道版本覆盖升级](#十本次多渠道版本覆盖升级首次执行)执行。** 该节提供直接上传本地版本和 Git 同步两种方式，包含首次资料目录迁移、渠道配置、启动校验及后台导入操作；仅执行日常代码同步不会补齐服务器的渠道数据目录。
 
-转人工强弹窗提醒、工作台按钮及浏览器页面复用的专项更新，按[提醒功能服务器更新部署手册](reminder-server-update.md)执行；除服务器代码和配置外，还需更新客服电脑上的 Windows 客户端与浏览器插件。
+转人工强弹窗提醒、工作台按钮及浏览器页面复用的专项更新，按[提醒模块说明](../reminder/README.md)的服务端/客户端分工执行；服务器后端仍随本手册发布，客服电脑上的 Windows 客户端和浏览器插件还必须按提醒模块说明单独升级。
 
 统计报表、客服质检、坐席分配和在线状态相关的后台更新属于当前后端版本的一部分，日常发布必须同时同步 `quality/`、`statistics/` 和 `ics_agent/`。若首次上线独立归档库、归档接收器或新增 `quality/database/migrations/`，先按[归档功能更新文档](archive-feature-update.md)完成初始化和迁移；统计报表的专项验收另见[统计报表服务器增量更新手册](statistics-feature-update.md)。
 
@@ -32,10 +32,11 @@
 | --- | --- | --- |
 | ics_agent/、knowledge_base_in/、quality/、statistics/ Python 代码 | Git 拉取、同步、构建、重建应用；若 `quality-worker` 正在运行还要重建该进程 | 是 |
 | reminder/backend/、reminder/protocol.py 服务端代码 | Git 拉取、同步 reminder、构建、重建应用 | 是 |
-| reminder/client/、extension/、packaging/ 客户端或插件 | 按专项手册构建安装包、升级客服电脑、重新加载浏览器插件 | 服务器通常无需 build；混合后端变更时需要 |
+| reminder/client/、reminder/extension/、reminder/packaging/ 客户端或插件 | 按提醒模块说明构建安装包、升级客服电脑、重新加载浏览器插件 | 服务器通常无需 build；混合后端变更时需要 |
 | requirements.txt、Dockerfile | Git 拉取、同步、构建、重建应用 | 是 |
 | docker-compose.yml | Git 拉取、同步、重建应用 | 建议执行 |
 | docker-compose.archive.yml、deploy/archive/、quality/database/、quality/deploy/ | 按归档/质检流程同步；执行质量数据库迁移和校验，再构建应用 | 迁移或服务代码变化时是 |
+| deploy/server/sync-code.sh、deploy/server/release.sh | 分别用于安全同步目录、串联同步/迁移/构建/更新；服务器已启用归档库时优先使用统一发布入口 | 按脚本执行 |
 | 服务器 /opt/cs/.env | 编辑后 force-recreate | 否 |
 | deploy/server/bot.env.example | 拉取后人工合并到 .env | 否 |
 | docs/、README | 拉取即可 | 否 |
@@ -45,6 +46,8 @@
 | database/channel_*/prompt_*.md 提示词 | 保存到服务器对应渠道目录，下一次生成回复时读取 | 否 |
 | models/ 模型权重 | 单独打包、上传、校验、解压、重启预热 | 通常否 |
 | 意图模型和 intent_dataset_4000.csv | 配套发布并检查指纹 | 代码需 build |
+| tests/、reminder/tests/、reminder/extension/tests/ | 开发端发布前回归；不复制到生产镜像 | 否 |
+| artifacts/、openspec/、tmp/ | 本地产物、规划和临时目录；不进入服务器发布包 | 否 |
 
 普通源码同步不会覆盖以下运行数据：/opt/cs/.env、models、database、log、knowledge_base_in/output、knowledge_base_in/vector_store、主 PostgreSQL volume 和独立归档 PostgreSQL volume。后端更新也不会改变已经单独部署的前端；`quality/`、`statistics/` 是镜像内代码，不能只同步 `ics_agent/`。
 
@@ -70,8 +73,11 @@ git remote get-url origin
 & C:\Users\lenovo\Anaconda3\envs\cs\python.exe -m unittest discover -s tests -v
 if ($LASTEXITCODE -ne 0) { throw '基础测试失败，停止发布。' }
 $releaseTestStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-& C:\Users\lenovo\Anaconda3\envs\cs\python.exe -m pytest tests quality\tests statistics\tests -q -p no:cacheprovider --basetemp "tmp/pytest-release-$releaseTestStamp"
-if ($LASTEXITCODE -ne 0) { throw '质量或统计测试失败，停止发布。' }
+& C:\Users\lenovo\Anaconda3\envs\cs\python.exe -m pytest tests quality\tests statistics\tests reminder\tests -q -p no:cacheprovider --basetemp "tmp/pytest-release-$releaseTestStamp"
+if ($LASTEXITCODE -ne 0) { throw '主服务、质量、统计或提醒测试失败，停止发布。' }
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw '缺少 Node.js，无法运行浏览器插件测试。' }
+node --test reminder\extension\tests\core.test.mjs
+if ($LASTEXITCODE -ne 0) { throw '浏览器插件测试失败，停止发布。' }
 & C:\Users\lenovo\Anaconda3\envs\cs\python.exe -m compileall -q ics_agent knowledge_base_in reminder quality statistics
 if ($LASTEXITCODE -ne 0) { throw 'Python 编译失败，停止发布。' }
 & C:\Users\lenovo\Anaconda3\envs\cs\python.exe -c "from pathlib import Path; paths=[*Path('deploy/server').glob('*.sh'),*Path('deploy/archive/init').glob('*.sh'),*Path('quality').rglob('*.sh')]; bad=[str(p) for p in paths if b'\r' in p.read_bytes()]; print('Shell CRLF files:',bad); raise SystemExit(bool(bad))"
@@ -81,6 +87,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Git 检查失败，停止发布。' }
 ~~~
 
 部分测试因本地 PostgreSQL 未启动而 skipped 时，要记录原因，不能将 skipped 当作完整联调通过。不要对 `quality/database/migrations/` 批量转换换行；已应用迁移文件的字节变化会造成校验和不一致。
+
+`reminder/tests/` 包含 Windows DPAPI 和命名管道用例，必须在具备真实 Windows 凭据保护能力的开发环境执行；受限沙箱中的 `WinError 2` 只能记录为环境限制并改在目标环境复测。其余提醒、质量、统计或主服务断言失败都要停止发布，不能用跳过测试代替修复。
 
 ### 3．检查新增配置
 
@@ -104,6 +112,13 @@ KNOWLEDGE_BASE_EMBEDDING_MICRO_BATCH_MAX_SIZE=4
 ~~~powershell
 @('docker-compose.archive.yml','deploy\server\sync-code.sh','deploy\server\release.sh','deploy\archive\init\01-archive-roles.sh','quality\deploy\migrate.sh','quality\database\apply-migrations.sh','quality\database\verify-schema.sh') | ForEach-Object {
   if (-not (Test-Path $_)) { throw "缺少发布文件：$_" }
+}
+foreach ($dockerfile in @('Dockerfile','deploy\server\Dockerfile.backend-only')) {
+  foreach ($copyTarget in @('COPY quality','COPY statistics')) {
+    if (-not (Select-String -Path $dockerfile -SimpleMatch $copyTarget -Quiet)) {
+      throw "构建文件未复制新目录：$dockerfile / $copyTarget"
+    }
+  }
 }
 ~~~
 
@@ -199,12 +214,13 @@ test "$actual_commit" = "$expected_commit" && echo '源码 SHA 校验通过' || 
 
 ### 3．同步指定目录
 
-日常发布统一调用仓库内的同步入口，避免手写目录清单漏掉新模块。该脚本只对应用代码目录使用 `--delete`，并显式保留运行数据；它当前会同步 `ics_agent/`、`knowledge_base_in/`、`reminder/`、`quality/`、`statistics/`、`deploy/`、`docs/`、两份 Compose 文件、依赖文件、归档初始化脚本和后端 Dockerfile。
+日常发布统一调用仓库内的同步入口，避免手写目录清单漏掉新模块。该脚本只对应用代码目录使用 `--delete`，并显式保留运行数据；它当前会同步 `ics_agent/`、`knowledge_base_in/`、`reminder/`、`quality/`、`statistics/`、完整 `deploy/`、`docs/`、两份 Compose 文件、依赖文件和后端 Dockerfile。`quality/` 内的 `assignment/`、`capture/`、`database/`、`presence/`、`processing/`、`query/` 子目录和 `statistics/web/` 都随目录同步，不要再单独维护一份手写清单。
 
 ~~~bash
 (
   set -e
   test -f /opt/cs-src/deploy/server/sync-code.sh
+  test -f /opt/cs-src/deploy/server/release.sh
   bash /opt/cs-src/deploy/server/sync-code.sh /opt/cs-src /opt/cs
 )
 ~~~
@@ -221,15 +237,26 @@ test -f /opt/cs/quality/deploy/migrate.sh
 test -f /opt/cs/quality/database/apply-migrations.sh
 test -f /opt/cs/quality/database/verify-schema.sh
 test -d /opt/cs/statistics
+test -f /opt/cs/deploy/server/release.sh
 ~~~
 
-如果服务器已启用独立归档/质检数据库，代码同步后、应用构建前执行一次质量数据库迁移和校验：
+如果服务器已启用独立归档/质检数据库，并选择手动分步发布路径，代码同步后、应用构建前执行一次质量数据库迁移和校验：
 
 ~~~bash
 bash /opt/cs/quality/deploy/migrate.sh /opt/cs
 ~~~
 
+选择下面的 `release.sh` 统一入口时跳过这条手动迁移命令以及第五节 A/A.1 的重复构建命令；统一入口会按相同顺序自动执行。
+
 该脚本会按迁移编号补齐缺失版本并校验已应用版本的 SHA256；任何迁移失败或校验不一致都要停止发布。首次部署归档库、接收器或解析进程时，必须改按[归档功能更新文档](archive-feature-update.md)的完整流程执行。首次升级多渠道时，启动应用前还必须完成第十节的资料目录迁移和渠道配置。上面的代码同步故意保留 `database/`，不会自动复制运行中的 `channels.json` 或渠道提示词。
+
+如果服务器已经配置并启用了独立归档/质检库，推荐在完成第三节备份后直接使用统一发布入口，把本节同步、质量迁移和第五节构建合并为一次串行发布：
+
+~~~bash
+bash /opt/cs-src/deploy/server/release.sh --source /opt/cs-src --target /opt/cs
+~~~
+
+该脚本会加发布锁、调用 `sync-code.sh`、执行质量迁移与校验、构建 `ics-agent:py310` 并更新应用容器。不要在同一次发布中先执行 `release.sh`，再重复执行下面 A.1 的同步/迁移/构建命令。需要同时更新已经启用的原始消息接收器时才增加 `--with-receiver`；该参数不会自动启动或重建 `quality-worker`，运行中的解析进程仍按 A.1 单独重建。未启用独立归档库的旧服务器不要调用 `release.sh`，继续使用本节手动同步和第五节 A 的基础 Compose 流程。
 
 不要执行：
 
@@ -577,7 +604,8 @@ grep -E 'webhook.received|job.answer_ready|failed_fallback|chatwoot_reply|llm_re
 Set-Location D:\project\CS
 git status --short
 & C:\Users\lenovo\Anaconda3\envs\cs\python.exe -m unittest discover -s tests -v
-& C:\Users\lenovo\Anaconda3\envs\cs\python.exe -m pytest tests quality\tests statistics\tests -q -p no:cacheprovider
+& C:\Users\lenovo\Anaconda3\envs\cs\python.exe -m pytest tests quality\tests statistics\tests reminder\tests -q -p no:cacheprovider
+node --test reminder\extension\tests\core.test.mjs
 git add -A
 git diff --cached --stat
 git commit -m "feat: update chatbot service"
@@ -595,12 +623,14 @@ git -C /opt/cs-src fetch origin test
 git -C /opt/cs-src checkout test
 git -C /opt/cs-src pull --ff-only origin test
 
-# 执行第四节的 sync-code.sh 同步代码块
-bash /opt/cs-src/deploy/server/sync-code.sh /opt/cs-src /opt/cs
-bash /opt/cs/quality/deploy/migrate.sh /opt/cs  # 已启用归档/质检时执行
-docker compose -f docker-compose.yml config --quiet
-docker compose --progress plain -f docker-compose.yml build ics-agent
-docker compose -f docker-compose.yml up -d --force-recreate ics-agent
+# 已启用独立归档/质检库时使用统一发布入口；不要再重复执行下面的手动同步/迁移/构建
+bash /opt/cs-src/deploy/server/release.sh --source /opt/cs-src --target /opt/cs
+
+# 未启用独立归档库的旧服务器，改执行第四节同步和第五节 A 的手动命令：
+# bash /opt/cs-src/deploy/server/sync-code.sh /opt/cs-src /opt/cs
+# docker compose -f docker-compose.yml config --quiet
+# docker compose --progress plain -f docker-compose.yml build ics-agent
+# docker compose -f docker-compose.yml up -d --no-deps --force-recreate ics-agent
 docker compose -f docker-compose.yml ps -a
 curl -i --max-time 20 http://172.20.48.12:3001/health
 tail -n 120 log/uvicorn-admin.stderr.log
@@ -1118,4 +1148,4 @@ docker compose -f docker-compose.yml restart ics-agent
 
 随后按第六节检查健康接口和原兴聊 Inbox。本步骤不执行 build，以免重新生成新版镜像；直接上传方式的旧代码保存在本次 `previous-code.tar.gz`，Git 方式另有旧提交记录。若升级后已经修改了新 FAQ 或知识库，旧镜像可能读到旧表或旧集合，需要先保存升级后的资料并确认数据恢复方案，不能直接用发布前数据库备份覆盖正在使用的数据库。
 
-更详细的渠道目录、API 参数和资料维护规则见[多渠道使用说明](multi-channel-setup.md)。
+更详细的渠道目录、API 参数和资料维护规则见[项目 README 的多渠道说明](../README.md#1-多渠道独立接待)及第十节。
