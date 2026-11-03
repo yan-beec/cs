@@ -1,2 +1,5 @@
 # The trained intent model verifies the dataset's exact bytes, including line endings.
 database/channel_xingliao/intent_dataset_4000.csv text eol=crlf
+# Chatwoot maintenance files are uploaded to Linux without newline conversion.
+deploy/chatwoot/message_retention.rb text eol=lf
+deploy/chatwoot/run-message-retention.sh text eol=lf
