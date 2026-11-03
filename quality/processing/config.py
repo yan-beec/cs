@@ -17,6 +17,9 @@ class ProcessingSettings(BaseSettings):
     processor_lease_seconds: int = Field(default=120, ge=30, le=3600)
     processor_max_attempts: int = Field(default=8, ge=1, le=100)
     processor_poll_seconds: float = Field(default=2, ge=0.1, le=30)
+    processor_recent_rounds: int = Field(default=50, ge=1, le=200)
+    processor_index_batch_size: int = Field(default=500, ge=1, le=2000)
+    processor_index_batch_bytes: int = Field(default=8 * 1024 * 1024, ge=1024, le=64 * 1024 * 1024)
     processor_max_conversation_events: int = Field(default=20000, ge=100, le=500000)
     processor_max_conversation_bytes: int = Field(default=64 * 1024 * 1024, ge=1024 * 1024, le=1024 * 1024 * 1024)
     idle_timeout_seconds: int = Field(default=21600, gt=0, validation_alias=AliasChoices(

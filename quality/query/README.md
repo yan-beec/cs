@@ -36,7 +36,7 @@
 
 继续使用现有 `.env`，保留 `POSTGRES_*` 及现有采集配置。新增配置可参考 `.env.example`，其中 `ARCHIVE_QUERY_ENABLED` 默认 `false`。
 
-1. 备份已有归档库，执行现有迁移入口 `quality/deploy/migrate.sh`，应用新增 `002_query`；不要编辑或重新生成已应用的 `001_capture`。
+1. 备份已有归档库，执行现有迁移入口 `quality/deploy/migrate.sh`，应用全部迁移（包含 `010_round_replay_windows`）；不要编辑或重新生成已应用的迁移。
 2. 构建含新代码的 ICS 镜像，启动独立解析工作进程。
 3. 在运行环境设 `ARCHIVE_QUERY_ENABLED=true`，使用现有 `ARCHIVE_READER_USER/PASSWORD`，重建或重启 ICS 以加载配置。
 4. 登录 `/admin`，进入“对话归档”检查任务积压和归档查询。首次解析旧的 queued 事件可能需要等待。
@@ -129,7 +129,12 @@ docker compose --env-file .env -f docker-compose.yml -f docker-compose.archive.y
 
 可额外传 `--account-id`、`--conversation-id` 限定范围。重放不会更新或删除 `archive.*` 原始证据。失败任务的错误仅保留异常类别，避免聊天内容或数据库凭据进入日志；重放可用于修复规则或配置后重新处理。
 
-首版为保证乱序处理可重复，会在重建一个会话时重放它的已归档事件，并批量完成已读范围内的可处理任务。因此单次处理成本随该会话历史增长；`ARCHIVE_PROCESSOR_MAX_CONVERSATION_EVENTS` 默认限制 20000 个事件，`ARCHIVE_PROCESSOR_MAX_CONVERSATION_BYTES` 默认限制 64 MiB 载荷，超限任务会明确失败，不能静默截断历史。大量长期会话应在后续版本增加增量检查点。
+日常按同来源、同账号客户的最近 50 轮重算，旧历史继续保留并可查询。
+首次整理、显式重建及旧消息/评价修复分批进行，进度和边界状态持久化。
+`ARCHIVE_PROCESSOR_MAX_CONVERSATION_EVENTS`（默认 20000）和
+`ARCHIVE_PROCESSOR_MAX_CONVERSATION_BYTES`（默认 64 MiB）现在限制单个解析批次；
+超限时自动减少该批的轮数，累计历史超过上限仍可继续。单轮本身超限仍重试/失败，
+原始证据保留；不会静默截断消息或移除内存保护。详见[处理器说明](../processing/README.md)。
 
 - 用户默认按来源、账号和 contact ID 关联，同名、同手机号不自动合并；未经验证的业务标识不作为合并依据。
 - 轮次由客户消息开始；已解决后的新咨询、距最后客户消息达到空闲阈值的咨询开启新轮。转人工、改派、私密备注、评价与消息编辑不另开轮。

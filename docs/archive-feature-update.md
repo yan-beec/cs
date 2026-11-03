@@ -95,7 +95,7 @@ if ($LASTEXITCODE -ne 0) { throw 'ICS 或归档模块测试失败，停止发布
 Get-ChildItem quality\database\migrations\*.sql | Select-Object Name
 ```
 
-数据库集成测试有专用测试库和显式开关要求；未启用时出现 `skipped`，不能计为数据库联调通过。不要把测试库配置改成生产库后运行测试。应确认发布文件包含 `001_capture.sql` 至 `009_dual_round_reviews.sql`，并记录这次实际执行的测试结果。
+数据库集成测试有专用测试库和显式开关要求；未启用时出现 `skipped`，不能计为数据库联调通过。不要把测试库配置改成生产库后运行测试。应确认发布文件包含 `001_capture.sql` 至 `010_round_replay_windows.sql`，并记录这次实际执行的测试结果。
 
 Windows 到 Linux 发布还要检查 Shell 脚本换行。当前 `.gitattributes` 没有统一 Shell/SQL 的 LF 规则，显式用 `bash` 调用也不能修复脚本正文中的 CRLF。下面只检查，不改写文件：
 
@@ -435,7 +435,7 @@ sha256sum "$HOME/cs-archive-update.tar.gz"
   test -f "$archive_source_dir/deploy/server/sync-code.sh"
   test -f "$archive_source_dir/deploy/server/release.sh"
   test -f "$archive_source_dir/docker-compose.archive.yml"
-  test -f "$archive_source_dir/quality/database/migrations/009_dual_round_reviews.sql"
+  test -f "$archive_source_dir/quality/database/migrations/010_round_replay_windows.sql"
   printf '%s\n' "$archive_source_dir" > /opt/cs/deployment-records/archive-source-dir.txt
   sha256sum "$HOME/cs-archive-update.tar.gz" > /opt/cs/deployment-records/archive-package.sha256
   printf '新版源码目录：%s\n' "$archive_source_dir"
@@ -464,7 +464,7 @@ git -C /opt/cs-src log -1 --oneline
 expected_archive_commit='粘贴第2.3节记录的完整SHA'
 actual_archive_commit=$(git -C /opt/cs-src rev-parse HEAD)
 test "$actual_archive_commit" = "$expected_archive_commit" || { echo '源码 SHA 不一致，停止发布。'; exit 1; }
-test -f /opt/cs-src/quality/database/migrations/009_dual_round_reviews.sql
+test -f /opt/cs-src/quality/database/migrations/010_round_replay_windows.sql
 printf '%s\n' /opt/cs-src > /opt/cs/deployment-records/archive-source-dir.txt
 printf '%s\n' "$actual_archive_commit" > /opt/cs/deployment-records/archive-new-source-commit.txt
 ```
@@ -486,7 +486,7 @@ Git方式的拉取更新 `/opt/cs-src`，运行目录 `/opt/cs`由本节同步�
   archive_source_dir=$(cat /opt/cs/deployment-records/archive-source-dir.txt)
   printf '同步来源：%s\n同步目标：/opt/cs\n' "$archive_source_dir"
   for archive_required in deploy/server/sync-code.sh docker-compose.archive.yml \
-      quality/deploy/migrate.sh quality/database/migrations/009_dual_round_reviews.sql; do
+      quality/deploy/migrate.sh quality/database/migrations/010_round_replay_windows.sql; do
     if [ ! -f "$archive_source_dir/$archive_required" ]; then
       printf '源码缺少文件：%s/%s；核对实际拉取目录、分支和提交版本。\n' "$archive_source_dir" "$archive_required" >&2
       exit 1
@@ -495,7 +495,7 @@ Git方式的拉取更新 `/opt/cs-src`，运行目录 `/opt/cs`由本节同步�
   bash "$archive_source_dir/deploy/server/sync-code.sh" "$archive_source_dir" /opt/cs
   cmp -s /opt/cs/Dockerfile "$archive_source_dir/deploy/server/Dockerfile.backend-only"
   test -f /opt/cs/docker-compose.archive.yml
-  test -f /opt/cs/quality/database/migrations/009_dual_round_reviews.sql
+  test -f /opt/cs/quality/database/migrations/010_round_replay_windows.sql
   test -f /opt/cs/database/channels.json
   printf '%s\n' '代码同步完成，服务器原配置与数据目录保留。'
 )
@@ -571,6 +571,10 @@ ARCHIVE_PROCESSOR_POOL_SIZE=1
 ARCHIVE_PROCESSOR_LEASE_SECONDS=120
 ARCHIVE_PROCESSOR_POLL_SECONDS=2
 ARCHIVE_PROCESSOR_MAX_ATTEMPTS=8
+ARCHIVE_PROCESSOR_RECENT_ROUNDS=50
+ARCHIVE_PROCESSOR_INDEX_BATCH_SIZE=500
+ARCHIVE_PROCESSOR_INDEX_BATCH_BYTES=8388608
+# 单个解析批次的预算；超限时自动缩小轮次批次，旧历史继续保留。
 ARCHIVE_PROCESSOR_MAX_CONVERSATION_EVENTS=5000
 ARCHIVE_PROCESSOR_MAX_CONVERSATION_BYTES=16777216
 ```
@@ -865,7 +869,7 @@ fi
 4. 按编号依次执行尚未应用的 SQL，并核对已应用文件 SHA256。
 5. 验证 schema、证据只追加权限、任务权限与指定角色登录，再清理临时目录。
 
-首次执行应看到初始化和 `Applying 001_capture.sql`至 `Applying 009_dual_round_reviews.sql`，最终出现 `Quality database migration and verification passed.`。再次运行应核对后跳过已应用版本。数据库日志可用 `docker compose --project-directory /opt/cs --env-file .env -f docker-compose.yml -f docker-compose.archive.yml logs --tail 100 archive-postgres`查看；初始化失败时保留当前卷排查，不删卷重跑。
+首次执行应看到初始化和 `Applying 001_capture.sql`至 `Applying 010_round_replay_windows.sql`，最终出现 `Quality database migration and verification passed.`。再次运行应核对后跳过已应用版本。数据库日志可用 `docker compose --project-directory /opt/cs --env-file .env -f docker-compose.yml -f docker-compose.archive.yml logs --tail 100 archive-postgres`查看；初始化失败时保留当前卷排查，不删卷重跑。
 
 若旧版部署在此处报 `ls: can't open '/docker-entrypoint-initdb.d/': Permission denied`，且主机初始化目录/脚本为700/600，按下方顺序停止归档容器、修正这两处代码权限，再重跑迁移。不需要sudo、不删除卷，不调整原业务数据库：
 
@@ -905,12 +909,13 @@ fi
 | `007_presence_agent_management` | 本地坐席删除标记与受限权限；保留历史，新采集发现现有坐席时自动恢复 |
 | `008_round_reviews` | 每轮人工质检结果与文本备注；永久追加修改版本，独立于轮次索引重建，导出最新备注 |
 | `009_dual_round_reviews` | 将AI质检和人工质检拆为两个独立结果；原单项结果归入人工质检，AI默认待定，保留原备注及历史版本 |
+| `010_round_replay_windows` | 客户最近50轮重算；完整历史保留，分批建立定位索引并保存可恢复进度 |
 
 本次坐席管理更新必须先执行 `007_presence_agent_management`，再启动更新后的 ICS；已运行至 006 的服务器仍需执行本节迁移，不能只替换后台页面。
 
-新版应用须完成 `008_round_reviews`和 `009_dual_round_reviews`。已完成001–007的服务器新增008、009；已完成008的只新增009。不重新初始化数据卷，不新增或轮换密码。更新操作见12.1。
+新版应用须完成截至 `010_round_replay_windows` 的全部迁移。已完成001–009的服务器新增010，再更新 `quality-worker`；首次建立索引会分批处理历史。不重新初始化数据卷，不新增或轮换密码。更新操作见12.1。
 
-已应用且校验值一致的版本显示跳过。出现 `checksum differs` 时恢复原已应用文件并新增后续迁移，不改历史校验值。每个 SQL 自身为事务，但 001–009 整个过程不是一个总事务；中途失败可能已有前面版本提交，修复后重跑会继续核对和执行。
+已应用且校验值一致的版本显示跳过。出现 `checksum differs` 时恢复原已应用文件并新增后续迁移，不改历史校验值。每个 SQL 自身为事务，但 001–010 整个过程不是一个总事务；中途失败可能已有前面版本提交，修复后重跑会继续核对和执行。
 
 迁移失败时保持应用进程停止，不继续构建启动；保留完整非密钥错误用于排查。迁移验证中的测试记录在事务回滚，不作为真实业务采集记录。脚本验证 ingest、reader、quality，以及已配置的 presence 密码登录；assignment 的真实同步还需第十一节业务验收。
 
@@ -927,7 +932,7 @@ compose=(docker compose --project-directory /opt/cs --env-file .env \
     -c "SELECT version,applied_at FROM ops.schema_migrations ORDER BY version;"'
 ```
 
-应包含完整 001–009。迁移历史用运维账号读取；不要假定 `archive_reader` 有迁移历史权限。每次新终端重新定义 `compose` 数组；下文数组写法仅适用于 Bash。
+应包含完整 001–010。迁移历史用运维账号读取；不要假定 `archive_reader` 有迁移历史权限。每次新终端重新定义 `compose` 数组；下文数组写法仅适用于 Bash。
 
 再检查本次开发环境曾遗漏的007字段和权限。**版本齐全、字段存在、权限正确三项都要通过**：
 
@@ -939,8 +944,8 @@ BEGIN
   IF (SELECT count(*) FROM ops.schema_migrations WHERE version IN
       ('001_capture','002_query','003_assignment_writer','004_agent_presence',
        '005_presence_retention','006_presence_retention_state','007_presence_agent_management',
-       '008_round_reviews','009_dual_round_reviews')) <> 9 THEN
-    RAISE EXCEPTION '001-009 migrations are incomplete';
+       '008_round_reviews','009_dual_round_reviews','010_round_replay_windows')) <> 10 THEN
+    RAISE EXCEPTION '001-010 migrations are incomplete';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='ops'
       AND table_name='agent_presence_registry' AND column_name='hidden_at') THEN
@@ -1333,7 +1338,7 @@ test -z "$(git status --porcelain)"
 git pull --ff-only
 archive_expected_commit='替换为本次发布提交SHA'
 test "$(git rev-parse HEAD)" = "$archive_expected_commit"
-test -f quality/database/migrations/009_dual_round_reviews.sql
+test -f quality/database/migrations/010_round_replay_windows.sql
 bash deploy/server/release.sh --source /opt/cs-src --target /opt/cs --with-receiver
 
 cd /opt/cs
@@ -1344,9 +1349,9 @@ compose=(docker compose --project-directory /opt/cs --env-file .env \
 )
 ```
 
-须看到已应用版本的 `unchanged migration skipped`、新增版本的 `Applying`以及 `Quality database migration and verification passed.`。已有001–007时新增008和009；已有008时只新增009。重复发布时001–009均核对后跳过。脚本会修正初始化代码的755/644权限，保留 `.env`、运行资料、数据库卷及既有聊天记录。
+须看到已应用版本的 `unchanged migration skipped`、新增版本的 `Applying`以及 `Quality database migration and verification passed.`。已有001–009时新增010；重复发布时001–010均核对后跳过。脚本会修正初始化代码的755/644权限，保留 `.env`、运行资料、数据库卷及既有聊天记录。
 
-009会将原单项结果保留为“人工质检”，新增“AI质检”为待定，原备注、版本号和保存时间保留。两项均由管理员手动标记，可同时不合格；共用一份本轮文本备注。发布后刷新已打开的后台页面再保存，旧页面的单项请求会被拒绝，避免覆盖双项结果。筛选栏新增AI质检、人工质检条件，已应用009的服务器只更新应用代码，不新增数据库迁移。
+009会将原单项结果保留为“人工质检”，新增“AI质检”为待定，原备注、版本号和保存时间保留。两项均由管理员手动标记，可同时不合格；共用一份本轮文本备注。发布后刷新已打开的后台页面再保存，旧页面的单项请求会被拒绝，避免覆盖双项结果。已应用009的服务器仍需执行010，供最近50轮解析使用。
 
 随后依次执行8.4版本及权限核对、9.3健康与镜像核对、11.4质检备注及Excel验收。第十一节其他已有功能仍须回归检查。服务器无需运行开发测试或导入本地数据库。
 

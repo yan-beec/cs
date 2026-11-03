@@ -85,6 +85,35 @@ def event_time(event):
     return source_event_time(event) or timestamp(event.get("received_at")) or datetime(1970, 1, 1, tzinfo=UTC)
 
 
+def state_observation(event):
+    """The source state clock is independent of an embedded message's clock."""
+    payload, conversation = obj(event["payload"]), conversation_payload(event)
+    event_type, at = event["event_type"], event_time(event)
+    changed = payload.get("changed_attributes")
+    status_change = event_type == "conversation_status_changed" or (
+        isinstance(changed, list) and any(isinstance(item, dict) and "status" in item for item in changed))
+    attrs = {**obj(conversation.get("custom_attributes")), **obj(payload.get("custom_attributes"))}
+    assignee = obj(obj(conversation.get("meta")).get("assignee")) or obj(conversation.get("assignee"))
+    if not assignee and event_type.startswith("conversation_"):
+        assignee = obj(obj(payload.get("meta")).get("assignee")) or obj(payload.get("assignee"))
+    present = any("assignee" in candidate or "assignee_id" in candidate for candidate in (
+        conversation, obj(conversation.get("meta")), payload if event_type.startswith("conversation_") else {},
+        obj(payload.get("meta")) if event_type.startswith("conversation_") else {}))
+    if not assignee:
+        raw_id = conversation.get("assignee_id", payload.get("assignee_id") if event_type.startswith("conversation_") else None)
+        if positive_id(raw_id):
+            assignee = {"id": raw_id}
+    if sender_role({"sender": assignee}) == "bot":
+        assignee = {}
+    return (at if status_change else timestamp(conversation.get("updated_at")) or at), {
+        "status": (conversation.get("status") or payload.get("status")) if status_change and source_event_time(event) else None,
+        "assignee": assignee, "assignment_present": present,
+        "confirmed": any(attrs.get(key) is True for key in ("ics_handoff_completed", "handoff_completed", "handoff_accepted")),
+        "requested": attrs.get("handoff_requested") is True or attrs.get("handoff_required") is True,
+        "reason": text(attrs.get("handoff_reason")),
+    }
+
+
 def contact_payload(payload, conversation):
     selected = None
     for candidate in (payload.get("contact"), conversation.get("contact"),
@@ -177,7 +206,8 @@ def is_rating(payload):
 
 def attachment_metadata(payload):
     output = []
-    for position, raw in enumerate(payload.get("attachments") or []):
+    attachments = payload.get("attachments")
+    for position, raw in enumerate(attachments if isinstance(attachments, list) else []):
         if not isinstance(raw, dict):
             continue
         output.append({"attachment_key": str(raw.get("id") or f"position:{position}"),
@@ -202,14 +232,18 @@ class Projection:
     ratings: list = field(default_factory=list)
     rating_snapshots: list = field(default_factory=list)
     conversation: dict = field(default_factory=dict)
+    continuation: dict = field(default_factory=dict)
 
 
-def project_conversation(events: list[dict], idle_timeout_seconds=21600, channel_bindings=None) -> Projection:
+def project_conversation(events: list[dict], idle_timeout_seconds=21600, channel_bindings=None,
+                         *, replay_seed=None, round_no_offset=0, following_started_at=None,
+                         rating_context=None, assignment_context=None) -> Projection:
     """Replay exactly one source/account/conversation without accessing any database."""
     output = Projection()
     if not events:
         return output
     channel_bindings = channel_bindings or {}
+    replay_seed = replay_seed or {}
     events = sorted(events, key=lambda item: (event_time(item), item["id"]))
     first = events[0]
     source, account, conversation_id = first["source_key"], first["account_id"], first["conversation_id"]
@@ -243,6 +277,12 @@ def project_conversation(events: list[dict], idle_timeout_seconds=21600, channel
     if contact_id:
         output.identities.append({"source_key": source, "account_id": account, "identity_kind": "contact",
                                   "identity_value": contact_id, "customer_id": customer_id, "evidence_event_id": contact_event["id"]})
+    elif replay_seed.get("customer"):
+        output.customer = deepcopy(replay_seed["customer"])
+        output.customer["last_message_at"] = timestamp(output.customer.get("last_message_at"))
+        customer_id = output.customer["customer_id"]
+        contact_id = output.customer["contact_id"]
+    inbox_id = inbox_id or replay_seed.get("inbox_id")
     channel_key = channel_bindings.get((str(account), str(inbox_id)))
     logical = {}
     creation_observations = {}
@@ -258,37 +298,10 @@ def project_conversation(events: list[dict], idle_timeout_seconds=21600, channel
                 "account_id": account, "conversation_id": conversation_id, "inbox_id": inbox_id,
                 "channel_key": channel_key, "event_type": event_type,
                 "source_time": timestamp(conversation.get("updated_at")) or source_event_time(event), "data": conversation})
-        # Only explicit status transitions close rounds; message-embedded status
-        # is a snapshot and may describe a newer or unrelated source operation.
-        status_change = event_type == "conversation_status_changed"
-        for changed in payload.get("changed_attributes") or []:
-            status_change = status_change or isinstance(changed, dict) and "status" in changed
-        attrs = {**obj(conversation.get("custom_attributes")), **obj(payload.get("custom_attributes"))}
-        assignee = obj(obj(conversation.get("meta")).get("assignee")) or obj(conversation.get("assignee"))
-        if not assignee and event_type.startswith("conversation_"):
-            assignee = obj(obj(payload.get("meta")).get("assignee")) or obj(payload.get("assignee"))
-        assignment_present = any("assignee" in candidate or "assignee_id" in candidate for candidate in (
-            conversation, obj(conversation.get("meta")), payload if event_type.startswith("conversation_") else {},
-            obj(payload.get("meta")) if event_type.startswith("conversation_") else {}))
-        if not assignee:
-            raw_id = conversation.get("assignee_id", payload.get("assignee_id") if event_type.startswith("conversation_") else None)
-            if positive_id(raw_id):
-                assignee = {"id": raw_id}
-        if sender_role({"sender": assignee}) == "bot":
-            # Chatwoot includes AgentBot assignments in the same assignee slot.
-            # This explicitly removes the current human assignment, without
-            # erasing historical human participation or an observed takeover.
-            assignee = {}
-        state_at = at if status_change else timestamp(conversation.get("updated_at")) or at
-        timeline.append((state_at, event["id"], "state", {
-            "status": conversation.get("status") or payload.get("status") if status_change and source_event_time(event) else None,
-            "assignee": assignee,
-            "assignment_present": assignment_present,
-            "confirmed": any(attrs.get(key) is True for key in ("ics_handoff_completed", "handoff_completed", "handoff_accepted")),
-            "requested": attrs.get("handoff_requested") is True or attrs.get("handoff_required") is True,
-            "reason": text(attrs.get("handoff_reason")),
-        }))
-        if event_type.startswith("message_"):
+        state_at, state = state_observation(event)
+        if event.get("_state_in_window", True):
+            timeline.append((state_at, event["id"], "state", state))
+        if event_type.startswith("message_") and event.get("_message_in_window", True):
             message_payload = {**obj(payload.get("message")), **payload}
             message_id = positive_id(event.get("message_id")) or positive_id(message_payload.get("id"))
             if not message_id:
@@ -340,10 +353,10 @@ def project_conversation(events: list[dict], idle_timeout_seconds=21600, channel
             previous["data"].update(attachments=retained_attachments, content_type=snapshot["content_type"],
                                     is_rating=snapshot["is_rating"], version_observed_at=iso(at),
                                     timestamp_status="known" if sent_at else "unknown", content_is_pre_delete=deleted and retained_content is not None)
-            if snapshot["is_rating"]:
+            if snapshot["is_rating"] and event.get("_rating_in_window", True):
                 rating_observations.append(_rating(event, message_payload, at, message_id))
-        elif is_rating(payload):
-            rating_observations.append(_rating(event, payload, at, None))
+        elif is_rating(payload) and event.get("_rating_in_window", True):
+            rating_observations.append(_rating(event, payload, at, event.get("message_id")))
 
     # An update can be our first observation of a real public agent reply.
     # Its stable message identity and creation timestamp prove one message,
@@ -362,9 +375,9 @@ def project_conversation(events: list[dict], idle_timeout_seconds=21600, channel
             observed = {**message, "is_rating": False, "attachments": message["data"]["attachments"]}
             timeline.append((message["sent_at"], message["original_event_id"], "observed_message", (message["message_id"], observed)))
 
-    current, last_customer_at = None, None
-    human_taken_over = False
-    current_assignee = {}
+    current, last_customer_at = None, timestamp(replay_seed.get("last_customer_at"))
+    human_taken_over = bool(replay_seed.get("human_taken_over"))
+    current_assignee = deepcopy(replay_seed.get("current_assignee", {}))
     agent_rows = {}
     # Chatwoot creation timestamps may have only second precision. Within a
     # timestamp, source message IDs retain message order even when webhooks
@@ -399,8 +412,14 @@ def project_conversation(events: list[dict], idle_timeout_seconds=21600, channel
         service = not snapshot["is_private"] and not snapshot["is_rating"] and snapshot["direction"] != "activity" and snapshot["sender_role"] != "system"
         customer_message = service and snapshot["sender_role"] == "contact" and snapshot["direction"] == "incoming"
         if customer_message and action == "message":
-            boundary = "first_customer_message" if current is None else "resolved" if current["status"] == "resolved" else "idle" if last_customer_at and (at - last_customer_at).total_seconds() >= idle_timeout_seconds else None
+            previous_status = current["status"] if current else replay_seed.get("previous_status")
+            boundary = ("resolved" if previous_status == "resolved" else "idle"
+                        if last_customer_at and (at - last_customer_at).total_seconds() >= idle_timeout_seconds
+                        else "first_customer_message" if current is None else None)
             if boundary:
+                entry_seed = {"schema_version": 1, "human_taken_over": human_taken_over,
+                    "current_assignee": deepcopy(current_assignee), "last_customer_at": iso(last_customer_at),
+                    "previous_status": previous_status, "customer": deepcopy(output.customer), "inbox_id": inbox_id}
                 inherited = human_taken_over and boundary == "idle"
                 if current and boundary == "idle":
                     current["status"] = "idle_boundary"
@@ -409,11 +428,11 @@ def project_conversation(events: list[dict], idle_timeout_seconds=21600, channel
                     human_taken_over = False
                 current = {"round_id": stable_id("round:", source, account, conversation_id, message_id),
                     "source_key": source, "account_id": account, "conversation_id": conversation_id,
-                    "customer_id": customer_id, "round_no": len(output.rounds) + 1, "inbox_id": inbox_id,
+                    "customer_id": customer_id, "round_no": round_no_offset + len(output.rounds) + 1, "inbox_id": inbox_id,
                     "channel_key": channel_key, "started_at": at, "last_message_at": at,
                     "reception_type": "human" if inherited else "ai_only", "reply_composition": "none",
                     "status": "active", "rating_status": "not_invited", "rating": None,
-                    "data": {"boundary_rule": boundary, "start_reason": boundary, "round_rule_version": "1",
+                    "data": {"boundary_rule": boundary, "start_reason": boundary, "round_rule_version": "1", "replay_seed": entry_seed,
                              "idle_timeout_seconds": idle_timeout_seconds,
                              "takeover_inherited": inherited, "has_agent_reply": False, "counts": {"contact": 0, "bot": 0, "agent": 0, "private": 0, "attachments": 0},
                              "responsible_agent_id": None, "responsible_agent_name": None,
@@ -480,6 +499,13 @@ def project_conversation(events: list[dict], idle_timeout_seconds=21600, channel
                 _agent(agent_rows, current, {"id": snapshot["sender_id"], "name": snapshot["sender_name"]}, reply_at=at)
             elif role == "bot" and current["reception_type"] != "human":
                 current["reception_type"] = "ai_only"
+    if current and following_started_at and current["status"] != "resolved":
+        current["status"] = "idle_boundary"
+        current["data"].update(boundary_at=iso(following_started_at), end_reason="idle_timeout")
+    output.continuation = {"schema_version": 1, "human_taken_over": human_taken_over,
+        "current_assignee": current_assignee, "last_customer_at": iso(last_customer_at),
+        "previous_status": current["status"] if current else replay_seed.get("previous_status"),
+        "customer": deepcopy(output.customer), "inbox_id": inbox_id}
     for round_row in output.rounds:
         # Compatibility indicator of a round ending, independent of reception.
         round_row["data"]["classification_finalized"] = round_row["status"] in ("resolved", "idle_boundary")
@@ -495,8 +521,8 @@ def project_conversation(events: list[dict], idle_timeout_seconds=21600, channel
     output.messages = list(logical.values())
     output.agents = list(agent_rows.values())
     output.rating_snapshots = deepcopy(rating_observations)
-    _link_assignments(output, events)
-    _link_ratings(output, rating_observations)
+    _link_assignments(output, events, following_started_at, assignment_context)
+    _link_ratings(output, rating_observations, rating_context)
     service_times = [m["sent_at"] for m in output.messages if m["sent_at"] and not m["data"]["is_rating"] and m["direction"] != "activity" and not m["is_private"]]
     if service_times:
         output.customer["last_message_at"] = max(service_times)
@@ -560,7 +586,7 @@ def _assignment(event):
             "assigned_at": assigned, "order_at": assigned or recorded}
 
 
-def _link_assignments(output, events):
+def _link_assignments(output, events, following_started_at=None, context=None):
     """Freeze responsibility from scoped ICS evidence after real rounds exist.
 
     Arrival/recording time never identifies a round. The trigger message and
@@ -570,13 +596,17 @@ def _link_assignments(output, events):
     if not output.rounds:
         return
     tolerance = timedelta(milliseconds=1)
-    rounds = {row["round_id"]: row for row in output.rounds}
-    messages = {row["message_id"]: row for row in output.messages}
+    context = context or {}
+    rounds = {row["round_id"]: row for row in context.get("rounds", [])}
+    rounds.update((row["round_id"], row) for row in output.rounds)
+    messages = {row["message_id"]: row for row in context.get("messages", [])}
+    messages.update((row["message_id"], row) for row in output.messages)
     snapshots = {row["event_id"]: row for row in output.snapshots}
-    limits = {}
+    limits = {row["round_id"]: (timestamp(row["data"].get("closed_at")), row["_following_started_at"])
+              for row in context.get("rounds", [])}
     for index, row in enumerate(output.rounds):
         closed = timestamp(row["data"].get("closed_at"))
-        following = output.rounds[index + 1]["started_at"] if index + 1 < len(output.rounds) else None
+        following = output.rounds[index + 1]["started_at"] if index + 1 < len(output.rounds) else following_started_at
         limits[row["round_id"]] = closed, following
 
     def inside(row, at):
@@ -631,7 +661,10 @@ def _link_assignments(output, events):
         agent_id = positive_id(snapshot["sender_id"])
         if snapshot["sender_role"] == "agent" and agent_id and snapshot["sender_name"]:
             names[str(agent_id)] = snapshot["sender_name"]
-    for round_id, row in rounds.items():
+    names.update(context.get("names", {}))
+    # References validate global keys but only this window may be changed.
+    for row in output.rounds:
+        round_id = row["round_id"]
         if round_id in conflicts:
             row["data"]["responsibility_basis"] = "assignment_conflict"
         elif round_id in confirmed:
@@ -684,11 +717,13 @@ def _rating(event, payload, at, message_id):
                 "rating_observed_at": iso(at) if rating is not None or feedback_observed else None}}
 
 
-def _link_ratings(output, observations):
+def _link_ratings(output, observations, context=None):
     latest = {}
     candidates = {}
-    invitations = {}
-    aliases = {}
+    global_context = context is not None
+    context = context or {}
+    invitations = {key: set(value) for key, value in context.get("invitations", {}).items()}
+    aliases = {key: set(value) for key, value in context.get("aliases", {}).items()}
     for item in observations:
         matches = {r["round_id"] for r in output.rounds
                    if item["external_round_id"] == r["round_id"] and r["status"] == "resolved"}
@@ -699,7 +734,7 @@ def _link_ratings(output, observations):
                        and timestamp(r["data"].get("closed_at")) is not None
                        and abs(timestamp(r["data"]["closed_at"]) - item["closed_at"]) <= timedelta(milliseconds=1)}
         candidates[item["event_id"]] = matches
-        if len(matches) == 1:
+        if len(matches) == 1 and not global_context:
             if item["invitation_message_id"]:
                 invitations.setdefault(item["invitation_message_id"], set()).update(matches)
             if item["external_round_id"]:
@@ -724,11 +759,18 @@ def _link_ratings(output, observations):
         invitation_matches = invitations.get(item["invitation_message_id"], set())
         alias_matches = aliases.get(item["external_round_id"], set())
         matches = candidates[item["event_id"]]
-        proven = invitation_matches | alias_matches | (matches if len(matches) == 1 else set())
+        direct = ({context["unique"][item["event_id"]]} if item["event_id"] in context.get("unique", {})
+                  else set()) if global_context else matches if len(matches) == 1 else set()
+        proven = invitation_matches | alias_matches | direct
+        if global_context and len(proven) == 1 and not any(row["round_id"] in proven for row in output.rounds):
+            # Related observations may straddle this chunk. Their proven
+            # round is updated by its own chunk, without overwriting it here.
+            continue
         # Conflicting card/alias evidence stays unlinked. An established card
         # may disambiguate a coarse timestamp but cannot point to another round.
         if (len(invitation_matches) <= 1 and len(alias_matches) <= 1 and len(proven) == 1
-                and (not matches or proven.issubset(matches))):
+                and ((item["event_id"] not in context.get("matched", set()) if global_context else not matches)
+                     or proven.issubset(matches))):
             item["round_id"] = next(iter(proven))
         item["status"] = "unlinked" if not item["round_id"] else "rated" if item["rating"] else "pending"
         item["data"]["linkage"] = "closed_at_or_invitation" if item["round_id"] else "unknown"

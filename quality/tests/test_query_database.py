@@ -1,6 +1,6 @@
 """Opt-in integration checks; never point these at the user's archive database.
 
-Apply 001/002 to an isolated database first. Set PROCESSING_TEST_DATABASE=1,
+Apply all archive migrations to an isolated database first. Set PROCESSING_TEST_DATABASE=1,
 ARCHIVE_POSTGRES_DB=quality_query_test_..., ARCHIVE_INGEST_PASSWORD and
 PROCESSING_TEST_ADMIN_PASSWORD. No production names are accepted.
 """
@@ -66,6 +66,31 @@ class QueryDatabaseTest(unittest.TestCase):
         for item in events:
             receipts.append(self.capture.receive(CaptureEnvelope.parse(json.dumps(item["payload"]).encode())))
         return receipts
+
+    def receive_bulk(self, events):
+        """Capture equivalent bytes/jobs in bounded batches, only in this disposable DB."""
+        from itertools import islice
+        def parameters():
+            for item in events:
+                envelope = CaptureEnvelope.parse(json.dumps(item["payload"]).encode())
+                yield (self.source, envelope.account_id, envelope.event_key, envelope.event_type,
+                       envelope.conversation_id, envelope.message_id, envelope.raw_body, envelope.raw_body)
+        pending = iter(parameters())
+        with self.admin.transaction(), self.admin.cursor() as cursor:
+            while batch := list(islice(pending, 500)):
+                cursor.executemany("""INSERT INTO archive.events
+                    (source_key,account_id,event_key,event_type,ingestion_kind,conversation_id,message_id,raw_body,payload)
+                    VALUES(%s,%s,%s,%s,'webhook',%s,%s,%s,convert_from(%s,'UTF8')::jsonb)
+                    ON CONFLICT(source_key,account_id,event_key) DO NOTHING""", batch)
+            cursor.execute("""INSERT INTO ops.event_jobs(event_id) SELECT id FROM archive.events
+                WHERE source_key=%s ON CONFLICT DO NOTHING""", (self.source,))
+
+    @staticmethod
+    def rounds_events(count, *, conversation_id=12, start=0, first_id=1):
+        for index in range(count):
+            yield event(first_id+index*2, start+index*10, conversation_id=conversation_id, content=f"round {index+1}")
+            yield event(first_id+index*2+1, start+index*10+2, conversation_id=conversation_id,
+                        event_type="conversation_status_changed", status="resolved")
 
     def drain(self):
         for _ in range(100):
@@ -263,8 +288,8 @@ class QueryDatabaseTest(unittest.TestCase):
         # their own persistent evidence, not process-local input.
         self.assertEqual(claim["event_id"], receipt.event_id)
         write = self.processor._write_projection
-        def fail_after_write(*args):
-            write(*args)
+        def fail_after_write(*args, **kwargs):
+            write(*args, **kwargs)
             raise RuntimeError("injected failure")
         with patch.object(self.processor, "_write_projection", side_effect=fail_after_write):
             with self.assertRaises(RuntimeError):
@@ -1036,6 +1061,238 @@ class QueryDatabaseTest(unittest.TestCase):
         versions = self.reader.message_versions(self.source, 1, 100)
         self.assertEqual(versions["total"], 2)
         self.assertEqual({item["content"] for item in versions["items"]}, {"first observed edited reply", "actual creation body"})
+
+
+    def test_recent_fifty_rounds_keep_older_history_and_original_ordinals(self):
+        self.receive_bulk(self.rounds_events(62))
+        with patch.object(self.processor, "_write_projection", wraps=self.processor._write_projection) as writes:
+            self.drain()
+        self.assertEqual([call.kwargs["round_no_offset"] for call in writes.call_args_list], [0, 50])
+        original = sorted(self.rows("ops.round_index"), key=lambda row: row["round_no"])
+        self.assertEqual([row["round_no"] for row in original], list(range(1, 63)))
+        self.receive(event(1000, 620, content="newest round"))
+        with patch.object(self.processor, "_write_projection", wraps=self.processor._write_projection) as writes:
+            self.drain()
+        self.assertEqual([call.kwargs["round_no_offset"] for call in writes.call_args_list], [13])
+        latest = sorted(self.rows("ops.round_index"), key=lambda row: row["round_no"])
+        self.assertEqual(latest[:13], original[:13])
+        self.assertEqual(len(latest), 63)
+        self.assertEqual(len(self.rows("ops.message_index")), 63)
+        customer_id = self.rows("ops.customer_index")[0]["customer_id"]
+        self.assertEqual(self.reader.customer_history(customer_id)["total"], 63)
+
+    def test_old_edit_deletion_and_late_rating_repair_history_outside_recent_window(self):
+        self.receive_bulk(self.rounds_events(62))
+        attrs = {"ics_round_id": "historical-business-round", "ics_closed_at": (START+timedelta(minutes=2)).isoformat()}
+        self.receive(event(1000, 3, sender="agent_bot", direction="outgoing", content_type="input_csat",
+                           content_attributes=attrs))
+        self.drain()
+        before_raw = self.rows("archive.events")
+        round_id = next(row["round_id"] for row in self.rows("ops.round_index") if row["round_no"] == 1)
+        self.receive(event(1001, 620, event_type="message_updated", message_id=1, content="old edited",
+                           created_at=START.isoformat(), updated_at=(START+timedelta(minutes=620)).isoformat()),
+                     event(1002, 621, event_type="message_deleted", message_id=3,
+                           created_at=(START+timedelta(minutes=10)).isoformat(), content=None),
+                     event(1003, 622, event_type="message_updated", message_id=1000, content_type="input_csat",
+                           created_at=(START+timedelta(minutes=3)).isoformat(),
+                           csat_survey_response={"message_id": 1000, "rating": 2, "feedback_message": "late feedback"}))
+        self.drain()
+        messages = {row["message_id"]: row for row in self.rows("ops.message_index")}
+        self.assertEqual(messages[1]["content"], "old edited")
+        self.assertTrue(messages[3]["is_deleted"])
+        first = next(row for row in self.rows("ops.round_index") if row["round_id"] == round_id)
+        self.assertEqual((first["rating"], first["data"]["rating_feedback"]), (2, "late feedback"))
+        self.assertEqual(self.rows("archive.events")[:len(before_raw)], before_raw)
+        self.assertEqual(len(self.rows("ops.round_index")), 62)
+
+    def test_bounded_progress_survives_restart_without_using_failure_attempts(self):
+        self.receive_bulk(self.rounds_events(62))
+        limited = ProcessingRepository(self.settings.model_copy(update={"processor_index_batch_size": 5}))
+        limited.open()
+        try:
+            self.assertTrue(limited.process_next("interrupted-worker"))
+        finally:
+            limited.close()
+        plan = self.rows("ops.conversation_replay_state")[0]["plan"]
+        self.assertFalse(plan["indexed"])
+        self.assertEqual(len(self.rows("ops.event_replay_index")), 5)
+        pending = self.admin.execute("""SELECT max(j.attempts) AS n FROM ops.event_jobs j
+            JOIN archive.events e ON e.id=j.event_id WHERE e.source_key=%s""", (self.source,)).fetchone()
+        self.assertEqual(pending["n"], 0)
+        self.drain()
+        self.assertEqual(self.rows("ops.conversation_replay_state")[0]["plan"], {})
+        self.assertEqual(len(self.rows("ops.round_index")), 62)
+        self.assertTrue(self.admin.execute("""SELECT bool_and(j.status='completed') AS done FROM ops.event_jobs j
+            JOIN archive.events e ON e.id=j.event_id WHERE e.source_key=%s""", (self.source,)).fetchone()["done"])
+
+    def test_late_customer_message_merges_old_boundary_and_renumbers_without_losing_messages(self):
+        self.receive(event(1), event(2, 360), event(3, 720))
+        self.drain()
+        third = next(row["round_id"] for row in self.rows("ops.round_index") if row["round_no"] == 3)
+        self.receive(event(4, 180, content="late bridging message"))
+        self.drain()
+        rounds = sorted(self.rows("ops.round_index"), key=lambda row: row["round_no"])
+        self.assertEqual([row["round_no"] for row in rounds], [1, 2])
+        self.assertEqual(rounds[1]["round_id"], third)
+        self.assertEqual(len(self.rows("ops.message_index")), 4)
+        self.assertTrue(all(row["round_id"] for row in self.rows("ops.message_index")))
+
+    def test_recent_window_is_shared_by_customer_but_conversation_state_is_independent(self):
+        self.receive_bulk(self.rounds_events(40))
+        self.receive_bulk(self.rounds_events(30, conversation_id=22, start=1000, first_id=1000))
+        self.drain()
+        self.receive(event(2000, 1300, conversation_id=22))
+        with patch.object(self.processor, "_write_projection", wraps=self.processor._write_projection) as writes:
+            self.drain()
+        self.assertEqual([call.kwargs["round_no_offset"] for call in writes.call_args_list], [0])
+        self.receive(event(2001, 399, event_type="conversation_updated"))
+        with patch.object(self.processor, "_write_projection", wraps=self.processor._write_projection) as writes:
+            self.drain()
+        self.assertEqual([call.kwargs["round_no_offset"] for call in writes.call_args_list], [21])
+        self.assertEqual(len(self.rows("ops.round_index")), 71)
+
+    def test_lifetime_above_twenty_thousand_events_and_sixty_four_mib_uses_bounded_windows(self):
+        def history():
+            for index in range(60):
+                for message in range(350):
+                    yield event(index*351+message+1, index*10+message/60, content="x"*3500)
+                yield event(index*351+351, index*10+6, event_type="conversation_status_changed", status="resolved")
+        self.receive_bulk(history())
+        total = self.admin.execute("""SELECT count(*) AS n,sum(octet_length(payload::text)) AS bytes
+            FROM archive.events WHERE source_key=%s""", (self.source,)).fetchone()
+        self.assertGreater(total["n"], 20000)
+        self.assertGreater(total["bytes"], 64*1024*1024)
+        with patch.object(self.processor, "_write_projection", wraps=self.processor._write_projection) as writes:
+            self.drain()
+        self.assertGreater(len(writes.call_args_list), 1)
+        self.assertTrue(all(len(call.args[1]) <= 20000 for call in writes.call_args_list))
+        self.assertEqual(len(self.rows("ops.round_index")), 60)
+        oldest = next(row for row in self.rows("ops.round_index") if row["round_no"] == 1)
+        self.receive(event(30000, 600, content="still accepts new rounds"))
+        self.drain()
+        self.assertEqual(len(self.rows("ops.round_index")), 61)
+        self.assertEqual(len(self.rows("ops.message_index")), 21001)
+        self.assertEqual(next(row for row in self.rows("ops.round_index") if row["round_no"] == 1), oldest)
+        self.assertTrue(self.admin.execute("""SELECT bool_and(j.status='completed') AS done FROM ops.event_jobs j
+            JOIN archive.events e ON e.id=j.event_id WHERE e.source_key=%s""", (self.source,)).fetchone()["done"])
+
+    def test_assignment_key_conflict_across_window_boundary_repairs_both_rounds(self):
+        self.receive_bulk(self.rounds_events(62))
+        self.receive_assignment("8", trigger_message_id=1, minute=1, session_minute=0)
+        self.drain()
+        self.receive_assignment("9", trigger_message_id=121, minute=601, session_minute=600)
+        self.drain()
+        affected = [row for row in self.rows("ops.round_index") if row["round_no"] in (1, 61)]
+        self.assertEqual(len(affected), 2)
+        self.assertTrue(all(row["data"]["responsibility_basis"] == "assignment_conflict" for row in affected))
+        self.assertTrue(all(row["data"]["responsible_agent_id"] is None for row in affected))
+
+    def test_assignment_timestamp_tolerance_at_window_boundary_does_not_conflict_with_prior_round(self):
+        self.receive_bulk(event(index+1, index*360) for index in range(52))
+        self.receive_assignment("8", trigger_message_id=51, minute=18001, session_minute=18000-0.00001)
+        self.drain()
+        rounds = {row["round_no"]: row for row in self.rows("ops.round_index")}
+        self.assertEqual(rounds[50]["data"]["responsibility_basis"], "assignment_unobserved")
+        self.assertEqual(rounds[51]["data"]["responsibility_basis"], "ics_assignment")
+
+    def test_restart_between_replay_windows_keeps_human_takeover_and_new_arrivals(self):
+        self.receive_bulk(event(index+1, index*360) for index in range(62))
+        self.receive(agent_reply(1000, 1))
+        self.processor.process_next("first-window")
+        self.assertEqual(self.rows("ops.conversation_replay_state")[0]["plan"]["cursor"], 51)
+        self.assertEqual(len(self.rows("ops.round_index")), 50)
+        self.receive(event(2000, 62*360))
+        replacement = ProcessingRepository(self.settings)
+        replacement.open()
+        self.addCleanup(replacement.close)
+        self.assertTrue(replacement.process_next("replacement"))
+        # The in-flight plan must not acknowledge the newer unindexed event.
+        latest = self.admin.execute("""SELECT j.status FROM ops.event_jobs j JOIN archive.events e ON e.id=j.event_id
+            WHERE e.source_key=%s AND e.message_id=2000""", (self.source,)).fetchone()
+        self.assertEqual(latest["status"], "queued")
+        self.drain()
+        rounds = sorted(self.rows("ops.round_index"), key=lambda row: row["round_no"])
+        self.assertEqual(len(rounds), 63)
+        self.assertTrue(all(row["reception_type"] == "human" for row in rounds))
+        self.assertTrue(all(row["data"]["takeover_inherited"] for row in rounds[1:]))
+
+    def test_single_round_event_budget_still_protects_memory_and_keeps_raw_evidence(self):
+        self.receive_bulk(event(index+1, index/60) for index in range(101))
+        limited = ProcessingRepository(self.settings.model_copy(update={
+            "processor_max_conversation_events": 100, "processor_max_attempts": 1}))
+        limited.open()
+        self.addCleanup(limited.close)
+        claim = limited.claim("single-round-limit")
+        with self.assertRaisesRegex(RuntimeError, "event bound"):
+            limited.process_claim(claim)
+        limited._retry(claim, "RuntimeError")
+        self.assertEqual(len(self.rows("archive.events")), 101)
+        self.assertEqual(self.rows("ops.round_index"), [])
+        self.assertEqual(self.rows("archive.message_snapshots"), [])
+        self.drain()
+
+    def test_new_generation_claim_is_released_when_it_finishes_the_previous_plan(self):
+        self.receive_bulk(self.rounds_events(62))
+        self.processor.process_next("start-plan")
+        receipt = self.receive(event(2000, 620))[0]
+        self.admin.execute("""UPDATE ops.event_jobs j SET available_at=CURRENT_TIMESTAMP+INTERVAL '1 day'
+            FROM archive.events e WHERE e.id=j.event_id AND e.source_key=%s AND j.event_id<>%s""",
+            (self.source, receipt.event_id))
+        claim = self.processor.claim("new-generation")
+        self.assertEqual(claim["event_id"], receipt.event_id)
+        self.processor.process_claim(claim)
+        job = self.admin.execute("SELECT status,attempts,locked_by FROM ops.event_jobs WHERE event_id=%s",
+                                 (receipt.event_id,)).fetchone()
+        self.assertEqual(job, {"status": "retry", "attempts": 0, "locked_by": None})
+        self.drain()
+        self.assertEqual(len(self.rows("ops.round_index")), 63)
+
+    def test_rating_alias_conflict_across_window_boundary_stays_unlinked(self):
+        self.receive_bulk(self.rounds_events(62))
+        self.receive(event(1000, 3, sender="agent_bot", direction="outgoing", content_type="input_csat",
+            content_attributes={"ics_round_id": "shared-alias", "ics_closed_at": (START+timedelta(minutes=2)).isoformat()}))
+        self.drain()
+        self.receive(event(1001, 603, sender="agent_bot", direction="outgoing", content_type="input_csat",
+            content_attributes={"ics_round_id": "shared-alias", "ics_closed_at": (START+timedelta(minutes=602)).isoformat()}))
+        self.drain()
+        self.assertTrue(all(row["status"] == "unlinked" and row["round_id"] is None for row in self.rows("ops.rating_index")))
+        affected = [row for row in self.rows("ops.round_index") if row["round_no"] in (1, 61)]
+        self.assertTrue(all(row["rating_status"] == "not_invited" for row in affected))
+
+    def test_rating_by_old_alias_without_invitation_id_updates_the_original_round(self):
+        self.receive_bulk(self.rounds_events(62))
+        self.receive(event(1000, 3, sender="agent_bot", direction="outgoing", content_type="input_csat",
+            content_attributes={"ics_round_id": "old-alias", "ics_closed_at": (START+timedelta(minutes=2)).isoformat()}))
+        self.drain()
+        self.receive(event(1001, 630, event_type="csat_survey_response", ics_round_id="old-alias", rating=4,
+                           conversation={"id": 12, "account_id": 1}))
+        self.drain()
+        first = next(row for row in self.rows("ops.round_index") if row["round_no"] == 1)
+        self.assertEqual(first["rating"], 4)
+
+    def test_rating_invitation_disambiguates_close_timestamps_across_small_windows(self):
+        from quality.processing.projector import stable_id
+        round_id = stable_id("round:", self.source, 1, 12, 1)
+        self.receive(event(1), event(2, 1, event_type="conversation_status_changed", status="resolved"),
+                     event(3, 1.00001), event(4, 1.00002, event_type="conversation_status_changed", status="resolved"),
+                     event(1000, 2, sender="agent_bot", direction="outgoing", content_type="input_csat",
+                           content_attributes={"ics_round_id": round_id, "ics_closed_at": (START+timedelta(minutes=1)).isoformat()}),
+                     event(1001, 3, event_type="message_updated", message_id=1000, content_type="input_csat",
+                           created_at=(START+timedelta(minutes=2)).isoformat(),
+                           content_attributes={"ics_closed_at": (START+timedelta(minutes=1.00001)).isoformat()},
+                           csat_survey_response={"message_id": 1000, "rating": 4}))
+        small = ProcessingRepository(self.settings.model_copy(update={"processor_recent_rounds": 1}))
+        small.open()
+        self.addCleanup(small.close)
+        for _ in range(10):
+            if not small.process_next("small-window"):
+                break
+        rounds = {row["round_no"]: row for row in self.rows("ops.round_index")}
+        self.assertEqual(rounds[1]["rating"], 4)
+        self.assertEqual(rounds[2]["rating_status"], "not_invited")
+        self.assertEqual(self.rows("ops.rating_index")[0]["round_id"], round_id)
+
+
 
 
 if __name__ == "__main__":

@@ -2,23 +2,60 @@
 
 本流程适用于已有 ICS 的服务器更新。共享发布与同步脚本在 `deploy/server/`，归档数据库专用迁移步骤在 `quality/deploy/`，数据库 SQL 在 `quality/database/`。两份应用 Dockerfile 均包含 `quality/`，可继续复用 ICS 代码。
 
+本次“最近 50 轮解析”优化按 Git `test` 分支发布；本地提交与推送、`ssh ics` 拉取、010 迁移、构建及三个容器分别更新的小步骤，见[本次归档优化上线操作](archive-recent-50-rounds-deployment.md)。
+
 ## 首次使用前
 
-- 先提交并推送本机改动，服务器 `/opt/cs-src` 拉取目标版本。
+- 先提交并推送本机 `test` 分支，服务器 `/opt/cs-src` 拉取远端 `test`。
 - `/opt/cs/.env` 已有机器人配置和独立的 `ARCHIVE_*` 配置，各账号使用该服务器数据库的实际密码。模板见 `deploy/server/bot.env.example`，不要用模板或本机 `.env` 覆盖服务器配置。
 - 服务器使用 Bash、Git、rsync、coreutils、flock（Ubuntu 的 util-linux）和支持 `up --wait --wait-timeout` 的 Docker Compose V2。本脚本不安装软件。
 - 发布前按现有备份流程备份。若是全新机器人部署，先完成[首次部署手册](server-first-deployment.md)中的目录、模型、业务数据及配置准备，再执行发布。
 
 ## Git 更新
 
-在 Ubuntu 终端执行，源码仓库保持干净：
+本次归档优化优先使用上面链接的分步手册。常规更新也沿用远端 `test`；以下命令逐步执行。
+
+先检查源码工作区，预期没有输出：
 
 ```bash
 git -C /opt/cs-src status --short
-git -C /opt/cs-src pull --ff-only
 ```
 
-确认拉取成功且提交版本正确，再执行：
+有修改时先保存和核实，工作区干净后再继续。查看远端名称：
+
+```bash
+git -C /opt/cs-src remote
+```
+
+设置远端；如果服务器实际名称为 `origin`，将下面的 `chatwoot` 改为 `origin`：
+
+```bash
+ICS_RELEASE_REMOTE=chatwoot
+```
+
+切换到发布分支：
+
+```bash
+git -C /opt/cs-src switch test
+```
+
+单独拉取：
+
+```bash
+git -C /opt/cs-src pull --ff-only "$ICS_RELEASE_REMOTE" test
+```
+
+核对提交号与本地推送后的 `test` 一致：
+
+```bash
+git -C /opt/cs-src rev-parse HEAD
+```
+
+拉取失败、不能快进或提交号不符时停在当前步骤，不使用强制重置。
+
+## 自动发布脚本（备用）
+
+以下脚本会一次完成同步、迁移和构建等操作。**本次需要逐步定位错误，按[分步手册](archive-recent-50-rounds-deployment.md)操作，不执行此备用命令，也不要与分步操作同时运行。** 熟悉流程后，常规更新可在核对 Git 版本、完成备份后执行：
 
 ```bash
 bash /opt/cs-src/deploy/server/release.sh --source /opt/cs-src --target /opt/cs
@@ -61,22 +98,15 @@ bash /opt/cs-src/deploy/server/release.sh --source /opt/cs-src --target /opt/cs 
 
 ```bash
 cd /opt/cs
+```
+
+再单独执行：
+
+```bash
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.archive.yml --profile quality-query up -d quality-worker
 ```
 
 以后更新也需要执行该命令以让解析进程使用新镜像；现有 `release.sh` 的 `--with-receiver` 仅管理采集器。后台从 `/admin` 的“对话归档”进入，详细配置、资源限制和索引重建见[归档查询首版说明](../quality/query/README.md)。查询未开启或不可用不会改变现有客服入口。
-
-## 压缩包更新
-
-按首次部署手册制作包含 `reminder/`、`quality/`、`deploy/`、`docker-compose.archive.yml` 的新后端包。服务器核对包后执行：
-
-```bash
-cd /opt/cs
-tar --exclude=database -xzf ~/cs-app.tar.gz
-bash deploy/server/release.sh --in-place
-```
-
-`--in-place` 跳过源码目录同步，随后执行同样的数据库等待、迁移、验证和应用更新。它不依赖 `/opt/cs-src`，不会记录 Git 提交版本。
 
 ## 只更新数据库
 
@@ -84,9 +114,14 @@ bash deploy/server/release.sh --in-place
 
 ```bash
 cd /opt/cs
+```
+
+再单独执行：
+
+```bash
 bash quality/deploy/migrate.sh
 ```
 
 此命令不构建或重启 ICS。迁移使用数据库事务锁，完整发布另有目标目录发布锁。
 
-仅更新代码、运行普通 `docker compose up` 或重启容器，不会自行执行本流程。后续服务器发布统一使用 `release.sh`，才能确保应用更新前先通过迁移和验证。
+仅更新代码、运行普通 `docker compose up` 或重启容器，不会自行执行迁移和验证。分步发布按专用手册先通过数据库迁移及验证，再更新应用；使用自动发布脚本时，也需另外更新 worker 并完成业务验收。
