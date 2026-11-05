@@ -14,6 +14,20 @@ class AdminPageTest(unittest.TestCase):
         self.assertIn("text/html", response.headers["content-type"])
         self.assertIn("<!doctype html>", response.text.lower())
 
+    def test_admin_page_declares_favicon(self) -> None:
+        response = TestClient(app).get("/admin")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('rel="icon"', response.text)
+        self.assertIn('href="/admin/favicon.svg"', response.text)
+
+    def test_admin_favicon_is_served(self) -> None:
+        response = TestClient(app).get("/admin/favicon.svg")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.headers["content-type"].startswith("image/svg+xml"))
+        self.assertIn("<svg", response.text)
+
     def test_admin_login_uses_configured_settings(self) -> None:
         with patch(
             "ics_agent.app.admin.routes.authenticate_admin",

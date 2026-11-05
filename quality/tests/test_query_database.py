@@ -492,6 +492,66 @@ class QueryDatabaseTest(unittest.TestCase):
         for key, value in expected.items():
             self.assertEqual(recovered[key], value)
 
+    def test_user_search_matches_h5_id_without_verified_business_identity(self):
+        for index, identity in enumerate((
+            {"identifier": "85704084"}, {"userId": 85704084},
+            {"custom_attributes": {"userId": "85704084"}},
+        )):
+            incoming = event(index + 1, conversation_id=100 + index)
+            contact = {"id": 42 + index, "name": "H5 客户", "type": "contact", **identity}
+            incoming["payload"]["sender"] = dict(contact)
+            incoming["payload"]["conversation"]["meta"]["sender"] = dict(contact)
+            self.receive(incoming)
+        other = event(4, conversation_id=200)
+        other_contact = {"id": 99, "name": "其他客户", "type": "contact", "identifier": "99999999"}
+        other["payload"]["sender"] = dict(other_contact)
+        other["payload"]["conversation"]["meta"]["sender"] = dict(other_contact)
+        self.receive(other)
+        self.drain()
+
+        base = {"source_key": self.source, "account_id": 1}
+        for query, expected in (("85704084", {"42", "43", "44"}), ("7040", {"42", "43", "44"}),
+                                ("H5 客户", {"42", "43", "44"}), ("42", {"42"}), ("no-such-user", set())):
+            with self.subTest(query=query):
+                filters = ArchiveFilters(**base, customer_query=query)
+                customers = self.reader.list_customers(filters)
+                rounds = self.reader.list_rounds(filters)
+                self.assertEqual({item["contact_id"] for item in customers["items"]}, expected)
+                self.assertEqual({item["contact_id"] for item in rounds["items"]}, expected)
+                self.assertEqual(customers["total"], len(expected))
+                self.assertEqual(rounds["total"], len(expected))
+                self.assertEqual(self.reader.overview(filters)["total_rounds"], len(expected))
+                self.assertTrue(all(item["business_user_id"] is None for item in customers["items"]))
+
+    def test_user_search_recovers_h5_id_from_pre_profile_customer_index(self):
+        incoming = event(1)
+        incoming["payload"]["conversation"]["meta"]["sender"]["identifier"] = "85704084"
+        self.receive(incoming)
+        self.drain()
+        self.admin.execute("UPDATE ops.customer_index SET data=data-'h5_user_id' WHERE source_key=%s", (self.source,))
+
+        filters = ArchiveFilters(source_key=self.source, account_id=1, customer_query="85704084")
+        self.assertEqual(self.reader.list_customers(filters)["total"], 1)
+        self.assertEqual(self.reader.list_rounds(filters)["total"], 1)
+        self.assertEqual(self.reader.overview(filters)["total_rounds"], 1)
+
+    def test_user_search_treats_h5_id_wildcards_as_literal_text(self):
+        for index, identifier in enumerate(("app_100%ID", "appX100ZID")):
+            incoming = event(index + 1, conversation_id=100 + index)
+            contact = {"id": 42 + index, "name": "客户", "type": "contact", "identifier": identifier}
+            incoming["payload"]["sender"] = dict(contact)
+            incoming["payload"]["conversation"]["meta"]["sender"] = dict(contact)
+            self.receive(incoming)
+        self.drain()
+
+        for query in ("app_100%id", "100%", "app_"):
+            with self.subTest(query=query):
+                filters = ArchiveFilters(source_key=self.source, account_id=1, customer_query=query)
+                self.assertEqual(self.reader.list_customers(filters)["total"], 1)
+                rounds = self.reader.list_rounds(filters)
+                self.assertEqual([item["contact_id"] for item in rounds["items"]], ["42"])
+                self.assertEqual(self.reader.overview(filters)["total_rounds"], 1)
+
     def test_customer_card_metrics_use_logical_messages_handoff_and_original_round_rating(self):
         attrs = {"ics_round_id": "metrics-round", "ics_closed_at": (START + timedelta(minutes=12, microseconds=1)).isoformat()}
         self.receive(event(1), event(2, .5, sender="agent_bot", direction="outgoing"),

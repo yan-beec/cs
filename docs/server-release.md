@@ -2,6 +2,8 @@
 
 本流程适用于已有 ICS 的服务器更新。共享发布与同步脚本在 `deploy/server/`，归档数据库专用迁移步骤在 `quality/deploy/`，数据库 SQL 在 `quality/database/`。两份应用 Dockerfile 均包含 `quality/`，可继续复用 ICS 代码。
 
+只更新代码、从 Git `test` 分支拉取、逐步手动部署且不使用发布锁时，按 [SSH ics 代码更新手册](ssh-ics-code-only-update.md)操作。该手册单独同步、构建并更新应用，不调用本页的统一发布脚本或执行数据库迁移。
+
 本次“最近 50 轮解析”优化按 Git `test` 分支发布；本地提交与推送、`ssh ics` 拉取、010 迁移、构建及三个容器分别更新的小步骤，见[本次归档优化上线操作](archive-recent-50-rounds-deployment.md)。
 
 ## 首次使用前

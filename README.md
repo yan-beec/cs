@@ -307,6 +307,7 @@ log/                       运行日志
 | --- | --- |
 | [服务器首次部署](docs/server-first-deployment.md) | 环境、模型、数据库、Chatwoot 接入与首轮验收 |
 | [服务器统一发布](docs/server-release.md) | 当前服务器更新入口、迁移验证与采集服务启用 |
+| [SSH ics 只更新代码](docs/ssh-ics-code-only-update.md) | 从 Git test 分支拉取，不使用发布锁，逐步同步、构建、更新和验收 |
 | [客服提醒模块](reminder/README.md) | 提醒功能配置、客户端构建与运行说明 |
 | [客服安装与使用说明](reminder/docs/客服安装与使用说明.md) | 客服电脑安装、连接、值班与交接班 |
 | [浏览器插件安装](reminder/docs/browser-extension-install.md) | Chrome / Edge 插件安装与授权 |

@@ -52,6 +52,18 @@ def _literal_pattern(value: str) -> str:
     return "%" + value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
 
 
+def _customer_search_condition(query: str) -> tuple[str, list]:
+    # H5 IDs are searchable even without verified business identity. Older
+    # projections kept the contact identifier only in unverified_identifier.
+    pattern = _literal_pattern(query)
+    return (
+        "(c.display_name ILIKE %s OR c.contact_id ILIKE %s OR "
+        "COALESCE(NULLIF(c.data ->> 'h5_user_id', ''), c.data ->> 'unverified_identifier') ILIKE %s OR "
+        "c.business_user_id ILIKE %s OR c.customer_id = %s)",
+        [pattern, pattern, pattern, pattern, query],
+    )
+
+
 def _require_scoped_ids(filters: ArchiveFilters) -> None:
     # Chatwoot seat and inbox IDs are only unique within one source/account.
     if (filters.agent_id or filters.inbox_id is not None) and (
@@ -132,9 +144,9 @@ def round_conditions(filters: ArchiveFilters) -> tuple[str, list]:
         if filters.channel_key != "unmapped":
             values.append(filters.channel_key)
     if filters.customer_query:
-        clauses.append("(c.display_name ILIKE %s OR c.contact_id ILIKE %s OR c.business_user_id ILIKE %s OR c.customer_id = %s)")
-        pattern = _literal_pattern(filters.customer_query)
-        values.extend([pattern, pattern, pattern, filters.customer_query])
+        condition, customer_values = _customer_search_condition(filters.customer_query)
+        clauses.append(condition)
+        values.extend(customer_values)
     if filters.agent_id:
         if filters.agent_scope == "responsible":
             clauses.append("r.data ->> 'responsibility_basis' = 'ics_assignment'")
@@ -174,9 +186,9 @@ def customer_conditions(filters: ArchiveFilters) -> tuple[str, list]:
             clauses.append(f"c.{name} = %s")
             values.append(value)
     if filters.customer_query:
-        pattern = _literal_pattern(filters.customer_query)
-        clauses.append("(c.display_name ILIKE %s OR c.contact_id ILIKE %s OR c.business_user_id ILIKE %s OR c.customer_id = %s)")
-        values.extend([pattern, pattern, pattern, filters.customer_query])
+        condition, customer_values = _customer_search_condition(filters.customer_query)
+        clauses.append(condition)
+        values.extend(customer_values)
     round_specific = any(value is not None for value in (
         filters.round_no, filters.reception_type, filters.agent_id if filters.agent_scope != "current" else None, filters.rating_status,
         filters.rating, filters.status, filters.ai_review_status, filters.human_review_status,
