@@ -31,6 +31,8 @@ class ChatwootDirectory:
         self.next_refresh = 0
         self.executor = None
         self.refresh = None
+        self.initialized = False
+        self.closed = False
         self.cached = {"agents": [], "inboxes": []}
         self.status = "unconfigured" if not self.configured else "unavailable"
         self.agents_sampled_at = None
@@ -91,35 +93,50 @@ class ChatwootDirectory:
                                           "channel_key": bindings.get(identifier)}
         return list(normalized.values())
 
-    async def _refresh_if_needed(self, *, force=False):
+    def _apply_refresh(self, pending):
+        """只接收当前任务的结果；关闭后仍回收异常，避免遗留任务警告。"""
+        try:
+            result = pending.result() if not pending.cancelled() else None
+        except Exception:
+            result = None
+        if self.closed or self.refresh is not pending:
+            return
+        result = result or {"agents": None, "inboxes": None}
+        for kind in ("agents", "inboxes"):
+            if result[kind] is not None:
+                self.cached[kind] = result[kind]
+                self.initialized = True
+        self.agents_fetch_succeeded = result["agents"] is not None
+        if self.agents_fetch_succeeded:
+            self.agents_sampled_at = result["agents_sampled_at"]
+            self.agents_sampled_clock = result["agents_sampled_clock"]
+        success = all(result[kind] is not None for kind in ("agents", "inboxes"))
+        self.status = "ready" if success else "stale" if self.initialized else "unavailable"
+        self.next_refresh = (self.agents_sampled_clock + self.REFRESH_SECONDS
+                             if self.agents_fetch_succeeded else self.clock() + self.RETRY_SECONDS)
+        self.refresh = None
+
+    async def _refresh_if_needed(self, *, force=False, wait=True):
+        if self.closed:
+            return
         if self.configured and self.refresh is None and (force or self.clock() >= self.next_refresh):
             if self.executor is None:
                 self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="quality-directory")
-            # One refresh is shared by every concurrent request. No unbounded executor queue.
+            # 页面与状态采集共享唯一刷新；结果独立于等待者写回。
             self.refresh = asyncio.get_running_loop().run_in_executor(self.executor, self._fetch)
+            self.refresh.add_done_callback(self._apply_refresh)
             self.next_refresh = self.clock() + self.RETRY_SECONDS
-        if self.refresh is not None:
+        if wait and self.refresh is not None:
             pending = self.refresh
             try:
-                result = await asyncio.wait_for(asyncio.shield(pending), timeout=self.WAIT_SECONDS)
+                await asyncio.wait_for(asyncio.shield(pending), timeout=self.WAIT_SECONDS)
             except asyncio.TimeoutError:
-                if self.refresh is pending:
-                    self.status = "stale" if any(self.cached.values()) else "unavailable"
+                if not self.closed and self.refresh is pending:
+                    self.status = "stale" if self.initialized else "unavailable"
                     self.agents_fetch_succeeded = False
-            else:
-                if self.refresh is pending:
-                    for kind in ("agents", "inboxes"):
-                        if result[kind] is not None:
-                            self.cached[kind] = result[kind]
-                    self.agents_fetch_succeeded = result["agents"] is not None
-                    if self.agents_fetch_succeeded:
-                        self.agents_sampled_at = result["agents_sampled_at"]
-                        self.agents_sampled_clock = result["agents_sampled_clock"]
-                    success = all(result[kind] is not None for kind in ("agents", "inboxes"))
-                    self.status = "ready" if success else "stale" if any(self.cached.values()) else "unavailable"
-                    self.next_refresh = (self.agents_sampled_clock + self.REFRESH_SECONDS
-                                         if self.agents_fetch_succeeded else self.clock() + self.RETRY_SECONDS)
-                    self.refresh = None
+            except Exception:
+                # 刷新失败的状态由完成回调统一处理，查询仍返回已有目录。
+                pass
 
     async def presence(self, *, force_refresh=False):
         """Return real agent observations; forcing never invents a new sample time.
@@ -147,7 +164,7 @@ class ChatwootDirectory:
         }
 
     async def enrich(self, options):
-        await self._refresh_if_needed()
+        await self._refresh_if_needed(wait=not self.initialized)
         result = dict(options)
         sources = {(row["source_key"], row["account_id"]): dict(row) for row in options.get("sources", [])}
         if self.configured:
@@ -174,10 +191,11 @@ class ChatwootDirectory:
         return result
 
     async def close(self):
+        self.closed = True
         if self.refresh is not None:
             try:
                 await asyncio.wait_for(asyncio.shield(self.refresh), timeout=self.WAIT_SECONDS)
-            except asyncio.TimeoutError:
+            except Exception:
                 pass
             self.refresh = None
         if self.executor is not None:

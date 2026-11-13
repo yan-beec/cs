@@ -1,14 +1,15 @@
 """Opt-in integration checks; never point these at the user's archive database.
 
-Apply 001/002 to an isolated database first. Set PROCESSING_TEST_DATABASE=1,
+Apply all archive migrations to an isolated database first. Set PROCESSING_TEST_DATABASE=1,
 ARCHIVE_POSTGRES_DB=quality_query_test_..., ARCHIVE_INGEST_PASSWORD and
 PROCESSING_TEST_ADMIN_PASSWORD. No production names are accepted.
 """
 
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import json
+from dataclasses import replace
 import os
 from unittest.mock import patch
 import unittest
@@ -66,6 +67,31 @@ class QueryDatabaseTest(unittest.TestCase):
         for item in events:
             receipts.append(self.capture.receive(CaptureEnvelope.parse(json.dumps(item["payload"]).encode())))
         return receipts
+
+    def receive_bulk(self, events):
+        """Capture equivalent bytes/jobs in bounded batches, only in this disposable DB."""
+        from itertools import islice
+        def parameters():
+            for item in events:
+                envelope = CaptureEnvelope.parse(json.dumps(item["payload"]).encode())
+                yield (self.source, envelope.account_id, envelope.event_key, envelope.event_type,
+                       envelope.conversation_id, envelope.message_id, envelope.raw_body, envelope.raw_body)
+        pending = iter(parameters())
+        with self.admin.transaction(), self.admin.cursor() as cursor:
+            while batch := list(islice(pending, 500)):
+                cursor.executemany("""INSERT INTO archive.events
+                    (source_key,account_id,event_key,event_type,ingestion_kind,conversation_id,message_id,raw_body,payload)
+                    VALUES(%s,%s,%s,%s,'webhook',%s,%s,%s,convert_from(%s,'UTF8')::jsonb)
+                    ON CONFLICT(source_key,account_id,event_key) DO NOTHING""", batch)
+            cursor.execute("""INSERT INTO ops.event_jobs(event_id) SELECT id FROM archive.events
+                WHERE source_key=%s ON CONFLICT DO NOTHING""", (self.source,))
+
+    @staticmethod
+    def rounds_events(count, *, conversation_id=12, start=0, first_id=1):
+        for index in range(count):
+            yield event(first_id+index*2, start+index*10, conversation_id=conversation_id, content=f"round {index+1}")
+            yield event(first_id+index*2+1, start+index*10+2, conversation_id=conversation_id,
+                        event_type="conversation_status_changed", status="resolved")
 
     def drain(self):
         for _ in range(100):
@@ -182,21 +208,55 @@ class QueryDatabaseTest(unittest.TestCase):
         self.assertEqual((all_rounds["total_rounds"], all_rounds["total_customers"]), (3, 2))
         filters = ArchiveFilters(**base, customer_query="42", keyword="100%_literal", reception_type="human",
             status="resolved", rating_status="rated", rating=3, inbox_id=3, channel_key="xingliao",
-            agent_id="8", round_no=1, conversation_id=12, message_scope="contact", has_attachment=True,
-            time_field="message_at", start=START, end=START+timedelta(minutes=3))
+            agent_id="7", agent_scope="replied", round_no=1, conversation_id=12, message_scope="contact",
+            has_attachment=True, time_field="message_at", start=START, end=START+timedelta(minutes=3))
         result = self.reader.overview(filters)
         self.assertEqual(result["total_rounds"], 1)
         self.assertEqual(result["total_customers"], 1)
         self.assertEqual(result["rated_rounds"], 1)
         self.assertEqual(result["low_rating_rounds"], 1)
         self.assertEqual(result["average_rating"], 3)
-        self.assertEqual({row["agent_id"] for row in result["participating_agents"]}, {"7", "8"})
+        # ICS assigned seat 8 but seat 7 answered: an assisted round, assessed for nobody (statistics rule).
+        self.assertEqual({row["agent_id"] for row in result["participating_agents"]}, {"7"})
+        self.assertEqual(result["assisted_rounds"], 1)
+        self.assertEqual(self.reader.overview(ArchiveFilters(**base, agent_id="8"))["total_rounds"], 0)
         self.assertEqual(self.reader.list_rounds(filters, page_size=1)["total"], result["total_rounds"])
         # The same customer has another round that does not contain the keyword.
         self.assertEqual(self.reader.overview(ArchiveFilters(**base, customer_query="42"))["total_rounds"], 2)
         self.assertEqual(self.reader.overview(ArchiveFilters(**base, agent_id="7", agent_scope="replied"))["total_rounds"], 1)
         self.assertEqual(self.reader.overview(ArchiveFilters(**base, keyword="100ZZliteral"))["total_rounds"], 0)
         self.assertEqual(self.reader.overview(ArchiveFilters(**base, has_attachment=False))["total_rounds"], 2)
+
+    def test_rating_operator_compares_rated_rounds_only(self):
+        self.overview_round("r2", status="resolved", rating_status="rated", rating=2)
+        self.overview_round("r4", status="resolved", rating_status="rated", rating=4)
+        self.overview_round("r5", status="resolved", rating_status="rated", rating=5)
+        self.overview_round("pending-1", rating_status="pending", rating=1)
+        base = {"source_key": self.source, "account_id": 1}
+        counts = {op: self.reader.overview(ArchiveFilters(**base, rating=4, rating_op=op))["total_rounds"]
+                  for op in ("lt", "eq", "gt")}
+        self.assertEqual(counts, {"lt": 1, "eq": 1, "gt": 1})
+        self.assertEqual(self.reader.list_rounds(ArchiveFilters(**base, rating=4, rating_op="lt"))["total"], 1)
+
+    def test_lost_filter_follows_handoff_clock_and_public_agent_replies(self):
+        self.receive(event(1, 0, content="需要人工"))
+        self.receive_assignment(minute=1)
+        self.drain()
+        base = {"source_key": self.source, "account_id": 1, "agent_id": "8"}
+        window = ArchiveFilters(**base, lost=True, time_field="handoff_at", start=START, end=START+timedelta(hours=1))
+        self.assertEqual(self.reader.overview(window)["total_rounds"], 1)
+        self.assertEqual(self.reader.list_rounds(window)["total"], 1)
+        self.assertEqual(self.reader.list_customers(window)["total"], 1)
+        later = ArchiveFilters(**base, lost=True, time_field="handoff_at", start=START+timedelta(minutes=2))
+        self.assertEqual(self.reader.overview(later)["total_rounds"], 0, "转人工时间早于窗口")
+        # 私密备注不算回复；公开人工回复后不再是流单。
+        self.receive(agent_reply(2, 2, agent_id=8, private=True))
+        self.drain()
+        self.assertEqual(self.reader.overview(window)["total_rounds"], 1)
+        self.receive(agent_reply(3, 3, agent_id=8))
+        self.drain()
+        self.assertEqual(self.reader.overview(window)["total_rounds"], 0)
+        self.assertEqual(self.reader.overview(replace(window, lost=None))["total_rounds"], 1)
 
     def test_overview_caps_agent_list_and_keeps_full_count_with_source_account_isolation(self):
         marker = "overview-scope-" + uuid.uuid4().hex
@@ -247,7 +307,7 @@ class QueryDatabaseTest(unittest.TestCase):
         self.drain()
         original = self.rows("ops.message_index")[0]
         for _ in range(2):
-            self.assertEqual(self.processor.rebuild(self.source), 1)
+            self.assertEqual(len(self.processor.rebuild(self.source).completed), 1)
         latest = self.rows("ops.message_index")[0]
         self.assertEqual(original["original_snapshot_id"], latest["original_snapshot_id"])
         self.assertTrue(latest["is_deleted"])
@@ -263,8 +323,8 @@ class QueryDatabaseTest(unittest.TestCase):
         # their own persistent evidence, not process-local input.
         self.assertEqual(claim["event_id"], receipt.event_id)
         write = self.processor._write_projection
-        def fail_after_write(*args):
-            write(*args)
+        def fail_after_write(*args, **kwargs):
+            write(*args, **kwargs)
             raise RuntimeError("injected failure")
         with patch.object(self.processor, "_write_projection", side_effect=fail_after_write):
             with self.assertRaises(RuntimeError):
@@ -405,7 +465,7 @@ class QueryDatabaseTest(unittest.TestCase):
         self.assertTrue(all(row["rating"] is None for row in self.rows("archive.rating_snapshots")))
         tables = ("archive.events", "archive.message_snapshots", "archive.conversation_snapshots", "archive.rating_snapshots")
         evidence_before = {table: self.rows(table) for table in tables}
-        self.assertEqual(self.processor.rebuild(self.source), 1)
+        self.assertEqual(len(self.processor.rebuild(self.source).completed), 1)
         for table in tables:
             self.assertEqual(self.rows(table), evidence_before[table], table)
         filters = ArchiveFilters(source_key=self.source, account_id=1, rating_status="rated", rating=5)
@@ -421,6 +481,114 @@ class QueryDatabaseTest(unittest.TestCase):
         self.assertEqual((invitation["visitor_rating"]["rating"], invitation["visitor_rating"]["feedback"]), (5, "=latest feedback"))
         stored = self.rows("ops.rating_index")[0]
         self.assertEqual((stored["rating"], stored["feedback"], stored["round_id"]), (5, "=latest feedback", row["round_id"]))
+
+    def test_customer_round_sequence_spans_conversations_while_round_no_stays_per_conversation(self):
+        # 同一用户三次咨询：会话12首轮、会话22首轮、会话12超过6小时后的第二轮。
+        self.receive(event(1, 0, message_id=100), event(2, 10, message_id=200, conversation_id=22),
+                     event(3, 400, message_id=101))
+        self.drain()
+        filters = ArchiveFilters(source_key=self.source, account_id=1)
+        expected = {100: (12, 1, 1), 200: (22, 1, 2), 101: (12, 2, 3)}
+        rounds = self.reader.list_rounds(filters)["items"]
+        self.assertEqual(sorted((r["conversation_id"], r["round_no"], r["customer_round_seq"]) for r in rounds),
+                         sorted(expected.values()))
+        # 列表筛选只选中一轮时，累计次序仍按该用户全部轮次计算。
+        only = self.reader.list_rounds(ArchiveFilters(source_key=self.source, account_id=1, conversation_id=22))["items"]
+        self.assertEqual([(r["round_no"], r["customer_round_seq"]) for r in only], [(1, 2)])
+        customer = self.reader.list_customers(filters)["items"][0]
+        self.assertEqual(customer["latest_round"]["customer_round_seq"], 3)
+        directory = self.reader.customer_rounds(customer["customer_id"])["items"]
+        self.assertEqual([r["customer_round_seq"] for r in directory], [3, 2, 1])
+        detail = self.reader.round_detail(only[0]["round_id"])
+        self.assertEqual(detail["round"]["customer_round_seq"], 2)
+        history = self.reader.customer_history(customer["customer_id"])["messages"]
+        self.assertEqual({m["message_id"]: (m["conversation_id"], m["round_no"], m["customer_round_seq"]) for m in history},
+                         expected)
+        from quality.offline.repository import messages
+        exported = list(messages({"mode": "customers", "filters": {"source_key": self.source, "account_id": 1}}, lambda: None))
+        # 导出流还包含搜索用的历史正文分块，轮次序号仅属于普通消息。
+        versions = [m for m in exported if m.get("_type") == "search_version"]
+        self.assertEqual({m["message_id"] for m in versions}, {"100", "101", "200"})
+        exported = [m for m in exported if m.get("_type") != "search_version"]
+        self.assertEqual([(m["message_id"], m["customer_round_seq"]) for m in exported], [("100", 1), ("101", 3), ("200", 2)])
+        self.assertTrue(all("T" in m["sent_at"] for m in exported))
+
+    def test_precomputed_customer_fields_blacklist_state_and_fact_queue_stay_consistent(self):
+        """R2（迁移 020）：预存字段始终等于它们汇总的明细，客户重归属、删除消息后也一样。"""
+        self.receive(event(1, 0, message_id=100), event(2, 10, message_id=200, conversation_id=22),
+                     event(3, 400, message_id=101), event(4, 401, message_id=102, conversation_id=22))
+        self.drain()
+
+        def check():
+            for row in self.admin.execute("""
+                SELECT c.message_total,c.round_total,c.message_since,
+                    (SELECT count(*) FROM ops.message_index m WHERE m.customer_id=c.customer_id) AS messages,
+                    (SELECT count(*) FROM ops.round_index r WHERE r.customer_id=c.customer_id) AS rounds,
+                    (SELECT min(COALESCE(m.sent_at,'1970-01-01 00:00:00+00')) FROM ops.message_index m
+                        WHERE m.customer_id=c.customer_id) AS since
+                FROM ops.customer_index c WHERE c.source_key=%s""", (self.source,)).fetchall():
+                self.assertEqual((row["message_total"], row["round_total"], row["message_since"]),
+                                 (row["messages"], row["rounds"], row["since"]))
+            seq = self.admin.execute("""
+                SELECT s.seq,s.customer_id=r.customer_id AS same,
+                    row_number() OVER (PARTITION BY r.customer_id ORDER BY r.started_at,r.round_id) AS expected
+                FROM ops.round_index r LEFT JOIN ops.customer_round_seq s USING(round_id)
+                WHERE r.source_key=%s""", (self.source,)).fetchall()
+            self.assertTrue(seq and all(row["seq"] == row["expected"] and row["same"] for row in seq))
+            # Every round has stored facts or is queued for them.
+            self.assertEqual(self.admin.execute("""SELECT count(*) AS n FROM ops.round_index r WHERE r.source_key=%s
+                AND NOT EXISTS (SELECT 1 FROM ops.round_service_facts f WHERE f.round_id=r.round_id)
+                AND NOT EXISTS (SELECT 1 FROM ops.round_fact_pending p WHERE p.round_id=r.round_id)""",
+                (self.source,)).fetchone()["n"], 0)
+
+        check()
+        customer = self.admin.execute("SELECT customer_id,contact_id FROM ops.customer_index WHERE source_key=%s",
+                                      (self.source,)).fetchone()
+        other = f"customer:{self.source}:merged"
+        self.admin.execute("""INSERT INTO ops.customer_index (customer_id,source_key,account_id,contact_id,display_name)
+            VALUES (%s,%s,1,'777','另一位')""", (other, self.source))
+        for table in ("round_index", "message_index"):
+            self.admin.execute(f"UPDATE ops.{table} SET customer_id=%s WHERE source_key=%s AND conversation_id=22",
+                               (other, self.source))
+        check()
+        self.admin.execute("DELETE FROM ops.message_index WHERE source_key=%s AND message_id=101", (self.source,))
+        self.admin.execute("DELETE FROM ops.round_service_facts WHERE source_key=%s", (self.source,))
+        check()
+        # A deleted round leaves no queue entry behind.
+        gone = self.admin.execute("""SELECT round_id FROM ops.round_index WHERE source_key=%s AND conversation_id=22
+            ORDER BY started_at DESC LIMIT 1""", (self.source,)).fetchone()["round_id"]
+        self.admin.execute("DELETE FROM ops.message_index WHERE round_id=%s", (gone,))
+        self.admin.execute("DELETE FROM ops.round_index WHERE round_id=%s", (gone,))
+        self.assertIsNone(self.admin.execute("SELECT 1 FROM ops.round_fact_pending WHERE round_id=%s", (gone,)).fetchone())
+        check()
+        now = datetime.now(timezone.utc)
+        listed = self.reader.list_customers(ArchiveFilters(source_key=self.source, account_id=1, as_of=now))
+        self.assertEqual(sorted((c["customer_id"], c["round_count"], c["message_count"]) for c in listed["items"]),
+                         sorted([(customer["customer_id"], 2, 1), (other, 1, 1)]))  # message 101 deleted (round stays); a round of 22 deleted
+        # Locked before the second round: counts and the customer list only see earlier rows.
+        early = START + timedelta(minutes=5)
+        listed = self.reader.list_customers(ArchiveFilters(source_key=self.source, account_id=1, as_of=early))
+        self.assertEqual([(c["customer_id"], c["round_count"], c["message_count"]) for c in listed["items"]],
+                         [(customer["customer_id"], 1, 1)])
+        # Blacklist: the latest event per contact decides "currently blocked".
+        rows = [("1", customer["contact_id"], "block", False, now + timedelta(hours=2)),
+                ("2", customer["contact_id"], "unblock", False, None),
+                ("3", "777", "block", True, None)]
+        for seq, contact, action, permanent, until in rows:
+            self.admin.execute("""INSERT INTO archive.contact_block_events (source_key,account_id,event_key,source_seq,
+                contact_id,action,source,blocked_until,permanent,occurred_at,payload)
+                VALUES (%s,1,%s,%s,%s,%s,'client',%s,%s,%s,'{}')""",
+                (self.source, f"r2-{seq}", seq, contact, action, until, permanent, now))
+        state = {row["contact_id"]: row["action"] for row in self.admin.execute(
+            "SELECT contact_id,action FROM ops.contact_block_state WHERE source_key=%s", (self.source,))}
+        self.assertEqual(state, {customer["contact_id"]: "unblock", "777": "block"})
+        self.reader.ping()
+        for mode, expected in (("ever", [customer["customer_id"], other]), ("active", [other])):
+            items = self.reader.list_customers(ArchiveFilters(source_key=self.source, account_id=1, blacklist=mode))
+            self.assertEqual(sorted(c["customer_id"] for c in items["items"]), sorted(expected), mode)
+        flags = {c["customer_id"]: c.get("blacklist_status") for c in
+                 self.reader.list_customers(ArchiveFilters(source_key=self.source, account_id=1))["items"]}
+        self.assertEqual(flags, {customer["customer_id"]: "past", other: "active"})
 
     def test_reader_customer_history_spans_conversations_and_contains_unassigned_messages(self):
         missing = event(1, message_id=100)
@@ -467,6 +635,66 @@ class QueryDatabaseTest(unittest.TestCase):
         for key, value in expected.items():
             self.assertEqual(recovered[key], value)
 
+    def test_user_search_matches_h5_id_without_verified_business_identity(self):
+        for index, identity in enumerate((
+            {"identifier": "85704084"}, {"userId": 85704084},
+            {"custom_attributes": {"userId": "85704084"}},
+        )):
+            incoming = event(index + 1, conversation_id=100 + index)
+            contact = {"id": 42 + index, "name": "H5 客户", "type": "contact", **identity}
+            incoming["payload"]["sender"] = dict(contact)
+            incoming["payload"]["conversation"]["meta"]["sender"] = dict(contact)
+            self.receive(incoming)
+        other = event(4, conversation_id=200)
+        other_contact = {"id": 99, "name": "其他客户", "type": "contact", "identifier": "99999999"}
+        other["payload"]["sender"] = dict(other_contact)
+        other["payload"]["conversation"]["meta"]["sender"] = dict(other_contact)
+        self.receive(other)
+        self.drain()
+
+        base = {"source_key": self.source, "account_id": 1}
+        for query, expected in (("85704084", {"42", "43", "44"}), ("7040", {"42", "43", "44"}),
+                                ("H5 客户", {"42", "43", "44"}), ("42", {"42"}), ("no-such-user", set())):
+            with self.subTest(query=query):
+                filters = ArchiveFilters(**base, customer_query=query)
+                customers = self.reader.list_customers(filters)
+                rounds = self.reader.list_rounds(filters)
+                self.assertEqual({item["contact_id"] for item in customers["items"]}, expected)
+                self.assertEqual({item["contact_id"] for item in rounds["items"]}, expected)
+                self.assertEqual(customers["total"], len(expected))
+                self.assertEqual(rounds["total"], len(expected))
+                self.assertEqual(self.reader.overview(filters)["total_rounds"], len(expected))
+                self.assertTrue(all(item["business_user_id"] is None for item in customers["items"]))
+
+    def test_user_search_recovers_h5_id_from_pre_profile_customer_index(self):
+        incoming = event(1)
+        incoming["payload"]["conversation"]["meta"]["sender"]["identifier"] = "85704084"
+        self.receive(incoming)
+        self.drain()
+        self.admin.execute("UPDATE ops.customer_index SET data=data-'h5_user_id' WHERE source_key=%s", (self.source,))
+
+        filters = ArchiveFilters(source_key=self.source, account_id=1, customer_query="85704084")
+        self.assertEqual(self.reader.list_customers(filters)["total"], 1)
+        self.assertEqual(self.reader.list_rounds(filters)["total"], 1)
+        self.assertEqual(self.reader.overview(filters)["total_rounds"], 1)
+
+    def test_user_search_treats_h5_id_wildcards_as_literal_text(self):
+        for index, identifier in enumerate(("app_100%ID", "appX100ZID")):
+            incoming = event(index + 1, conversation_id=100 + index)
+            contact = {"id": 42 + index, "name": "客户", "type": "contact", "identifier": identifier}
+            incoming["payload"]["sender"] = dict(contact)
+            incoming["payload"]["conversation"]["meta"]["sender"] = dict(contact)
+            self.receive(incoming)
+        self.drain()
+
+        for query in ("app_100%id", "100%", "app_"):
+            with self.subTest(query=query):
+                filters = ArchiveFilters(source_key=self.source, account_id=1, customer_query=query)
+                self.assertEqual(self.reader.list_customers(filters)["total"], 1)
+                rounds = self.reader.list_rounds(filters)
+                self.assertEqual([item["contact_id"] for item in rounds["items"]], ["42"])
+                self.assertEqual(self.reader.overview(filters)["total_rounds"], 1)
+
     def test_customer_card_metrics_use_logical_messages_handoff_and_original_round_rating(self):
         attrs = {"ics_round_id": "metrics-round", "ics_closed_at": (START + timedelta(minutes=12, microseconds=1)).isoformat()}
         self.receive(event(1), event(2, .5, sender="agent_bot", direction="outgoing"),
@@ -483,6 +711,7 @@ class QueryDatabaseTest(unittest.TestCase):
             event(17, 15, event_type="message_updated", message_id=6, sender="user", direction="outgoing",
                 created_at=(START + timedelta(minutes=3)).isoformat(),
                 updated_at=(START + timedelta(minutes=15)).isoformat(), content="edited response"))
+        self.receive_assignment("7", minute=1)
         self.drain()
         customer = self.reader.list_customers(ArchiveFilters(source_key=self.source, account_id=1))["items"][0]
         latest = customer["latest_round"]
@@ -490,14 +719,17 @@ class QueryDatabaseTest(unittest.TestCase):
         self.assertEqual(customer["round_count"], 1)
         self.assertEqual((latest["conversation_id"], latest["round_no"], latest["rating"], latest["rating_feedback"]),
                          (12, 1, 5, "helpful service"))
-        self.assertEqual(metrics["first_response_seconds"], 120)
-        self.assertEqual((metrics["average_response_seconds"], metrics["response_sample_count"]), (150, 2))
+        # Timings are the statistics figures (R3): every wait starts at the last
+        # message of a customer burst after the transfer (2 -> 3, 5 -> 7).
+        self.assertEqual(metrics["first_response_seconds"], 60)
+        self.assertEqual((metrics["average_response_seconds"], metrics["response_sample_count"]), (90, 2))
+        self.assertEqual(latest["statistics"]["responsible_agent_id"], "7")
         self.assertEqual((metrics["human_phase_message_count"], metrics["human_phase_customer_count"], metrics["human_phase_agent_count"]), (8, 5, 3))
         self.assertIs(metrics["last_message_by_agent"], False)
         self.assertEqual(metrics["last_message_sender_role"], "contact")
         self.assertEqual(metrics["duration_seconds"], 720)
 
-    def test_customer_card_keeps_history_counts_but_metrics_only_cover_the_latest_round(self):
+    def test_filtered_customer_card_counts_and_metrics_follow_matching_rounds(self):
         self.receive(event(1, content="old-round-keyword"), agent_reply(2, 1),
                      event(3, 2, event_type="conversation_status_changed", status="resolved"),
                      event(4, 3, conversation_id=22),
@@ -506,6 +738,13 @@ class QueryDatabaseTest(unittest.TestCase):
         selected = self.reader.list_customers(ArchiveFilters(source_key=self.source, account_id=1, keyword="old-round-keyword"))
         self.assertEqual(selected["total"], 1)
         customer = selected["items"][0]
+        self.assertTrue(customer["filter_scoped"])
+        self.assertEqual((customer["round_count"], customer["message_count"], customer["total_round_count"]), (1, 2, 2))
+        self.assertEqual((customer["latest_round"]["conversation_id"], customer["latest_round"]["round_no"]), (12, 1))
+        # 不带轮次级条件时仍是完整历史，卡片指标覆盖最近一轮。
+        selected = self.reader.list_customers(ArchiveFilters(source_key=self.source, account_id=1))
+        customer = selected["items"][0]
+        self.assertFalse(customer["filter_scoped"])
         self.assertEqual((customer["round_count"], customer["message_count"]), (2, 4))
         latest = customer["latest_round"]
         self.assertEqual((latest["conversation_id"], latest["round_no"]), (22, 1))
@@ -518,13 +757,16 @@ class QueryDatabaseTest(unittest.TestCase):
     def test_customer_card_metrics_cover_messages_beyond_detail_pagination(self):
         self.receive(event(1), event(2, 1, event_type="conversation_updated", custom_attributes={"handoff_requested": True}),
                      *(agent_reply(index + 3, 2 + index/1000) for index in range(105)))
+        self.receive_assignment("7", minute=1)
         self.drain()
         customer = self.reader.list_customers(ArchiveFilters(source_key=self.source, account_id=1))["items"][0]
         metrics = customer["latest_round"]["service_metrics"]
         self.assertEqual(metrics["human_phase_agent_count"], 105)
         self.assertEqual(metrics["human_phase_message_count"], 105)
-        self.assertEqual(metrics["response_sample_count"], 1)
-        self.assertEqual(metrics["first_response_seconds"], 60)
+        # No customer message after the transfer: the seat spoke first, no response sample.
+        self.assertEqual(metrics["response_sample_count"], 0)
+        self.assertIsNone(metrics["first_response_seconds"])
+        self.assertEqual(metrics["first_response_status"], "not_counted")
         self.assertIs(metrics["last_message_by_agent"], True)
         self.assertEqual(customer["message_count"], 106)
 
@@ -558,6 +800,68 @@ class QueryDatabaseTest(unittest.TestCase):
         self.assertEqual(versions["total"], 3)
         self.assertEqual(versions["items"][0]["content"], "原文 100%_literal")
         self.assertEqual(self.reader.message_versions("other-source", 1, 100)["total"], 0)
+
+    def test_customer_mode_seat_filter_hides_other_seats_rounds_in_directory_history_and_export(self):
+        self.receive(event(1, content="seat seven"), agent_reply(2, 1, agent_id=7, agent_name="七号"),
+                     event(3, 2, event_type="conversation_status_changed", status="resolved"),
+                     event(4, 3, conversation_id=22, content="seat nine"),
+                     agent_reply(5, 4, conversation_id=22, agent_id=9, agent_name="九号"),
+                     event(6, 5, conversation_id=32, content="seat seven again"),
+                     agent_reply(7, 6, conversation_id=32, agent_id=7, agent_name="七号"))
+        self.drain()
+        filters = ArchiveFilters(source_key=self.source, account_id=1, agent_id="7", agent_scope="replied")
+        listed = self.reader.list_customers(filters)
+        self.assertEqual(listed["total"], 1)
+        customer = listed["items"][0]
+        self.assertEqual((customer["round_count"], customer["message_count"], customer["total_round_count"]), (2, 4, 3))
+        self.assertEqual(customer["latest_round"]["conversation_id"], 32)
+        directory = self.reader.customer_rounds(customer["customer_id"], filters=filters)
+        self.assertTrue(directory["filter_scoped"])
+        self.assertEqual(directory["total"], 2)
+        self.assertEqual({item["conversation_id"] for item in directory["items"]}, {12, 32})
+        history = self.reader.customer_history(customer["customer_id"], filters=filters)
+        self.assertTrue(history["filter_scoped"])
+        self.assertEqual(history["total"], 4)
+        self.assertEqual({message["conversation_id"] for message in history["messages"]}, {12, 32})
+        self.assertEqual(history["customer"]["round_count"], 2)
+        paged = self.reader.customer_history(customer["customer_id"], page=2, page_size=3, filters=filters)
+        self.assertEqual((paged["total"], len(paged["messages"])), (4, 1))
+        # 未带筛选（按轮次视图的“用户全史”）仍是完整历史。
+        self.assertEqual(self.reader.customer_rounds(customer["customer_id"])["total"], 3)
+        self.assertEqual(self.reader.customer_history(customer["customer_id"])["total"], 6)
+        from quality.query.config import QuerySettings
+        from quality.query.export import ExportRepository
+        from openpyxl import load_workbook
+        exporter = ExportRepository(QuerySettings(_env_file=None, query_enabled=True,
+            reader_password=os.environ["ARCHIVE_READER_PASSWORD"], postgres_host=self.settings.postgres_host,
+            postgres_port=self.settings.postgres_port, postgres_db=self.settings.postgres_db,
+            postgres_sslmode=self.settings.postgres_sslmode))
+        exporter.open()
+        self.addCleanup(exporter.close)
+        for scope in ({}, {"customer_id": customer["customer_id"]}):
+            artifact = exporter.create_export("customers", filters, **scope)
+            self.addCleanup(artifact.cleanup)
+            workbook = load_workbook(artifact.path)
+            try:
+                values = list(workbook.active.values)
+                rows = [dict(zip(values[0], row)) for row in values[1:]]
+                self.assertEqual({row["会话ID"] for row in rows}, {"12", "32"}, scope)
+            finally:
+                workbook.close()
+
+    def test_customer_keyword_filter_still_finds_unrounded_evidence_without_other_rounds(self):
+        self.receive(event(1, content="ordinary round"), agent_reply(2, 1))
+        unknown = event(3, 2, conversation_id=22, content="partial-only evidence")
+        unknown["payload"].pop("created_at")
+        self.receive(unknown)
+        self.drain()
+        filters = ArchiveFilters(source_key=self.source, account_id=1, keyword="partial-only")
+        listed = self.reader.list_customers(filters)
+        self.assertEqual(listed["total"], 1)
+        customer_id = listed["items"][0]["customer_id"]
+        history = self.reader.customer_history(customer_id, filters=filters)
+        self.assertEqual([message["content"] for message in history["messages"]], ["partial-only evidence"])
+        self.assertEqual(self.reader.customer_rounds(customer_id, filters=filters)["total"], 0)
 
     def test_reader_seat_filters_distinguish_reply_assignment_and_current_with_source_scope(self):
         self.receive(event(1), event(2, 1, event_type="conversation_updated", assignee={"id": 8, "name": "负责人"}),
@@ -644,8 +948,12 @@ class QueryDatabaseTest(unittest.TestCase):
         base = {"source_key": self.source, "account_id": 1}
         def selected(agent_id, **values):
             return self.reader.list_rounds(ArchiveFilters(**base, agent_id=agent_id, **values))
-        first = selected("8")["items"][0]
+        first = selected("8", agent_scope="current")["items"][0]
         self.assertEqual((first["responsible_agent_id"], first["responsibility_event_id"], first["current_assignee_id"]), ("8", assignment_id, "8"))
+        # Seat 7 answered the round ICS assigned to seat 8: assisted, no assessed seat.
+        self.assertEqual((first["statistics"]["assigned_agent_id"], first["statistics"]["responsible_agent_id"],
+                          first["statistics"]["assisted"]), ("8", None, True))
+        self.assertEqual(selected("8")["total"], 0)
         self.assertEqual(selected("7")["total"], 0)
         self.assertEqual(selected("8", agent_scope="current")["total"], 1)
         self.receive(agent_reply(4, 3, agent_id=9, agent_name="reply C"),
@@ -656,7 +964,7 @@ class QueryDatabaseTest(unittest.TestCase):
                         created_at=(START+timedelta(minutes=2)).isoformat(),
                         updated_at=(START+timedelta(minutes=7)).isoformat(), content="edited older reply"))
         self.drain()
-        final = selected("8")["items"][0]
+        final = selected("7", agent_scope="replied")["items"][0]
         self.assertEqual(final["round_id"], first["round_id"])
         self.assertEqual((final["responsible_agent_id"], final["responsibility_event_id"]), ("8", assignment_id))
         self.assertEqual((final["last_public_agent_id"], final["last_public_agent_name"], final["last_public_message_id"]), ("9", "reply C", 4))
@@ -665,7 +973,7 @@ class QueryDatabaseTest(unittest.TestCase):
         self.assertEqual(selected("7", agent_scope="replied")["total"], 1)
         self.assertEqual(selected("10")["total"], 0)
         self.assertEqual(selected("10", agent_scope="current")["total"], 1)
-        self.assertEqual(self.reader.list_customers(ArchiveFilters(**base, agent_id="8"))["total"], 1)
+        self.assertEqual(self.reader.list_customers(ArchiveFilters(**base, agent_id="8"))["total"], 0)
         self.assertEqual(self.reader.list_customers(ArchiveFilters(**base, agent_id="9"))["total"], 0)
         self.assertEqual(self.reader.list_customers(ArchiveFilters(**base, agent_id="7"))["total"], 0)
         detail = self.reader.round_detail(final["round_id"])
@@ -675,8 +983,8 @@ class QueryDatabaseTest(unittest.TestCase):
         self.assertEqual((actual[3]["sender_id"], actual[3]["content"]), ("7", "edited older reply"))
         original_events = self.rows("archive.events")
         original_snapshots = self.rows("archive.message_snapshots")
-        self.assertEqual(self.processor.rebuild(self.source), 1)
-        self.assertEqual(selected("8")["items"][0]["responsibility_event_id"], assignment_id)
+        self.assertEqual(len(self.processor.rebuild(self.source).completed), 1)
+        self.assertEqual(selected("7", agent_scope="replied")["items"][0]["responsibility_event_id"], assignment_id)
         self.assertEqual(self.rows("archive.events"), original_events)
         self.assertEqual(self.rows("archive.message_snapshots"), original_snapshots)
 
@@ -891,7 +1199,7 @@ class QueryDatabaseTest(unittest.TestCase):
                 self.drain()
                 assert_human()
                 evidence_before = {table: self.rows(table) for table in evidence_tables}
-                self.assertEqual(self.processor.rebuild(self.source), index+1)
+                self.assertEqual(len(self.processor.rebuild(self.source).completed), index+1)
                 assert_human()
                 for table in evidence_tables:
                     self.assertEqual(self.rows(table), evidence_before[table], table)
@@ -963,7 +1271,7 @@ class QueryDatabaseTest(unittest.TestCase):
         self.assertIsNone(self.processor.claim("replacement-worker"))
         row = self.admin.execute("SELECT status,locked_by FROM ops.event_jobs WHERE event_id=%s", (receipt.event_id,)).fetchone()
         self.assertEqual(row, {"status": "failed", "locked_by": None})
-        self.assertEqual(self.processor.rebuild(self.source), 1)
+        self.assertEqual(len(self.processor.rebuild(self.source).completed), 1)
         self.assertEqual(self.admin.execute("SELECT status FROM ops.event_jobs WHERE event_id=%s",
             (receipt.event_id,)).fetchone()["status"], "completed")
 
@@ -988,7 +1296,7 @@ class QueryDatabaseTest(unittest.TestCase):
         before_events = self.rows("archive.events")
         before_snapshots = self.rows("archive.message_snapshots")
         self.assertEqual(self.rows("ops.round_index"), [])
-        self.assertEqual(self.processor.rebuild(self.source), 1)
+        self.assertEqual(len(self.processor.rebuild(self.source).completed), 1)
         self.assertEqual(self.rows("archive.events"), before_events)
         self.assertEqual(self.rows("archive.message_snapshots"), before_snapshots)
         filters = ArchiveFilters(source_key=self.source, account_id=1, inbox_id=3, round_no=1,
@@ -1036,6 +1344,260 @@ class QueryDatabaseTest(unittest.TestCase):
         versions = self.reader.message_versions(self.source, 1, 100)
         self.assertEqual(versions["total"], 2)
         self.assertEqual({item["content"] for item in versions["items"]}, {"first observed edited reply", "actual creation body"})
+
+
+    def test_recent_fifty_rounds_keep_older_history_and_original_ordinals(self):
+        self.receive_bulk(self.rounds_events(62))
+        with patch.object(self.processor, "_write_projection", wraps=self.processor._write_projection) as writes:
+            self.drain()
+        self.assertEqual([call.kwargs["round_no_offset"] for call in writes.call_args_list], [0, 50])
+        original = sorted(self.rows("ops.round_index"), key=lambda row: row["round_no"])
+        self.assertEqual([row["round_no"] for row in original], list(range(1, 63)))
+        self.receive(event(1000, 620, content="newest round"))
+        with patch.object(self.processor, "_write_projection", wraps=self.processor._write_projection) as writes:
+            self.drain()
+        self.assertEqual([call.kwargs["round_no_offset"] for call in writes.call_args_list], [13])
+        latest = sorted(self.rows("ops.round_index"), key=lambda row: row["round_no"])
+        self.assertEqual(latest[:13], original[:13])
+        self.assertEqual(len(latest), 63)
+        self.assertEqual(len(self.rows("ops.message_index")), 63)
+        customer_id = self.rows("ops.customer_index")[0]["customer_id"]
+        self.assertEqual(self.reader.customer_history(customer_id)["total"], 63)
+
+    def test_old_edit_deletion_and_late_rating_repair_history_outside_recent_window(self):
+        self.receive_bulk(self.rounds_events(62))
+        attrs = {"ics_round_id": "historical-business-round", "ics_closed_at": (START+timedelta(minutes=2)).isoformat()}
+        self.receive(event(1000, 3, sender="agent_bot", direction="outgoing", content_type="input_csat",
+                           content_attributes=attrs))
+        self.drain()
+        before_raw = self.rows("archive.events")
+        round_id = next(row["round_id"] for row in self.rows("ops.round_index") if row["round_no"] == 1)
+        self.receive(event(1001, 620, event_type="message_updated", message_id=1, content="old edited",
+                           created_at=START.isoformat(), updated_at=(START+timedelta(minutes=620)).isoformat()),
+                     event(1002, 621, event_type="message_deleted", message_id=3,
+                           created_at=(START+timedelta(minutes=10)).isoformat(), content=None),
+                     event(1003, 622, event_type="message_updated", message_id=1000, content_type="input_csat",
+                           created_at=(START+timedelta(minutes=3)).isoformat(),
+                           csat_survey_response={"message_id": 1000, "rating": 2, "feedback_message": "late feedback"}))
+        self.drain()
+        messages = {row["message_id"]: row for row in self.rows("ops.message_index")}
+        self.assertEqual(messages[1]["content"], "old edited")
+        self.assertTrue(messages[3]["is_deleted"])
+        first = next(row for row in self.rows("ops.round_index") if row["round_id"] == round_id)
+        self.assertEqual((first["rating"], first["data"]["rating_feedback"]), (2, "late feedback"))
+        self.assertEqual(self.rows("archive.events")[:len(before_raw)], before_raw)
+        self.assertEqual(len(self.rows("ops.round_index")), 62)
+
+    def test_bounded_progress_survives_restart_without_using_failure_attempts(self):
+        self.receive_bulk(self.rounds_events(62))
+        limited = ProcessingRepository(self.settings.model_copy(update={"processor_index_batch_size": 5}))
+        limited.open()
+        try:
+            self.assertTrue(limited.process_next("interrupted-worker"))
+        finally:
+            limited.close()
+        plan = self.rows("ops.conversation_replay_state")[0]["plan"]
+        self.assertFalse(plan["indexed"])
+        self.assertEqual(len(self.rows("ops.event_replay_index")), 5)
+        pending = self.admin.execute("""SELECT max(j.attempts) AS n FROM ops.event_jobs j
+            JOIN archive.events e ON e.id=j.event_id WHERE e.source_key=%s""", (self.source,)).fetchone()
+        self.assertEqual(pending["n"], 0)
+        self.drain()
+        self.assertEqual(self.rows("ops.conversation_replay_state")[0]["plan"], {})
+        self.assertEqual(len(self.rows("ops.round_index")), 62)
+        self.assertTrue(self.admin.execute("""SELECT bool_and(j.status='completed') AS done FROM ops.event_jobs j
+            JOIN archive.events e ON e.id=j.event_id WHERE e.source_key=%s""", (self.source,)).fetchone()["done"])
+
+    def test_late_customer_message_merges_old_boundary_and_renumbers_without_losing_messages(self):
+        self.receive(event(1), event(2, 360), event(3, 720))
+        self.drain()
+        third = next(row["round_id"] for row in self.rows("ops.round_index") if row["round_no"] == 3)
+        self.receive(event(4, 180, content="late bridging message"))
+        self.drain()
+        rounds = sorted(self.rows("ops.round_index"), key=lambda row: row["round_no"])
+        self.assertEqual([row["round_no"] for row in rounds], [1, 2])
+        self.assertEqual(rounds[1]["round_id"], third)
+        self.assertEqual(len(self.rows("ops.message_index")), 4)
+        self.assertTrue(all(row["round_id"] for row in self.rows("ops.message_index")))
+
+    def test_recent_window_is_shared_by_customer_but_conversation_state_is_independent(self):
+        self.receive_bulk(self.rounds_events(40))
+        self.receive_bulk(self.rounds_events(30, conversation_id=22, start=1000, first_id=1000))
+        self.drain()
+        self.receive(event(2000, 1300, conversation_id=22))
+        with patch.object(self.processor, "_write_projection", wraps=self.processor._write_projection) as writes:
+            self.drain()
+        self.assertEqual([call.kwargs["round_no_offset"] for call in writes.call_args_list], [0])
+        self.receive(event(2001, 399, event_type="conversation_updated"))
+        with patch.object(self.processor, "_write_projection", wraps=self.processor._write_projection) as writes:
+            self.drain()
+        self.assertEqual([call.kwargs["round_no_offset"] for call in writes.call_args_list], [21])
+        self.assertEqual(len(self.rows("ops.round_index")), 71)
+
+    def test_replay_query_settings_are_restored_after_success_and_rollback(self):
+        """重放的局部规划设置不能泄漏到同一连接的后续查询。"""
+        with self.processor.pool.connection() as connection:
+            for nestloop, jit in (("on", "on"), ("on", "off"), ("off", "on"), ("off", "off")):
+                with self.subTest(nestloop=nestloop, jit=jit):
+                    connection.execute("""SELECT set_config('enable_nestloop',%s,true),
+                        set_config('jit',%s,true)""", (nestloop, jit))
+                    result = self.processor.replay.execute_facts(connection, "SELECT 42 AS value", ())
+                    self.assertEqual(result.fetchone()["value"], 42)
+                    settings_sql = """SELECT current_setting('enable_nestloop') AS nestloop,
+                        current_setting('jit') AS jit"""
+                    self.assertEqual(connection.execute(settings_sql).fetchone(), {"nestloop": nestloop, "jit": jit})
+                    with self.assertRaises(psycopg.errors.DivisionByZero):
+                        with connection.transaction():
+                            self.processor.replay.execute_facts(connection, "SELECT 1/0", ())
+                    self.assertEqual(connection.execute(settings_sql).fetchone(), {"nestloop": nestloop, "jit": jit})
+
+    def test_lifetime_above_twenty_thousand_events_and_sixty_four_mib_uses_bounded_windows(self):
+        # 即使后续重试碰巧成功，大会话也不应在首次处理时触发查询超时。
+        retry_patch = patch.object(self.processor, "_retry", wraps=self.processor._retry)
+        retries = retry_patch.start()
+        self.addCleanup(retry_patch.stop)
+        def history():
+            for index in range(60):
+                for message in range(350):
+                    yield event(index*351+message+1, index*10+message/60, content="x"*3500)
+                yield event(index*351+351, index*10+6, event_type="conversation_status_changed", status="resolved")
+        self.receive_bulk(history())
+        total = self.admin.execute("""SELECT count(*) AS n,sum(octet_length(payload::text)) AS bytes
+            FROM archive.events WHERE source_key=%s""", (self.source,)).fetchone()
+        self.assertGreater(total["n"], 20000)
+        self.assertGreater(total["bytes"], 64*1024*1024)
+        with patch.object(self.processor, "_write_projection", wraps=self.processor._write_projection) as writes:
+            self.drain()
+        self.assertGreater(len(writes.call_args_list), 1)
+        self.assertTrue(all(len(call.args[1]) <= 20000 for call in writes.call_args_list))
+        self.assertEqual(len(self.rows("ops.round_index")), 60)
+        oldest = next(row for row in self.rows("ops.round_index") if row["round_no"] == 1)
+        self.receive(event(30000, 600, content="still accepts new rounds"))
+        self.drain()
+        self.assertEqual(len(self.rows("ops.round_index")), 61)
+        self.assertEqual(len(self.rows("ops.message_index")), 21001)
+        self.assertEqual(next(row for row in self.rows("ops.round_index") if row["round_no"] == 1), oldest)
+        self.assertTrue(self.admin.execute("""SELECT bool_and(j.status='completed') AS done FROM ops.event_jobs j
+            JOIN archive.events e ON e.id=j.event_id WHERE e.source_key=%s""", (self.source,)).fetchone()["done"])
+        retries.assert_not_called()
+
+    def test_assignment_key_conflict_across_window_boundary_repairs_both_rounds(self):
+        self.receive_bulk(self.rounds_events(62))
+        self.receive_assignment("8", trigger_message_id=1, minute=1, session_minute=0)
+        self.drain()
+        self.receive_assignment("9", trigger_message_id=121, minute=601, session_minute=600)
+        self.drain()
+        affected = [row for row in self.rows("ops.round_index") if row["round_no"] in (1, 61)]
+        self.assertEqual(len(affected), 2)
+        self.assertTrue(all(row["data"]["responsibility_basis"] == "assignment_conflict" for row in affected))
+        self.assertTrue(all(row["data"]["responsible_agent_id"] is None for row in affected))
+
+    def test_assignment_timestamp_tolerance_at_window_boundary_does_not_conflict_with_prior_round(self):
+        self.receive_bulk(event(index+1, index*360) for index in range(52))
+        self.receive_assignment("8", trigger_message_id=51, minute=18001, session_minute=18000-0.00001)
+        self.drain()
+        rounds = {row["round_no"]: row for row in self.rows("ops.round_index")}
+        self.assertEqual(rounds[50]["data"]["responsibility_basis"], "assignment_unobserved")
+        self.assertEqual(rounds[51]["data"]["responsibility_basis"], "ics_assignment")
+
+    def test_restart_between_replay_windows_keeps_human_takeover_and_new_arrivals(self):
+        self.receive_bulk(event(index+1, index*360) for index in range(62))
+        self.receive(agent_reply(1000, 1))
+        self.processor.process_next("first-window")
+        self.assertEqual(self.rows("ops.conversation_replay_state")[0]["plan"]["cursor"], 51)
+        self.assertEqual(len(self.rows("ops.round_index")), 50)
+        self.receive(event(2000, 62*360))
+        replacement = ProcessingRepository(self.settings)
+        replacement.open()
+        self.addCleanup(replacement.close)
+        self.assertTrue(replacement.process_next("replacement"))
+        # The in-flight plan must not acknowledge the newer unindexed event.
+        latest = self.admin.execute("""SELECT j.status FROM ops.event_jobs j JOIN archive.events e ON e.id=j.event_id
+            WHERE e.source_key=%s AND e.message_id=2000""", (self.source,)).fetchone()
+        self.assertEqual(latest["status"], "queued")
+        self.drain()
+        rounds = sorted(self.rows("ops.round_index"), key=lambda row: row["round_no"])
+        self.assertEqual(len(rounds), 63)
+        self.assertTrue(all(row["reception_type"] == "human" for row in rounds))
+        self.assertTrue(all(row["data"]["takeover_inherited"] for row in rounds[1:]))
+
+    def test_single_round_event_budget_still_protects_memory_and_keeps_raw_evidence(self):
+        self.receive_bulk(event(index+1, index/60) for index in range(101))
+        limited = ProcessingRepository(self.settings.model_copy(update={
+            "processor_max_conversation_events": 100, "processor_max_attempts": 1}))
+        limited.open()
+        self.addCleanup(limited.close)
+        claim = limited.claim("single-round-limit")
+        with self.assertRaisesRegex(RuntimeError, "event bound"):
+            limited.process_claim(claim)
+        limited._retry(claim, "RuntimeError")
+        self.assertEqual(len(self.rows("archive.events")), 101)
+        self.assertEqual(self.rows("ops.round_index"), [])
+        self.assertEqual(self.rows("archive.message_snapshots"), [])
+        self.drain()
+
+    def test_new_generation_claim_is_released_when_it_finishes_the_previous_plan(self):
+        self.receive_bulk(self.rounds_events(62))
+        self.processor.process_next("start-plan")
+        receipt = self.receive(event(2000, 620))[0]
+        self.admin.execute("""UPDATE ops.event_jobs j SET available_at=CURRENT_TIMESTAMP+INTERVAL '1 day'
+            FROM archive.events e WHERE e.id=j.event_id AND e.source_key=%s AND j.event_id<>%s""",
+            (self.source, receipt.event_id))
+        claim = self.processor.claim("new-generation")
+        self.assertEqual(claim["event_id"], receipt.event_id)
+        self.processor.process_claim(claim)
+        job = self.admin.execute("SELECT status,attempts,locked_by FROM ops.event_jobs WHERE event_id=%s",
+                                 (receipt.event_id,)).fetchone()
+        self.assertEqual(job, {"status": "retry", "attempts": 0, "locked_by": None})
+        self.drain()
+        self.assertEqual(len(self.rows("ops.round_index")), 63)
+
+    def test_rating_alias_conflict_across_window_boundary_stays_unlinked(self):
+        self.receive_bulk(self.rounds_events(62))
+        self.receive(event(1000, 3, sender="agent_bot", direction="outgoing", content_type="input_csat",
+            content_attributes={"ics_round_id": "shared-alias", "ics_closed_at": (START+timedelta(minutes=2)).isoformat()}))
+        self.drain()
+        self.receive(event(1001, 603, sender="agent_bot", direction="outgoing", content_type="input_csat",
+            content_attributes={"ics_round_id": "shared-alias", "ics_closed_at": (START+timedelta(minutes=602)).isoformat()}))
+        self.drain()
+        self.assertTrue(all(row["status"] == "unlinked" and row["round_id"] is None for row in self.rows("ops.rating_index")))
+        affected = [row for row in self.rows("ops.round_index") if row["round_no"] in (1, 61)]
+        self.assertTrue(all(row["rating_status"] == "not_invited" for row in affected))
+
+    def test_rating_by_old_alias_without_invitation_id_updates_the_original_round(self):
+        self.receive_bulk(self.rounds_events(62))
+        self.receive(event(1000, 3, sender="agent_bot", direction="outgoing", content_type="input_csat",
+            content_attributes={"ics_round_id": "old-alias", "ics_closed_at": (START+timedelta(minutes=2)).isoformat()}))
+        self.drain()
+        self.receive(event(1001, 630, event_type="csat_survey_response", ics_round_id="old-alias", rating=4,
+                           conversation={"id": 12, "account_id": 1}))
+        self.drain()
+        first = next(row for row in self.rows("ops.round_index") if row["round_no"] == 1)
+        self.assertEqual(first["rating"], 4)
+
+    def test_rating_invitation_disambiguates_close_timestamps_across_small_windows(self):
+        from quality.processing.projector import stable_id
+        round_id = stable_id("round:", self.source, 1, 12, 1)
+        self.receive(event(1), event(2, 1, event_type="conversation_status_changed", status="resolved"),
+                     event(3, 1.00001), event(4, 1.00002, event_type="conversation_status_changed", status="resolved"),
+                     event(1000, 2, sender="agent_bot", direction="outgoing", content_type="input_csat",
+                           content_attributes={"ics_round_id": round_id, "ics_closed_at": (START+timedelta(minutes=1)).isoformat()}),
+                     event(1001, 3, event_type="message_updated", message_id=1000, content_type="input_csat",
+                           created_at=(START+timedelta(minutes=2)).isoformat(),
+                           content_attributes={"ics_closed_at": (START+timedelta(minutes=1.00001)).isoformat()},
+                           csat_survey_response={"message_id": 1000, "rating": 4}))
+        small = ProcessingRepository(self.settings.model_copy(update={"processor_recent_rounds": 1}))
+        small.open()
+        self.addCleanup(small.close)
+        for _ in range(10):
+            if not small.process_next("small-window"):
+                break
+        rounds = {row["round_no"]: row for row in self.rows("ops.round_index")}
+        self.assertEqual(rounds[1]["rating"], 4)
+        self.assertEqual(rounds[2]["rating_status"], "not_invited")
+        self.assertEqual(self.rows("ops.rating_index")[0]["round_id"], round_id)
+
+
 
 
 if __name__ == "__main__":

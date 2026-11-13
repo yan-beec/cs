@@ -25,6 +25,25 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM ops.schema_migrations WHERE version = '009_dual_round_reviews') THEN
         RAISE EXCEPTION 'FAIL: independent AI and human review migration is not recorded';
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM ops.schema_migrations WHERE version = '010_round_replay_windows') THEN
+        RAISE EXCEPTION 'FAIL: bounded round replay migration is not recorded';
+    END IF;
+    FOREACH target_table IN ARRAY ARRAY['event_replay_index','replay_message_index',
+                                       'replay_round_index','conversation_replay_state'] LOOP
+        IF NOT has_table_privilege('archive_ingest','ops.' || target_table,'SELECT')
+            OR NOT has_table_privilege('archive_ingest','ops.' || target_table,'INSERT')
+            OR NOT has_table_privilege('archive_ingest','ops.' || target_table,'UPDATE')
+            OR NOT has_table_privilege('archive_ingest','ops.' || target_table,'DELETE')
+            OR has_table_privilege('archive_ingest','ops.' || target_table,'TRUNCATE') THEN
+            RAISE EXCEPTION 'FAIL: replay worker permissions are incorrect: %', target_table;
+        END IF;
+        FOREACH runtime_role IN ARRAY ARRAY['archive_reader','archive_quality'] LOOP
+            IF NOT has_table_privilege(runtime_role,'ops.' || target_table,'SELECT')
+                OR has_table_privilege(runtime_role,'ops.' || target_table,'INSERT,UPDATE,DELETE,TRUNCATE') THEN
+                RAISE EXCEPTION 'FAIL: replay reader permissions are incorrect: % %', runtime_role,target_table;
+            END IF;
+        END LOOP;
+    END LOOP;
     IF NOT has_column_privilege('archive_reader', 'quality.current_round_reviews', 'ai_status', 'SELECT')
         OR NOT has_column_privilege('archive_reader', 'quality.current_round_reviews', 'human_status', 'SELECT')
         OR NOT has_function_privilege('archive_reader', 'quality.save_round_review(text,text,text,text,text,bigint)', 'EXECUTE')
@@ -83,9 +102,9 @@ BEGIN
         END IF;
     END LOOP;
 
-    -- Minute presence observations use a separate writer, never the chat ingest role.
+    -- Minute presence observations and ICS blacklist history use separate writers, never the chat ingest role.
     FOR target_table IN SELECT tablename FROM pg_tables
-        WHERE schemaname = 'archive' AND tablename <> 'agent_presence_samples' LOOP
+        WHERE schemaname = 'archive' AND tablename NOT IN ('agent_presence_samples', 'contact_block_events') LOOP
         IF NOT has_table_privilege('archive_ingest', 'archive.' || target_table, 'SELECT')
             OR NOT has_table_privilege('archive_ingest', 'archive.' || target_table, 'INSERT') THEN
             RAISE EXCEPTION 'FAIL: ingest cannot append evidence: %', target_table;
@@ -102,6 +121,15 @@ BEGIN
             END IF;
         END LOOP;
     END LOOP;
+
+    IF to_regclass('archive.contact_block_events') IS NOT NULL AND (
+        NOT has_table_privilege('archive_assignment', 'archive.contact_block_events', 'SELECT,INSERT')
+        OR has_table_privilege('archive_assignment', 'archive.contact_block_events', 'UPDATE,DELETE,TRUNCATE')
+        OR NOT has_table_privilege('archive_reader', 'archive.contact_block_events', 'SELECT')
+        OR has_table_privilege('archive_reader', 'archive.contact_block_events', 'INSERT,UPDATE,DELETE,TRUNCATE')
+        OR has_table_privilege('archive_ingest', 'archive.contact_block_events', 'INSERT,UPDATE,DELETE,TRUNCATE')) THEN
+        RAISE EXCEPTION 'FAIL: blacklist history has incorrect writer/reader permissions';
+    END IF;
 
     FOREACH target_table IN ARRAY ARRAY['event_jobs', 'attachment_jobs', 'conversation_index', 'backfill_jobs'] LOOP
         IF NOT has_table_privilege('archive_ingest', 'ops.' || target_table, 'SELECT')

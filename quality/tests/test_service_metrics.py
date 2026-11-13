@@ -33,8 +33,9 @@ def test_first_response_average_customer_bursts_and_human_phase_counts():
         message(9, "agent", is_private=True), message(10, "bot", is_rating=True),
         message(11, "system", direction="activity"),
     ])
-    assert result["first_response_seconds"] == 120
-    assert result["average_response_seconds"] == 150
+    # R3: each wait starts at the customer's last message (2 -> 3, 5 -> 7).
+    assert result["first_response_seconds"] == 60
+    assert result["average_response_seconds"] == 90
     assert result["response_sample_count"] == 2
     assert result["human_phase_customer_count"] == 5
     assert result["human_phase_agent_count"] == 3
@@ -51,10 +52,15 @@ def test_bot_phase_is_not_included_in_agent_waits_or_counts():
     assert (result["human_phase_customer_count"], result["human_phase_agent_count"]) == (1, 1)
 
 
-def test_initial_wait_needs_no_additional_customer_message_after_transfer():
+def test_seat_speaking_first_after_the_transfer_is_no_first_response():
+    # The customer did not speak after the transfer at 1: the seat's greeting is no response.
     result = metrics([message(0), message(3, "agent")])
-    assert result["first_response_seconds"] == result["average_response_seconds"] == 120
+    assert result["first_response_seconds"] is result["average_response_seconds"] is None
+    assert (result["first_response_status"], result["response_sample_count"]) == ("not_counted", 0)
     assert result["human_phase_message_count"] == 1
+    # The first response is the first reply after the customer speaks (last of a burst).
+    result = metrics([message(0), message(2, "agent"), message(4), message(4.5), message(5, "agent")])
+    assert result["first_response_seconds"] == result["average_response_seconds"] == 30
 
 
 def test_missing_handoff_time_never_invents_zero_response_from_inferred_completion():
@@ -68,20 +74,21 @@ def test_missing_handoff_time_never_invents_zero_response_from_inferred_completi
 
 
 def test_original_ics_assignment_supplies_an_observed_transfer_time():
-    result = metrics([message(0), message(2, "agent")], handoff_requested_at=None,
+    result = metrics([message(0), message(1), message(2, "agent")], handoff_requested_at=None,
                      responsibility_basis="ics_assignment", responsible_assigned_at=START + timedelta(minutes=.5))
-    assert result["first_response_seconds"] == 90
+    assert result["first_response_seconds"] == 60
     assert result["human_phase_basis"] == "ics_assignment"
 
 
 def test_successful_assignment_replaces_an_earlier_request_clock():
-    result = metrics([message(1, message_id=10), message(2, "agent")],
+    result = metrics([message(1, message_id=10), message(1.5, message_id=11), message(2, "agent")],
                      handoff_requested_at=START,
                      responsibility_basis="ics_assignment",
                      responsible_assigned_at=START + timedelta(minutes=1),
                      responsibility_trigger_message_id="10")
-    assert result["first_response_seconds"] == 60
-    assert result["average_response_seconds"] == 60
+    # The request (10) starts no wait; the customer's message after it does.
+    assert result["first_response_seconds"] == 30
+    assert result["average_response_seconds"] == 30
     assert result["human_phase_basis"] == "ics_assignment"
 
 
@@ -188,3 +195,49 @@ def test_all_over_limit_responses_leave_no_timing_samples():
     assert result["average_response_seconds"] is None
     assert result["response_sample_count"] == 0
     assert result["human_phase_message_count"] == 4
+
+
+def test_more_than_one_replying_seat_marks_round_excluded_from_seat_timings():
+    single = metrics([message(2), message(3, "agent", sender_id=7), message(4), message(5, "agent", sender_id=7),
+                      message(6, "agent", sender_id=8, is_private=True),
+                      message(7, "agent", sender_id=9, valid_content=False),
+                      message(0.5, "agent", sender_id=10)])
+    assert (single["responding_seat_count"], single["seat_timing_excluded"]) == (1, False)
+    helped = metrics([message(2), message(3, "agent", sender_id=7), message(4), message(6, "agent", sender_id="8")])
+    assert (helped["responding_seat_count"], helped["seat_timing_excluded"]) == (2, True)
+    # The round's own timing is still shown on the archive card.
+    assert helped["first_response_seconds"] == 60
+    unknown = metrics([message(2), message(3, "agent", sender_id=7), message(4, "agent", sender_id=8)],
+                      handoff_requested_at=None)
+    assert unknown["seat_timing_excluded"] is False
+
+
+def test_colleague_answering_for_the_assigned_seat_marks_round_assisted():
+    assigned = {"responsibility_basis": "ics_assignment", "responsible_agent_id": "8",
+                "responsible_assigned_at": (START + timedelta(minutes=1)).isoformat()}
+    covered = metrics([message(2), message(3, "agent", sender_id=7)], **assigned)
+    assert (covered["responding_seat_count"], covered["seat_timing_excluded"]) == (1, True)
+    own = metrics([message(2), message(3, "agent", sender_id=8)], **assigned)
+    assert (own["responding_seat_count"], own["seat_timing_excluded"]) == (1, False)
+
+
+def test_first_wait_starts_at_the_last_message_of_a_split_question():
+    # R3-06: three parts at 1:00, 1:20, 1:40, reply at 1:50 -> 10 seconds.
+    result = metrics([message(1), message(1 + 20 / 60), message(1 + 40 / 60), message(1 + 50 / 60, "agent"),
+                      # R3-06a: two messages, reply 15 seconds after the second.
+                      message(5), message(5.5), message(5.75, "agent"),
+                      # R3-06b/c: a second consecutive reply and an unanswered tail add nothing.
+                      message(6, "agent"), message(7)])
+    assert result["first_response_seconds"] == 10
+    assert (result["average_response_seconds"], result["response_sample_count"]) == (12.5, 2)
+
+
+def test_transfer_request_alone_starts_no_wait():
+    assigned = {"responsibility_basis": "ics_assignment", "responsible_agent_id": "7",
+                "responsible_assigned_at": (START + timedelta(minutes=1, seconds=2)).isoformat(),
+                "responsibility_trigger_message_id": "1"}
+    result = metrics([message(1, message_id=1, content="转人工"), message(1.5, "agent", sender_id=7),
+                      message(2, message_id=2), message(2.25, "agent", sender_id=7)], **assigned)
+    # Greeting at 1.5 is no response; the customer's 2:00 message answered at 2:15 is the first.
+    assert result["first_response_seconds"] == 15
+    assert result["response_sample_count"] == 1

@@ -251,12 +251,30 @@ class ConversationMemoryManager:
                     """.strip()
                 )
 
+    async def _drain_expired(self) -> int:
+        """一轮内分批清到不足一批为止（单轮最多 100 批），批间短暂让出。
+
+        每轮咨询都会新建记忆线程；每天只删一批（默认 500）时，日咨询量一旦
+        超过批量，checkpoint 表只增不减。某批有删除失败时停止本轮，避免反复
+        重试同一批最旧的线程。
+        """
+        settings = get_rag_settings()
+        batch_size = settings.rag_memory_cleanup_batch_size
+        total = 0
+        for _ in range(100):
+            deleted = await self.cleanup_expired()
+            total += deleted
+            if deleted < batch_size:
+                break
+            await asyncio.sleep(0.2)
+        return total
+
     async def _cleanup_loop(self) -> None:
         while True:
             settings = get_rag_settings()
             await asyncio.sleep(settings.rag_memory_cleanup_interval_seconds)
             try:
-                await self.cleanup_expired()
+                await self._drain_expired()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

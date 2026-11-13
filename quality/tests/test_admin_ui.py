@@ -1,4 +1,4 @@
-"""Run the archive page's actual JavaScript against controlled browser responses."""
+"""使用受控浏览器响应运行归档页面的实际 JavaScript。"""
 
 from __future__ import annotations
 
@@ -38,6 +38,7 @@ class Element {
     if (this.id === 'qualityFilterForm' && selector === 'input, select') return [...Object.keys(fields),'qualityInbox','qualityAgent'].map(node);
     return [];
   }
+  click() {if (!this.disabled) this.handlers.click?.();}
   scrollIntoView() {}
   focus() {this.focused = true;}
   reset() {for (const [id, node] of nodes) if (Object.hasOwn(fields,id) || ['qualityInbox','qualityAgent'].includes(id)) node.value = defaults[id] || '';}
@@ -48,7 +49,9 @@ const fields = {
  qualityAiReviewStatus: 'ai_review_status', qualityHumanReviewStatus: 'human_review_status',
  qualityReception: 'reception_type', qualityAgentScope: 'agent_scope', qualityConversation: 'conversation_id',
  qualityRoundNo: 'round_no', qualityTimeField: 'time_field', qualityStart: 'start',
- qualityEnd: 'end', qualityRatingStatus: 'rating_status', qualityRating: 'rating', qualityMessageScope: 'message_scope'
+ qualityEnd: 'end', qualityRatingStatus: 'rating_status', qualityRating: 'rating', qualityMessageScope: 'message_scope', qualityLost: 'lost',
+ qualityOutcome: 'outcome', qualityDialogue: 'dialogue', qualityMetric: 'metric', qualityMetricSeat: 'metric_seat',
+ qualityMetricSource: 'source_key', qualityMetricAccount: 'account_id', qualityMetricChannel: 'channel_key'
 };
 class BrowserFormData {
   constructor() {this.values = Object.entries(fields).map(([id, name]) => [name, node(id).value]);}
@@ -100,13 +103,279 @@ globalThis.ui = {api, state, qualityState, presenceState, showCurrentPage, colle
  qualitySafeLink, qualityAttachments, renderQualityTimeline, refreshQualityRatings, qualitySnapshotLabel, loadQualityList, qualityAgentLabel,
  openQualityDetail, loadQualityDetail, openQualityVersions, loadQualityVersions, stopQuality, logout,
  qualityRequest, loadQuality, downloadQualityEvent, changeQualityMode, closeQualityDetail, applyQualityFilters,
- setQualityFiltersCollapsed, loadQualityRoundDirectory, renderQualityRoundDirectory, renderQualityList,
+ setQualityFiltersCollapsed, loadQualityRoundDirectory, renderQualityRoundDirectory, renderQualityList, syncQualityCustomerSelection,
  exportQuality, cancelQualityExport, updateQualityExportButtons, qualityExportFilename,
  setQualityReview, renderQualityReview, loadQualityReview, saveQualityReview,
  loadQualityOverview, loadQualityPresence, loadQualityPresenceDaily, startQualityPresence, stopQualityPresence, qualityBeijingDay, qualityMinute, presenceRequest, mergePresenceRoster, loadPresenceTimeline, renderPresenceTimeline, renderPresenceIntervals, locatePresenceMinute, presenceAgentValue, updatePresenceDateRange, ensurePresenceDay, renderQualityPresenceDaily, loadPresenceManagement, renderPresenceManagement, removePresenceAgent};
 """
 
+PAGE_INPUTS = json.loads((Path(__file__).with_name("page_inputs.json")).read_text(encoding="utf-8"))
+PAGINATION_CASE = r"""
+ui.state.token='session'; ui.state.view='quality'; ui.qualityState.ready=true;
+for (const [prefix,mode] of [['quality','customers'],['quality','rounds'],['qualityDetail','customers'],['qualityRound','customers']]) {
+ ui.qualityState.mode=mode;
+ for (const [raw,expected] of INPUTS) {
+  for (const event of ['click','keydown']) {
+   ui.qualityState.listLoading=false; ui.qualityState.detailLoading=false;
+   ui.qualityState.page=3; ui.qualityState.total=500; ui.qualityState.pageSize=50;
+   ui.qualityState.detail={type:'customer',id:'c',page:3,total:500};
+   ui.qualityState.roundDirectory={customerId:'c',scope:'',page:3,pageSize:50,total:500,items:[],loading:false};
+   const queue=prefix==='qualityRound'?roundRequests:requests, before=queue.length;
+   node(prefix+'JumpInput').value=raw;
+   let prevented=false;
+   if(event==='click') node(prefix+'Jump').handlers.click();
+   else node(prefix+'JumpInput').handlers.keydown({key:'Enter',preventDefault(){prevented=true;}});
+   if(event==='keydown') assert.equal(prevented,true);
+   assert.equal(queue.length-before, expected===null||expected===3?0:1, prefix+' '+raw);
+   if(expected===null) {assert.equal(node(prefix+'JumpInput').value,raw); continue;}
+   assert.equal(String(node(prefix+'JumpInput').value),String(expected));
+   if(expected===3) continue;
+   for(const suffix of ['First','Last','Prev','Next','Jump','JumpInput']) assert.equal(node(prefix+suffix).disabled,true,prefix+suffix);
+   node(prefix+'Next').handlers.click(); node(prefix+'Jump').handlers.click();
+   assert.equal(queue.length-before,1);
+   const payload={page:expected,total:500,items:[],messages:[],customer:{}};
+   respondTo(queue,before,payload); await tick();
+  }
+ }
+}
+""".replace('INPUTS', json.dumps(PAGE_INPUTS))
+
 CASES = {
+    "shrunk_total_loads_corrected_page_successfully": r"""
+ui.state.token='session';ui.state.view='quality';ui.qualityState.ready=true;
+for(const prefix of ['quality','qualityDetail','qualityRound']) {
+ ui.qualityState.pageSize=50;ui.qualityState.page=3;ui.qualityState.total=500;
+ ui.qualityState.detail={type:'customer',id:'c',page:3,total:500};
+ ui.qualityState.roundDirectory={customerId:'c',scope:'',page:3,pageSize:50,total:500,items:[],loading:false};
+ const queue=prefix==='qualityRound'?roundRequests:requests,before=queue.length;
+ node(prefix+'JumpInput').value='10';node(prefix+'Jump').handlers.click();
+ respondTo(queue,before,{page:10,total:100,items:[],messages:[],customer:{}});await tick();
+ assert.equal(queue.length,before+2);
+ respondTo(queue,before+1,{page:2,total:100,items:[],messages:[],customer:{}});await tick();
+ const current=prefix==='quality'?ui.qualityState:prefix==='qualityDetail'?ui.qualityState.detail:ui.qualityState.roundDirectory;
+ assert.equal(current.page,2);assert.equal(current.completedPage,2);assert.equal(current.total,100);
+ assert.equal(current.pageFailed,false);assert.equal(queue.length,before+2);
+}
+""",
+    "stale_finally_cannot_unlock_new_query_and_filter_change_can_replace_inflight_page": r"""
+ui.state.token='session';ui.state.view='quality';ui.qualityState.ready=true;
+ui.qualityState.total=500;ui.qualityState.page=3;
+const old=ui.loadQualityList();
+node('qualityKeyword').value='新筛选';ui.applyQualityFilters({collapse:false});
+assert.equal(requests.length,2);assert.equal(requests[0].options.signal.aborted,true);
+respond(0,{items:[],total:500,page:3});await old;
+for(const suffix of ['First','Last','Prev','Next','Jump','JumpInput']) assert.equal(node('quality'+suffix).disabled,true,suffix);
+respond(1,{items:[],total:500,page:1});await tick();
+assert.equal(ui.qualityState.page,1);assert.equal(node('qualityNext').disabled,false);
+""",
+    "shrunk_total_corrects_once_and_failure_can_retry": r"""
+ui.state.token='session';ui.state.view='quality';ui.qualityState.ready=true;
+for(const prefix of ['quality','qualityDetail','qualityRound']) {
+ ui.qualityState.pageSize=50;ui.qualityState.page=3;ui.qualityState.completedPage=3;ui.qualityState.total=500;
+ ui.qualityState.detail={type:'customer',id:'c',page:3,total:500};
+ ui.qualityState.roundDirectory={customerId:'c',scope:'',page:3,pageSize:50,total:500,items:[],loading:false};
+ const queue=prefix==='qualityRound'?roundRequests:requests;
+ const establish = async () => {
+  const index=queue.length;
+  if(prefix==='quality') ui.loadQualityList({preserveDetail:true});
+  else if(prefix==='qualityDetail') ui.loadQualityDetail();
+  else ui.loadQualityRoundDirectory('c',3,'');
+  respondTo(queue,index,{page:3,total:500,items:[],messages:[],customer:{}});await tick();
+ };
+ await establish();
+ const before=queue.length;
+ node(prefix+'JumpInput').value='10';node(prefix+'Jump').handlers.click();
+ respondTo(queue,before,{page:10,total:100,items:[],messages:[],customer:{}});await tick();
+ assert.equal(queue.length,before+2);assert.equal(new URL(queue.at(-1).url,'http://localhost').searchParams.get('page'),'2');
+ for(const suffix of ['First','Last','Prev','Next','Jump','JumpInput']) assert.equal(node(prefix+suffix).disabled,true);
+ respondTo(queue,before+1,{page:2,total:50,items:[],messages:[],customer:{}});await tick();
+ assert.equal(queue.length,before+2);
+ assert.equal(node(prefix+'Jump').disabled,false);
+ const pageState=prefix==='quality'?ui.qualityState:prefix==='qualityDetail'?ui.qualityState.detail:ui.qualityState.roundDirectory;
+ assert.equal(pageState.page,3);assert.equal(pageState.pageFailed,true);
+ // 重新装载成功页，再模拟失败；最后成功页可保留，目标页能够重试。
+ ui.qualityState.total=500;ui.qualityState.page=3;ui.qualityState.completedPage=3;
+ ui.qualityState.detail={type:'customer',id:'c',page:3,total:500,completedPage:3};
+ ui.qualityState.roundDirectory={customerId:'c',scope:'',page:3,pageSize:50,total:500,items:[],loading:false,completedPage:3};
+ await establish();
+ node(prefix+'JumpInput').value='2';node(prefix+'Jump').handlers.click();
+ queue.at(-1).reject(new Error('测试失败'));await tick();
+ assert.equal(node(prefix+'Jump').disabled,false);
+ node(prefix+'JumpInput').value='2';const retry=queue.length;node(prefix+'Jump').handlers.click();
+ assert.equal(queue.length,retry+1);
+ respondTo(queue,retry,{page:2,total:500,items:[],messages:[],customer:{}});await tick();
+}
+""",
+    "repeat_and_composition_enter_are_ignored": r"""
+ui.state.token='session';ui.state.view='quality';ui.qualityState.ready=true;
+ui.qualityState.page=3;ui.qualityState.total=500;
+ui.qualityState.detail={type:'customer',id:'c',page:3,total:500};
+ui.qualityState.roundDirectory={customerId:'c',scope:'',page:3,pageSize:50,total:500,loading:false};
+for(const prefix of ['quality','qualityDetail','qualityRound']) {
+ node(prefix+'JumpInput').value='2';
+ for(const flags of [{repeat:true},{isComposing:true},{keyCode:229}]) {
+  let prevented=false;node(prefix+'JumpInput').handlers.keydown({key:'Enter',...flags,preventDefault(){prevented=true;}});assert.equal(prevented,true);
+ }
+}
+assert.equal(requests.length,0);assert.equal(roundRequests.length,0);
+""",
+    "jump_rejects_fraction_and_exponent_and_rapid_click_and_enter_send_one_request": PAGINATION_CASE,
+    "blacklist_panel_remains_available_without_history_and_clears_old_records": r"""
+ui.state.token='session'; ui.state.view='quality'; ui.qualityState.ready=true;
+ui.qualityState.detail={type:'customer', id:'c1', page:1};
+ui.qualityState.roundDirectory={customerId:'c1', scope:'', items:[], page:1, pageSize:20, total:0};
+const show = async blacklist => {
+ const index=requests.length, pending=ui.loadQualityDetail();
+ respond(index,{customer:{customer_id:'c1',display_name:'客户',blacklist},messages:[],total:0,page:1});
+ await pending;
+};
+await show({active:false,events:[]});
+const box=node('qualityBlacklistInfo');
+assert.equal(box.classList.contains('hidden'),false);
+assert.match(box.innerHTML,/<summary>黑名单历史/);
+assert.match(box.innerHTML,/暂无黑名单历史/);
+await show({active:true,events:[{action:'block',duration_code:'2h',occurred_at:'2026-11-12T01:00:00Z',operator_name:'操作员',remark:'<备注>',source:'client'}]});
+assert.equal(box.classList.contains('hidden'),false);
+assert.match(box.innerHTML,/拉黑中/);
+assert.match(box.innerHTML,/操作员/);
+assert.match(box.innerHTML,/&lt;备注&gt;/);
+await show({active:false,events:[]});
+assert.equal(box.classList.contains('hidden'),false);
+assert.match(box.innerHTML,/暂无黑名单历史/);
+assert.doesNotMatch(box.innerHTML,/操作员/);
+ui.closeQualityDetail();
+assert.match(box.innerHTML,/请选择用户/);
+""",
+    "review_timer_updates_reception_scene_without_overwriting_draft_or_revision": r"""
+ui.state.token='session'; ui.state.view='quality'; ui.qualityState.ready=true;
+const round={round_id:'r1',reception_type:'ai_only',review:{ai_status:'passed',human_status:null,remark:'原文',revision:'1'}};
+ui.qualityState.detail={type:'round',id:'r1',page:1,total:0,item:round}; ui.setQualityReview(round);
+node('qualityReviewRemark').value='草稿'; node('qualityReviewRemark').handlers.input();
+const refreshing=ui.refreshQualityRatings();
+respond(0,{round:{...round,reception_type:'human',review:{ai_status:'failed',human_status:'passed',revision:'9'}},messages:[]}); await refreshing;
+assert.equal(node('qualityReviewAllPassed').hidden,false);
+assert.equal(node('qualityReviewAllPassed').attributes['aria-pressed'],'false');
+assert.equal(node('qualityReviewRemark').value,'草稿');
+assert.equal(ui.qualityState.review.revision,'1');
+assert.equal(ui.qualityState.review.ai_status,'passed');
+""",
+    "review_remark_draft_survives_new_human_scene_and_can_be_restored": r"""
+ui.state.token='session'; ui.state.view='quality'; ui.qualityState.ready=true;
+const round={round_id:'r1',reception_type:'ai_only',review:{ai_status:'passed',human_status:null,remark:'原文',revision:'1'}};
+ui.qualityState.detail={type:'round',id:'r1',page:2,total:100,item:round}; ui.setQualityReview(round);
+node('qualityReviewRemark').value='草稿'; node('qualityReviewRemark').handlers.input();
+const loading=ui.loadQualityDetail(); respond(0,{round:{...round,reception_type:'human'},messages:[],total:100,page:2}); await loading;
+assert.equal(node('qualityReviewRemark').value,'草稿');
+assert.equal(node('qualityReviewAllPassed').hidden,false);
+assert.equal(node('qualityReviewStatus').textContent.includes('结论不完整'),true);
+node('qualityReviewRemark').value='原文'; node('qualityReviewRemark').handlers.input();
+assert.equal(node('qualityReviewDirty').textContent,''); assert.equal(ui.qualityState.review.dirty,false);
+""",
+    "review_buttons_do_not_default_and_save_each_fixed_combination": r"""
+ui.state.token='session'; ui.state.view='quality'; ui.qualityState.ready=true;
+for (const [scene,id,ai,human] of [
+ ['ai_only','qualityReviewAiPassed','passed',null],['ai_only','qualityReviewAiFailed','failed',null],
+ ['human','qualityReviewAllPassed','passed','passed'],['human','qualityReviewHumanPassed','failed','passed'],
+ ['human','qualityReviewAiOnlyPassed','passed','failed'],['human','qualityReviewBothFailed','failed','failed']]) {
+ const round={round_id:'r1',reception_type:scene};
+ ui.qualityState.detail={type:'round',id:'r1',item:round}; ui.setQualityReview(round);
+ assert.equal(node(id).attributes['aria-pressed'],'false');
+ assert.equal(node('qualityReviewAiPassed').hidden,scene==='human');
+ assert.equal(node('qualityReviewAllPassed').hidden,scene==='ai_only');
+ const index=requests.length;
+ documentEvents.keydown({key:'Enter',ctrlKey:true,preventDefault(){}});
+ assert.equal(requests.length,index); assert.equal(node('toast').textContent.includes('先选择结论'),true);
+ node('qualityReviewRemark').value='先写备注'; node('qualityReviewRemark').handlers.input();
+ assert.equal(node('qualityReviewDirty').textContent,'备注未保存');
+ const saving=node(id).handlers.click();
+ assert.equal(node(id).disabled,true); await node(id).handlers.click();
+ assert.equal(requests.length,index+1);
+ assert.deepEqual(JSON.parse(requests[index].options.body),{ai_status:ai,human_status:human,remark:'先写备注',revision:'0'});
+ respond(index,{ai_status:ai,human_status:human,remark:'先写备注',revision:'1',reviewer:'review-admin',reviewed_at:'2026-11-11T01:00:00Z',reception_type:scene}); await saving;
+ assert.equal(node(id).attributes['aria-pressed'],'true'); assert.equal(node('qualityReviewSaved').textContent.includes('review-admin'),true);
+ node('qualityReviewRemark').value='修改'; node('qualityReviewRemark').handlers.input();
+ documentEvents.keydown({key:'Enter',ctrlKey:true,preventDefault(){}});
+ assert.equal(JSON.parse(requests[index+1].options.body).remark,'修改');
+ respond(index+1,{ai_status:ai,human_status:human,remark:'修改',revision:'2'}); await tick();
+ assert.equal(node('qualityReviewDirty').textContent,'');
+}
+""",
+    "review_scene_changes_and_legacy_partial_verdicts_remain_unselected": r"""
+ui.state.token='session'; ui.state.view='quality'; ui.qualityState.ready=true;
+const round={round_id:'r1',reception_type:'ai_only',review:{ai_status:'passed',human_status:null,remark:'已存',revision:'1'}};
+ui.qualityState.detail={type:'round',id:'r1',item:{...round}}; ui.setQualityReview(round);
+assert.equal(node('qualityReviewAiPassed').attributes['aria-pressed'],'true');
+node('qualityReviewRemark').value='保留草稿'; node('qualityReviewRemark').handlers.input();
+const saving=ui.saveQualityReview('qualityReviewAiPassed');
+respond(0,{detail:{message:'接待分类已变更，请选择完整组合。',reception_type:'human'}},422); await saving;
+assert.equal(node('qualityReviewAllPassed').hidden,false);
+assert.equal(node('qualityReviewAllPassed').attributes['aria-pressed'],'false');
+assert.equal(node('qualityReviewStatus').textContent.includes('结论不完整'),true);
+assert.equal(node('qualityReviewSaved').textContent.includes('AI质检：合格'),true);
+assert.equal(node('qualityReviewRemark').value,'保留草稿');
+assert.equal(node('qualityReviewStatus').textContent.includes('[object Object]'),false);
+for (const partial of [{ai_status:'pending',human_status:'passed'},{ai_status:'failed',human_status:'pending'}]) {
+ ui.setQualityReview({...round,reception_type:'human',review:{...partial,revision:'3'}});
+ assert.equal(node('qualityReviewAllPassed').attributes['aria-pressed'],'false');
+ assert.equal(node('qualityReviewHumanPassed').attributes['aria-pressed'],'false');
+ assert.equal(node('qualityReviewStatus').textContent.includes('结论不完整'),true);
+}
+""",
+    "login_form_posts_credentials_and_enters_admin_after_success": r"""
+node('username').value='  demo-admin  ';node('password').value='test-only-password';
+let prevented=false;
+let submitted=node('loginForm').handlers.submit({preventDefault(){prevented=true;}});
+assert(prevented,'登录表单必须阻止浏览器默认跳转');
+assert.equal(requests[0].url,'/auth/login');
+assert.equal(requests[0].options.method,'POST');
+assert.deepEqual(JSON.parse(requests[0].options.body),{username:'demo-admin',password:'test-only-password'});
+respond(0,{detail:'登录失败'},401);await submitted;
+assert.equal(ui.state.token,'');assert.equal(node('loginMessage').textContent,'登录失败');
+submitted=node('loginForm').handlers.submit({preventDefault(){}});
+respond(1,{access_token:'test-only-token',username:'demo-admin'});await submitted;
+assert.equal(ui.state.token,'test-only-token');
+assert.equal(node('loginScreen').classList.contains('hidden'),true);
+assert.equal(node('appScreen').classList.contains('hidden'),false);
+assert.equal(node('loginMessage').textContent,'');
+assert.equal(new URL(requests[2].url).pathname,'/admin/api/channels');
+assert.equal(requests[2].options.headers.get('Authorization'),'Bearer test-only-token');
+""",
+    "selected_customer_and_round_scroll_to_top_without_reordering_or_refresh_jumps": r"""
+const list=node('qualityList');
+list.clientHeight=400; list.clientTop=1; list.scrollTop=80;
+list.getBoundingClientRect=()=>({top:100});
+const rows=[0,1,2].map(i=>{
+ const row=new Element('row'+i);row.offsetHeight=70;
+ row.getBoundingClientRect=()=>({top:101+i*70-list.scrollTop});
+ return row;
+});
+const buttons=rows.map((row,i)=>{
+ const button=new Element('open'+i);button.dataset.qualityOpen=String(i);
+ button.closest=selector=>selector==='tr'?row:button;
+ button.offsetHeight=70;button.getBoundingClientRect=row.getBoundingClientRect;
+ return button;
+});
+list.querySelectorAll=()=>buttons;
+ui.qualityState.mode='customers';ui.qualityState.page=3;
+ui.qualityState.items=[{customer_id:'a'},{customer_id:'b'},{customer_id:'c'}];
+ui.qualityState.detail={type:'customer',id:'c'};
+ui.syncQualityCustomerSelection();
+assert.equal(list.scrollTop,140,'the last selected card must reach the top');
+assert.equal(buttons[2].attributes['aria-pressed'],'true');
+assert.equal(buttons[0].attributes['aria-pressed'],'false');
+list.scrollTop=25;ui.syncQualityCustomerSelection();
+assert.equal(list.scrollTop,25,'refreshing the same detail must preserve manual scrolling');
+ui.qualityState.detail={type:'customer',id:'b'};ui.syncQualityCustomerSelection();
+assert.equal(list.scrollTop,70,'switching customers must reposition the selected card');
+ui.qualityState.mode='rounds';
+ui.qualityState.items=[{round_id:'r1'},{round_id:'r2'},{round_id:'r3'}];
+ui.qualityState.detail={type:'round',id:'r3'};ui.syncQualityCustomerSelection();
+assert.equal(list.scrollTop,140,'round mode must align the whole row');
+assert.equal(rows[2].attributes['aria-selected'],'true');
+assert.equal(ui.qualityState.page,3);assert.equal(ui.qualityState.items[0].round_id,'r1');
+ui.qualityState.detail=null;ui.syncQualityCustomerSelection();
+assert.equal(list.style.paddingBottom,'');
+""",
     "authenticated_binary_api_preserves_blob_and_handles_errors": r"""
 ui.state.token='session';
 const controller=new AbortController();
@@ -162,6 +431,7 @@ assert.equal(node('qualityRoundList').innerHTML.includes('data-review-kind="ai"'
 assert.equal(node('qualityRoundList').innerHTML.includes('data-review-kind="human"'),true);
 """,
     "review_filters_are_applied_to_lists_overview_summary_and_exports": r"""
+node('qualityOverviewPanel').open = true;
 ui.state.token='session'; ui.state.view='quality'; ui.qualityState.ready=true;
 node('qualityAiReviewStatus').value='failed'; node('qualityHumanReviewStatus').value='passed';
 ui.applyQualityFilters({collapse:false});
@@ -187,18 +457,16 @@ assert.equal(ui.collectQualityFilters().has('human_review_status'),false);
 """,
     "round_review_saves_and_reloads_the_selected_round": r"""
 ui.state.token='session'; ui.state.view='quality'; ui.qualityState.ready=true;
-const round={round_id:'r1',customer_id:'c1',conversation_id:12,round_no:1,review:{ai_status:'failed',human_status:'failed',remark:'原备注',revision:'7',reviewer:'admin',reviewed_at:'2026-10-19T08:00:00Z'}};
+const round={round_id:'r1',reception_type:'human',customer_id:'c1',conversation_id:12,round_no:1,review:{ai_status:'failed',human_status:'failed',remark:'原备注',revision:'7',reviewer:'admin',reviewed_at:'2026-10-19T08:00:00Z'}};
 ui.qualityState.items=[{customer_id:'c1',display_name:'Customer',latest_round:{...round}}];
 ui.renderQualityList();
 assert.equal((node('qualityList').innerHTML.match(/data-review-status="failed"/g)||[]).length,2);
 const opening=ui.openQualityDetail('round','r1');
 respond(0,{round,messages:[],total:0}); await opening;
-assert.equal(node('qualityReviewHumanVerdict').value,'failed');
-assert.equal(node('qualityReviewAiVerdict').value,'failed');
+assert.equal(node('qualityReviewBothFailed').attributes['aria-pressed'],'true');
 assert.equal(node('qualityReviewRemark').value,'原备注');
-node('qualityReviewHumanVerdict').value='passed'; node('qualityReviewHumanVerdict').handlers.change();
 node('qualityReviewRemark').value='<img src=x onerror=evil()>\n复核通过'; node('qualityReviewRemark').handlers.input();
-const saving=ui.saveQualityReview(); await tick();
+const saving=ui.saveQualityReview('qualityReviewHumanPassed'); await tick();
 assert.equal(requests[1].url.endsWith('/rounds/r1/review'),true);
 assert.equal(requests[1].options.method,'PUT');
 assert.equal(requests[1].options.headers.get('Content-Type'),'application/json');
@@ -207,7 +475,7 @@ assert.equal(ui.closeQualityDetail(),false); // Do not cancel an in-flight save.
 const saved={ai_status:'failed',human_status:'passed',remark:'<img src=x onerror=evil()>\n复核通过',revision:'8',reviewer:'admin',reviewed_at:'2026-10-19T08:01:00Z'};
 respond(1,saved); await saving;
 assert.equal(ui.qualityState.review.dirty,false);
-assert.equal(node('qualityReviewStatus').textContent.includes('已保存'),true);
+assert.equal(node('qualityReviewSaved').textContent.includes('已保存'),true);
 assert.equal(node('qualityReviewRemark').value,saved.remark);
 assert.equal(ui.qualityState.detail.id,'r1','Saving must keep the current detail open');
 assert.equal((node('qualityList').innerHTML.match(/data-review-status="failed"/g)||[]).length,1);
@@ -216,8 +484,7 @@ assert.equal(ui.qualityState.items[0].latest_round.review.revision,'8');
 ui.closeQualityDetail();
 const reopened=ui.openQualityDetail('round','r1'); respond(2,{round:{...round,review:saved},messages:[],total:0}); await reopened;
 assert.equal(node('qualityReviewRemark').value,saved.remark);
-assert.equal(node('qualityReviewHumanVerdict').value,'passed');
-assert.equal(node('qualityReviewAiVerdict').value,'failed');
+assert.equal(node('qualityReviewHumanPassed').attributes['aria-pressed'],'true');
 """,
     "full_history_review_selection_ignores_stale_round_response": r"""
 ui.state.token='session'; ui.state.view='quality'; ui.qualityState.ready=true;
@@ -247,19 +514,16 @@ assert.equal((meta.match(/<span>/g) || []).length, 8);
 """,
     "failed_review_save_preserves_draft_and_blocks_export_of_unsaved_changes": r"""
 ui.state.token='session'; ui.state.view='quality'; ui.qualityState.ready=true;
-ui.qualityState.detail={type:'round',id:'r1',item:{round_id:'r1',round_no:1,conversation_id:12}};
+ui.qualityState.detail={type:'round',id:'r1',item:{round_id:'r1',reception_type:'human',round_no:1,conversation_id:12}};
 ui.setQualityReview(ui.qualityState.detail.item);
-node('qualityReviewAiVerdict').value='failed'; node('qualityReviewAiVerdict').handlers.change();
-node('qualityReviewHumanVerdict').value='failed'; node('qualityReviewHumanVerdict').handlers.change();
 node('qualityReviewRemark').value='不可丢失的输入'; node('qualityReviewRemark').handlers.input();
-const saving=ui.saveQualityReview(); respond(0,{detail:'本轮备注已在其他窗口更新，请重新读取后再保存。'},409); await saving;
+const saving=ui.saveQualityReview('qualityReviewBothFailed'); respond(0,{detail:'已被他人修改，请刷新。'},409); await saving;
 assert.equal(node('qualityReviewRemark').value,'不可丢失的输入');
 assert.equal(ui.qualityState.review.dirty,true);
 assert.equal(JSON.parse(requests[0].options.body).ai_status,'failed');
 assert.equal(JSON.parse(requests[0].options.body).human_status,'failed');
-assert.equal(node('qualityReviewAiVerdict').value,'failed');
-assert.equal(node('qualityReviewHumanVerdict').value,'failed');
-assert.equal(node('qualityReviewStatus').textContent.includes('其他窗口'),true);
+assert.equal(node('qualityReviewBothFailed').attributes['aria-pressed'],'false');
+assert.equal(node('qualityReviewStatus').textContent.includes('已被他人修改'),true);
 confirmationAnswers.push(false); assert.equal(ui.closeQualityDetail(),false);
 assert.equal(ui.qualityState.detail.id,'r1');
 await ui.exportQuality('detail'); assert.equal(requests.length,1);
@@ -279,7 +543,7 @@ assert.equal(ui.qualityState.review.dirty,true);
 ui.qualityState.mode='customers'; ui.qualityState.total=1;
 ui.qualityState.items=[{customer_id:'c1',display_name:'Customer',contact_id:42,business_user_id:'U1',
  source_key:'PRIVATE_ORIGIN',account_id:999,round_count:12,message_count:86,
- latest_round:{conversation_id:3108,round_no:3,reception_type:'human',rating_status:'rated',rating:5,
+ latest_round:{conversation_id:3108,round_no:3,customer_round_seq:7,reception_type:'human',rating_status:'rated',rating:5,
  rating_feedback:'<img src=x onerror=evil()>',service_metrics:{first_response_status:'recorded',
  first_response_seconds:120,average_response_seconds:150,response_sample_count:2,
  last_message_by_agent:false,last_message_sender_role:'contact',duration_seconds:720,
@@ -289,7 +553,7 @@ ui.renderQualityList(); const html=node('qualityList').innerHTML;
 for (const label of ['转人工首响','人工平均响应','最后一句为人工','本轮总时长','访客评价','人工对话数']) assert.equal(html.includes(label),true,label);
 assert.equal(html.includes('首响超过600秒不计入统计，600秒保留'),true);
 assert.equal(html.includes('单次响应超过600秒不计入时长及样本数，600秒保留'),true);
-for (const value of ['12 轮 · 86 条消息','最近一轮 · 会话 3108 · 第 3 轮','2分','2分30秒','否 · 客户','12分','5 分','8（5：3）']) assert.equal(html.includes(value),true,value);
+for (const value of ['12 轮 · 86 条消息','最近一轮 · 用户第 7 次咨询 · 会话 3108 · 会话内第 3 轮','2分','2分30秒','否 · 客户','12分','5 分','8（5：3）']) assert.equal(html.includes(value),true,value);
 assert.equal(html.includes('PRIVATE_ORIGIN'),false); assert.equal(html.includes('账号'),false);
 assert.equal(html.includes('<img'),false); assert.equal(html.includes('&lt;img'),true);
 assert.equal((html.match(/class="quality-customer-metric"/g)||[]).length,6);
@@ -484,6 +748,7 @@ assert.equal(node('qualityTimeline').innerHTML.includes('5 / 5 分'),true);
 ui.logout(); assert.equal(timers.size,0);
 """,
     "overview_uses_all_filtered_rounds_and_does_not_reload_on_pagination_or_history": r"""
+node('qualityOverviewPanel').open = true;
 ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
 ui.qualityState.mode = 'rounds';
 node('qualityKeyword').value = 'refund'; node('qualityCustomer').value = 'customer';
@@ -507,9 +772,9 @@ const cards = node('qualityOverviewCards').innerHTML;
 assert.equal((cards.match(/class="quality-stat"/g)||[]).length,8);
 assert.equal(cards.includes('>250</strong>'),true); assert.equal(cards.includes('>100</strong>'),true);
 assert.equal(cards.includes('60.0%'),true); assert.equal(cards.includes('40.0%'),true);
-assert.equal(cards.includes('均分 4.20 分'),true); assert.equal(cards.includes('未观察到真人公开回复'),true);
+assert.equal(cards.includes('均分 4.20 分'),true);
 assert.equal(cards.includes('未评价'),false); assert.equal(cards.includes('超时'),false);
-assert.equal(node('qualityOverviewStatus').textContent.includes('不限当前页'),true);
+assert.equal(node('qualityOverviewStatus').textContent.includes('统计于'),true);
 assert.equal(node('qualityOverviewNotice').textContent.includes('7 轮未记录 ICS 分配'),true);
 assert.equal(node('qualityOverviewNotice').textContent.includes('仅显示前 1 位'),true);
 assert.equal(node('qualityOverviewAgents').innerHTML.includes('>beec<'),true);
@@ -522,6 +787,7 @@ const history = ui.openQualityDetail('customer','c1'); respond(3,{customer:{disp
 assert.equal(overviewRequests.length,1); assert.equal(ui.qualityState.overview.total_rounds,250);
 """,
     "overview_rejects_old_results_and_failure_keeps_the_list_available": r"""
+node('qualityOverviewPanel').open = true;
 ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
 ui.qualityState.mode = 'rounds';
 ui.qualityState.applied = new URLSearchParams({keyword:'old'}); const older = ui.loadQualityOverview();
@@ -654,6 +920,7 @@ for (const [index,status] of ['disabled','not_started'].entries()) {
 }
 """,
     "independent_page_lifecycles_cancel_only_their_own_requests": r"""
+node('qualityOverviewPanel').open = true;
 ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
 const overview = ui.loadQualityOverview();
 ui.stopQualityPresence();
@@ -1063,14 +1330,23 @@ ui.qualityState.detail = {type:'customer'};
 ui.qualityState.messages = [{message_id:'<id>',conversation_id:'<cw>',content:'<img src=x onerror=alert(1)>',
  sender_role:'agent',sender_name:'<script>evil</script>',is_private:true,is_deleted:true,has_creation_event:false,
  attachments:[{filename:'<video onload=evil>',source_url:'javascript:alert(1)'},
- {filename:'safe file',source_url:'https://example.com/attachment'}]}];
+ {filename:'photo.png',source_url:'https://example.com/blobs/photo.png'},
+ {filename:'报价单.exe',source_url:'https://example.com/blobs/%E6%8A%A5%E4%BB%B7%E5%8D%95.exe'},
+ {filename:'截图.png',source_url:'https://example.com/blobs/run.bat'},
+ {filename:'合同.pdf',media_type:'image',source_url:'https://example.com/blobs/contract.pdf'},
+ {filename:'blob',source_url:null,blocked:true,blocked_reason:'服务端已拦截'}]}];
 ui.renderQualityTimeline();
 const html = node('qualityTimeline').innerHTML;
 assert.equal(html.includes('<img'), false); assert.equal(html.includes('<video'), false);
 assert.equal(html.includes('<script>'), false); assert.equal(html.includes('javascript:'), false);
 assert.equal(html.includes('&lt;img'), true); assert.equal(html.includes('noopener noreferrer'), true);
 assert.equal(html.includes('未归轮'), true); assert.equal(html.includes('缺少创建时原文'), true);
-assert.equal(html.includes('尚未独立复制'), true);
+assert.equal(html.includes('尚未独立复制'), false);
+// 只有图片/音视频保留链接；其他类型（含扩展名与链接不一致的伪装）只显示安全提示。
+assert.equal(html.includes('https://example.com/blobs/photo.png'), true);
+for (const blocked of ['%E6%8A%A5', 'blobs/run.bat', 'blobs/contract.pdf']) assert.equal(html.includes(blocked), false, blocked);
+assert.equal(html.split('quality-attachment-blocked').length - 1, 5);
+assert.equal(html.includes('为防范病毒已禁止打开'), true); assert.equal(html.includes('服务端已拦截'), true);
 assert.equal(ui.qualitySnapshotLabel({snapshot_kind:'backfill',id:1},{has_creation_event:false,original_snapshot_id:1}), '补录时观察');
 """,
     "inbox_and_agent_choices_derive_scope_without_a_source_field": r"""
@@ -1141,6 +1417,62 @@ for (const [key, value] of Object.entries(expected)) assert.equal(exported.get(k
 assert.equal(exported.has('page'), false); assert.equal(exported.has('page_size'), false);
 respond(1, 'xlsx'); await pending;
 """,
+    "rating_operator_is_sent_only_with_a_score": r"""
+ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+node('qualityStart').value = ''; node('qualityRatingOp').value = 'lt';
+assert.equal(ui.collectQualityFilters().has('rating_op'), false, 'no operator without a score');
+node('qualityRating').value = '4';
+let params = ui.collectQualityFilters();
+assert.equal(params.get('rating'), '4'); assert.equal(params.get('rating_op'), 'lt');
+node('qualityRatingOp').value = '';
+params = ui.collectQualityFilters();
+assert.equal(params.get('rating'), '4'); assert.equal(params.has('rating_op'), false, 'equal is the default');
+node('qualityRatingOp').value = 'gt'; node('qualityLost').value = 'true';
+params = ui.collectQualityFilters();
+assert.equal(params.get('rating_op'), 'gt'); assert.equal(params.get('lost'), 'true');
+""",
+    "statistics_preset_opens_rounds_with_seat_period_and_metric": r"""
+const seat = {source_key:'cw',account_id:2,agent_id:'7',agent_name:'客服1'};
+for (const [metric, extra] of [['lost_inquiries', {seat}], ['low_rating', {seat}], ['incoming', {channel:'xingliao'}],
+                                ['lost_inquiries', {seat:{agent_id:'none'}}]]) {
+ requests.length = 0;
+ ui.state.token = 'session'; ui.state.view = 'quality';
+ node('qualityKeyword').value = '旧条件';
+ ui.qualityState.preset = {metric, ...extra, start:'2026-11-01T00:00:00+08:00', end:'2026-12-01T00:00:00+08:00',
+  as_of:'2026-11-20T10:00:00+08:00', count:1, label: metric, period:'2026-11-01 至 2026-11-30'};
+ const pending = ui.loadQuality();
+ respond(0, {enabled:true,ready:true,jobs:{},server_time:'2026-11-21T00:00:00+08:00'}); await tick();
+ respond(1, {sources:[],channels:[],agents:[],inboxes:[]}); await tick();
+ const list = new URL(requests[2].url,'http://localhost');
+ assert.equal(list.pathname.endsWith('/rounds'), true, 'opens the round list');
+ const query = list.searchParams;
+ // The archive asks for exactly the report cell: metric, window, credited seat or channel, report time.
+ const expected = {metric, start:'2026-11-01T00:00:00+08:00', end:'2026-12-01T00:00:00+08:00',
+  as_of:'2026-11-20T10:00:00+08:00'};
+ if (extra.seat?.agent_id === '7') Object.assign(expected, {metric_seat:'7', source_key:'cw', account_id:'2'});
+ if (extra.seat?.agent_id === 'none') expected.metric_seat = 'none';
+ if (extra.channel) expected.channel_key = 'xingliao';
+ for (const [key, value] of Object.entries(expected)) assert.equal(query.get(key), value, `${metric} ${key}`);
+ assert.equal(query.has('agent_id'), false, 'the credited seat is the metric seat, not an extra seat filter');
+ assert.equal(query.has('keyword'), false, 'previous filters are cleared');
+ assert.equal(ui.qualityState.preset, null, 'preset is used once');
+ assert.equal(ui.qualityState.asOf, '2026-11-20T10:00:00+08:00', 'locked at the report time');
+ respond(2, {items:[],total:1,page:1});
+ await pending;
+ if (extra.seat?.agent_id === '7') assert.equal(node('qualityStatus').textContent.includes('客服1'), true);
+ assert.equal(node('qualityStatus').textContent.includes('报表 1 轮 / 归档命中 1 轮'), true, node('qualityStatus').textContent);
+ ui.stopQuality();
+}
+// Entering the archive without a report locks the browse at the server time; details carry it too.
+requests.length = 0;
+ui.state.token = 'session'; ui.state.view = 'quality';
+const entered = ui.loadQuality();
+respond(0, {enabled:true,ready:true,jobs:{},server_time:'2026-11-21T08:00:00+08:00'}); await tick();
+respond(1, {sources:[],channels:[],agents:[],inboxes:[]}); await tick();
+assert.equal(new URL(requests[2].url,'http://localhost').searchParams.get('as_of'), '2026-11-21T08:00:00+08:00');
+respond(2, {items:[],total:0,page:1}); await entered;
+ui.stopQuality();
+""",
     "directory_warning_keeps_queue_status_and_query_errors_visible": r"""
 ui.state.token = 'session'; ui.state.view = 'quality';
 const pending = ui.loadQuality();
@@ -1169,6 +1501,34 @@ respond(1, {sources:[],channels:[],agents:[],inboxes:[]}); await tick();
 assert.equal(node('qualityStatus').textContent.includes('2 条 ICS 责任记录等待同步'), true);
 assert.equal(node('qualityStatus').textContent.includes('1 条 ICS 责任记录需核查'), true);
 assert.equal(node('qualityStatusTag').textContent, '归档可查询 · 责任同步待处理');
+assert.equal(node('qualityFilters').disabled, false);
+respond(2, {items:[],total:0,page:1}); await pending;
+assert.equal(ui.qualityState.ready, true);
+""",
+    "uninitialized_queue_evidence_is_visible_without_disabling_history": r"""
+ui.state.token = 'session'; ui.state.view = 'quality';
+const pending = ui.loadQuality();
+respond(0, {enabled:true,ready:true,assignment_sync_status:'degraded',
+ assignment_sync_pending_count:0,assignment_sync_blocked_count:0,
+ queue_decision_sync_pending_count:null,queue_decision_sync_blocked_count:null}); await tick();
+respond(1, {sources:[],channels:[],agents:[],inboxes:[]}); await tick();
+assert.equal(node('qualityStatus').textContent.includes('排队决定同步暂不可用或尚未初始化'), true);
+assert.equal(node('qualityStatus').textContent.includes('0 条排队决定'), false);
+assert.equal(node('qualityStatusTag').textContent, '归档可查询 · 排队同步待处理');
+assert.equal(node('qualityStatusTag').className, 'tag amber');
+assert.equal(node('qualityFilters').disabled, false);
+respond(2, {items:[],total:0,page:1}); await pending;
+assert.equal(ui.qualityState.ready, true);
+""",
+    "blocked_queue_evidence_keeps_history_query_available": r"""
+ui.state.token = 'session'; ui.state.view = 'quality';
+const pending = ui.loadQuality();
+respond(0, {enabled:true,ready:true,assignment_sync_status:'degraded',
+ queue_decision_sync_pending_count:3,queue_decision_sync_blocked_count:2}); await tick();
+respond(1, {sources:[],channels:[],agents:[],inboxes:[]}); await tick();
+assert.equal(node('qualityStatus').textContent.includes('3 条排队决定等待同步'), true);
+assert.equal(node('qualityStatus').textContent.includes('2 条排队决定需核查'), true);
+assert.equal(node('qualityStatusTag').textContent, '归档可查询 · 排队同步待处理');
 assert.equal(node('qualityFilters').disabled, false);
 respond(2, {items:[],total:0,page:1}); await pending;
 assert.equal(ui.qualityState.ready, true);
@@ -1245,7 +1605,7 @@ const items = [
 ];
 const pending = ui.loadQualityList(); respond(0, {items,total:items.length,page:1}); await pending;
 const html = node('qualityList').innerHTML;
-assert.equal(html.includes('<th>本轮责任坐席</th>'), true);
+assert.equal(html.includes('<th>考核坐席（ICS 分配）</th>'), true);
 const rows = [...html.matchAll(/<tbody>(.*?)<\/tbody>/gs)][0][1];
 const responsibleCells = [...rows.matchAll(/<tr>(.*?)<\/tr>/gs)].map(row => [...row[1].matchAll(/<td>(.*?)<\/td>/gs)][3][1]);
 assert.deepEqual(responsibleCells, ['&lt;Original A&gt;','Chatwoot 坐席 ID 3 · 名称未同步','未记录 ICS 分配','待确认','待确认','待确认','&lt;Original A&gt;']);
@@ -1353,7 +1713,7 @@ for (const [index,agentId] of ['1','7'].entries()) {
  const query = new URL(requests[index].url,'http://localhost').searchParams;
  assert.equal(query.get('source_key'),'cw'); assert.equal(query.get('account_id'),'1'); assert.equal(query.get('agent_id'),agentId);
  assert.equal(confirmations[index].includes(`坐席：${agentId === '1' ? 'beec' : 'Chatwoot 坐席 ID 7 · 名称未同步'}`),true);
- assert.equal(confirmations[index].includes('本轮责任坐席（ICS分配）'),true);
+ assert.equal(confirmations[index].includes('考核坐席（与统计报表一致）'),true);
  respond(index,'xlsx'); await pending;
 }
 """,
@@ -1388,7 +1748,7 @@ for (const [index, replyName] of ['<Actual B>','Later C'].entries()) {
     "all_agent_scopes_keep_query_and_export_parameters_with_clear_confirmation": r"""
 ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
 node('qualityAgent').value = JSON.stringify({source_key:'cw',account_id:'2',agent_id:'7'});
-const labels = {responsible:'本轮责任坐席（ICS分配）',replied:'本轮全部回复坐席',assigned:'历史分配（非责任）',current:'会话当前分配（非责任）'};
+const labels = {responsible:'考核坐席（与统计报表一致）',replied:'本轮全部回复坐席',assigned:'历史分配（非责任）',current:'会话当前分配（实时）'};
 assert.equal(node('qualityAgentScope').value, 'responsible');
 for (const [scope, label] of Object.entries(labels)) {
  node('qualityAgentScope').value = scope;
@@ -1416,9 +1776,10 @@ ui.qualityState.applied = new URLSearchParams({keyword:'previous filter',agent_s
 ui.qualityState.page = 4;
 ui.setQualityFiltersCollapsed(true);
 node('qualityReset').handlers.click();
-for (const id of [...Object.keys(fields),'qualityInbox','qualityAgent']) assert.equal(node(id).value,'',id);
-assert.equal(ui.collectQualityFilters().toString(),'');
-assert.equal(ui.qualityState.applied.toString(),'');
+const resetDefaults = {qualityTimeField:'started_at', qualityStart:'2026-09-16T00:00'};
+for (const id of [...Object.keys(fields),'qualityInbox','qualityAgent']) assert.equal(node(id).value,resetDefaults[id] || '',id);
+assert.equal(ui.collectQualityFilters().toString(),'time_field=started_at&start=2026-09-16T00%3A00%3A00%2B08%3A00','reset restores the recent-month default');
+assert.equal(ui.qualityState.applied.toString(),'time_field=started_at&start=2026-09-16T00%3A00%3A00%2B08%3A00');
 assert.equal(ui.qualityState.page,1);
 assert.equal(ui.qualityState.filtersCollapsed,false);
 assert.equal(node('qualityFilterFields').classList.contains('hidden'),false);
@@ -1428,15 +1789,72 @@ assert.equal(node('qualityFilterFields').scrollTop,0);
 const query = new URL(requests[0].url).searchParams;
 assert.equal(query.get('page'),'1');
 query.delete('page'); query.delete('page_size');
-assert.equal(query.toString(),'','reset queries without any stale filters');
+assert.equal(query.toString(),'time_field=started_at&start=2026-09-16T00%3A00%3A00%2B08%3A00','reset queries without any stale filters');
 respond(0, {items:[],total:0,page:1}); await tick();
 node('qualityReset').handlers.click();
 assert.equal(ui.qualityState.filtersCollapsed,false,'repeated reset must keep the filters visible');
-assert.equal(ui.collectQualityFilters().toString(),'');
+assert.equal(ui.collectQualityFilters().toString(),'time_field=started_at&start=2026-09-16T00%3A00%3A00%2B08%3A00');
 respond(1, {items:[],total:0,page:1}); await tick();
 node('qualityAgentScope').value = 'current'; ui.logout(false);
 assert.equal(node('qualityAgentScope').value, 'responsible');
 assert.equal(ui.collectQualityFilters().get('agent_scope'), 'responsible');
+""",
+    "time_picker_commits_on_each_choice_without_a_confirm_button": r"""
+assert.equal(node('qualityStartHour').options.length, 24);
+assert.equal(node('qualityStartMinute').options.length, 60);
+node('qualityStartDate').value = '2026-10-20'; node('qualityStartDate').handlers.change();
+assert.equal(node('qualityStart').value, '2026-10-20T00:00', 'picking a date alone is enough');
+node('qualityStartTimeToggle').handlers.click();
+node('qualityStartHour').value = '08'; node('qualityStartHour').handlers.change();
+node('qualityStartMinute').value = '30'; node('qualityStartMinute').handlers.change();
+assert.equal(node('qualityStart').value, '2026-10-20T08:30');
+assert.equal(ui.collectQualityFilters().get('start'), '2026-10-20T08:30:00+08:00');
+node('qualityEndDate').value = '2026-10-21'; node('qualityEndDate').handlers.input();
+assert.equal(node('qualityEnd').value, '2026-10-21T23:59:59');
+node('qualityStartDate').value = ''; node('qualityStartDate').handlers.change();
+assert.equal(node('qualityStart').value, '', 'clearing the date clears the condition');
+assert.equal(ui.collectQualityFilters().has('start'), false);
+""",
+    "first_open_defaults_to_recent_month_and_unfiltered_submit_asks_first": r"""
+ui.state.token = 'session'; ui.state.view = 'quality';
+const loading = ui.loadQuality();
+respond(0, {enabled:true, ready:true, jobs:{}}); await tick();
+respond(1, {sources:[], channels:[], agents:[], inboxes:[]}); await tick(); await tick();
+assert.equal(node('qualityStart').value, '2026-09-16T00:00', 'first open covers the recent month only');
+assert.equal(node('qualityTimeField').value, 'started_at');
+assert.equal(node('qualityStartDate').value, '2026-09-16', 'visible date box mirrors the default');
+assert.equal(node('qualityStartHour').value, '00'); assert.equal(node('qualityStartMinute').value, '00');
+assert.equal(node('qualityEndDate').value, '');
+let query = new URL(requests[2].url).searchParams;
+assert.equal(query.get('start'), '2026-09-16T00:00:00+08:00');
+assert.equal(query.get('time_field'), 'started_at');
+respond(2, {items:[], total:0, page:1}); await loading;
+// 再次进入模块不覆盖用户自己的筛选
+node('qualityStart').value = '2026-10-01T00:00';
+const again = ui.loadQuality();
+respond(3, {enabled:true, ready:true, jobs:{}}); await tick();
+respond(4, {sources:[], channels:[], agents:[], inboxes:[]}); await tick(); await tick();
+assert.equal(node('qualityStart').value, '2026-10-01T00:00');
+respond(5, {items:[], total:0, page:1}); await again;
+// 只有默认项（时间依据/坐席范围/全部消息）时查询前要提醒，取消则不查
+node('qualityStart').value = ''; node('qualityMessageScope').value = 'all'; node('qualityAgentScope').value = 'responsible';
+confirmationAnswers.push(false);
+const before = requests.length;
+node('qualityFilterForm').handlers.submit({preventDefault() {}});
+assert.equal(confirmations.length, 1);
+assert.match(confirmations[0], /没有设置任何筛选条件[\s\S]*建议按需筛选/);
+assert.equal(requests.length, before, 'cancel keeps the current list without querying');
+confirmationAnswers.push(true);
+node('qualityFilterForm').handlers.submit({preventDefault() {}});
+assert.equal(confirmations.length, 2);
+assert.equal(requests.length, before + 1, 'confirming queries the full history');
+query = new URL(requests[before].url).searchParams;
+assert.equal(query.has('start'), false);
+// 有任一实际条件时直接查询，不弹窗
+node('qualityKeyword').value = '退款';
+node('qualityFilterForm').handlers.submit({preventDefault() {}});
+assert.equal(confirmations.length, 2);
+assert.equal(requests.length, before + 2);
 """,
     "late_list_response_cannot_replace_new_query": r"""
 ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
@@ -1571,16 +1989,17 @@ assert.equal(params.get('rating_status'), 'rated'); assert.equal(params.get('rat
 ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
 ui.qualityState.applied = new URLSearchParams({keyword:'applied search'});
 for (const mode of ['rounds','customers']) {
- ui.qualityState.mode = mode; confirmationAnswers.push(false);
+ ui.qualityState.mode = mode; ui.qualityState.listScoped = mode === 'customers'; confirmationAnswers.push(false);
  await node('qualityExportList').handlers.click();
  assert.equal(requests.length, 0); assert.equal(downloads.length, 0);
  assert.equal(ui.qualityState.exportJob, null); assert.equal(ui.qualityState.controllers.size, 0);
  const prompt = confirmations.at(-1);
  assert.equal(prompt.includes('当前已应用筛选'), true); assert.equal(prompt.includes('关键词：applied search'), true);
  assert.equal(prompt.includes('全部分页'), true);
- assert.equal(prompt.includes(mode === 'customers' ? '跨会话的完整历史' : '每轮完整消息'), true);
- if (mode === 'customers') assert.equal(prompt.includes('用户历史不受列表时间、关键词等筛选限制'), true);
+ assert.equal(prompt.includes(mode === 'customers' ? '命中筛选条件的轮次' : '每轮完整消息'), true);
+ if (mode === 'customers') assert.equal(prompt.includes('不含这些用户的其他轮次'), true);
 }
+ui.qualityState.listScoped = false;
 for (const type of ['customer','round']) {
  ui.qualityState.detail = {type,id:'selected',item:{display_name:'User',conversation_id:10,round_no:2}};
  ui.updateQualityExportButtons(); confirmationAnswers.push(false);
@@ -1589,10 +2008,11 @@ for (const type of ['customer','round']) {
  assert.equal(ui.qualityState.exportJob, null); assert.equal(ui.qualityState.controllers.size, 0);
  const prompt = confirmations.at(-1);
  assert.equal(prompt.includes('全部分页'), true); assert.equal(prompt.includes('不受列表筛选限制'), true);
- assert.equal(prompt.includes(type === 'customer' ? '用户“User”' : '会话 10 · 第 2 轮'), true);
+ assert.equal(prompt.includes(type === 'customer' ? '用户“User”' : '会话 10 · 会话内第 2 轮'), true);
  assert.equal(node('qualityExportDetail').disabled, false);
 }
 assert.equal(confirmations.length, 4);
+ui.qualityState.detail = {type:'customer',id:'selected',item:{display_name:'User'}};
 const accepted = ui.exportQuality('detail'); assert.equal(requests.length, 1);
 respond(0, 'xlsx'); await accepted; assert.equal(downloads.length, 1);
 """,
@@ -1601,16 +2021,17 @@ ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = t
 ui.qualityState.mode = 'customers'; ui.qualityState.page = 3;
 ui.qualityState.applied = new URLSearchParams({keyword:'applied search',source_key:'cw',account_id:'2',page:'3',page_size:'30'});
 node('qualityKeyword').value = 'not applied';
+ui.qualityState.listScoped = true;
 ui.updateQualityExportButtons(); assert.equal(node('qualityExportList').disabled, false);
-assert.ok(node('qualityExportList').title.includes('筛选选中用户完整历史'));
+assert.ok(node('qualityExportList').title.includes('只导出命中当前筛选条件的轮次'));
 const pending = ui.exportQuality('list');
 assert.equal(confirmations.length, 1);
 assert.equal(confirmations[0].includes('当前已应用筛选'), true);
 assert.equal(confirmations[0].includes('关键词：applied search'), true);
 assert.equal(confirmations[0].includes('not applied'), false);
 assert.equal(confirmations[0].includes('全部分页'), true);
-assert.equal(confirmations[0].includes('跨会话的完整历史'), true);
-assert.equal(confirmations[0].includes('用户历史不受列表时间、关键词等筛选限制'), true);
+assert.equal(confirmations[0].includes('命中筛选条件的轮次'), true);
+assert.equal(confirmations[0].includes('跨会话的完整历史'), false);
 const url = new URL(requests[0].url, 'http://localhost');
 assert.equal(url.pathname, '/admin/api/quality/export.xlsx');
 assert.equal(url.searchParams.get('mode'), 'customers'); assert.equal(url.searchParams.get('keyword'), 'applied search');
@@ -1623,6 +2044,55 @@ respond(0, 'xlsx bytes', 200, {'Content-Disposition':"attachment; filename*=UTF-
 assert.equal(downloads.length, 1); assert.equal(downloads[0].filename, '归档.xlsx');
 assert.equal(node('qualityExportList').disabled, false); assert.equal(ui.qualityState.exportJob, null);
 assert.equal(node('qualityExportList').textContent, '导出筛选结果（Excel）');
+""",
+    "customer_mode_filtered_detail_shows_only_matched_rounds": r"""
+ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
+ui.qualityState.mode = 'customers'; ui.qualityState.listScoped = true;
+ui.qualityState.applied = new URLSearchParams({source_key:'cw',account_id:'2',agent_id:'7',agent_scope:'responsible',page:'2',page_size:'30'});
+ui.qualityState.items = [{customer_id:'c1',display_name:'客户甲',round_count:2,message_count:9,total_round_count:6,filter_scoped:true}];
+ui.qualityState.total = 1; ui.renderQualityList();
+assert.equal(node('qualityList').innerHTML.includes('命中 2 轮'),true);
+assert.equal(node('qualityList').innerHTML.includes('该用户共 6 轮'),true);
+assert.equal(node('qualityListSummary').textContent,'共 1 位客户');
+const scope = new URLSearchParams(ui.qualityState.applied); scope.delete('page'); scope.delete('page_size');
+const opened = ui.openQualityDetail('customer','c1',false,scope.toString());
+let url = new URL(requests[0].url,'http://localhost');
+assert.equal(url.pathname,'/admin/api/quality/customers/c1/history');
+assert.equal(url.searchParams.get('agent_id'),'7'); assert.equal(url.searchParams.get('source_key'),'cw');
+assert.equal(url.searchParams.get('page'),'1');
+respond(0,{customer:{customer_id:'c1',display_name:'客户甲',round_count:2,total_round_count:6,filter_scoped:true},
+  messages:[],total:9,page:1,filter_scoped:true}); await opened;
+assert.equal(node('qualityDetailTitle').textContent.includes('筛选命中轮次'),true);
+assert.equal(node('qualityDetailHint').textContent,'');
+assert.equal(roundRequests.length,1);
+url = new URL(roundRequests[0].url,'http://localhost');
+assert.equal(url.searchParams.get('agent_id'),'7'); assert.equal(url.searchParams.get('page'),'1');
+respondTo(roundRequests,0,{items:[{round_id:'r2',round_no:2,conversation_id:7},{round_id:'r5',round_no:1,conversation_id:9}],total:51,page:1,filter_scoped:true}); await tick();
+assert.equal(node('qualityRoundCount').textContent,'命中 51 轮');
+assert.equal(node('qualityAllHistory').textContent,'命中轮次的全部消息');
+assert.equal(node('qualityReviewRound').innerHTML.includes('r2'),true);
+assert.equal(node('qualityExportDetail').textContent,'下载命中轮次（Excel）');
+node('qualityRoundNext').handlers.click();
+url = new URL(roundRequests[1].url,'http://localhost');
+assert.equal(url.searchParams.get('page'),'2'); assert.equal(url.searchParams.get('agent_id'),'7');
+respondTo(roundRequests,1,{items:[{round_id:'r9',round_no:3,conversation_id:9}],total:51,page:2,filter_scoped:true}); await tick();
+const round = ui.openQualityDetail('round','r9',true);
+respond(1,{round:{round_id:'r9',customer_id:'c1',round_no:3},messages:[],total:1,page:1}); await round;
+assert.equal(roundRequests.length,2,'opening a matched round keeps the filtered directory');
+assert.equal(node('qualityCustomerHistory').classList.contains('hidden'),true,'no unfiltered full-history shortcut');
+assert.equal(node('qualityDetailHint').textContent,'');
+node('qualityAllHistory').handlers.click();
+url = new URL(requests[2].url,'http://localhost');
+assert.equal(url.pathname,'/admin/api/quality/customers/c1/history'); assert.equal(url.searchParams.get('agent_id'),'7');
+respond(2,{customer:{customer_id:'c1',display_name:'客户甲',round_count:2,total_round_count:6},messages:[],total:9,page:1,filter_scoped:true}); await tick();
+assert.equal(roundRequests.length,2);
+confirmationAnswers.push(true);
+const exporting = ui.exportQuality('detail');
+assert.equal(confirmations.at(-1).includes('命中当前筛选条件'),true);
+url = new URL(requests[3].url,'http://localhost');
+assert.equal(url.pathname,'/admin/api/quality/customers/c1/export.xlsx'); assert.equal(url.searchParams.get('agent_id'),'7');
+assert.equal(url.searchParams.has('page'),false);
+respond(3,'xlsx'); await exporting;
 """,
     "excel_detail_exports_complete_history_or_round_without_filters": r"""
 ui.state.token = 'session'; ui.state.view = 'quality'; ui.qualityState.ready = true;
@@ -1775,8 +2245,8 @@ def test_agent_scope_defaults_to_round_responsibility_and_labels_other_scopes() 
     assert scope is not None
     assert re.findall(r'<option value="([^"]*)"(?: selected)?>([^<]*)</option>', scope.group(1)) == [
         ("", "请选择坐席范围"),
-        ("responsible", "本轮责任坐席（ICS分配）"), ("replied", "本轮全部回复坐席"),
-        ("assigned", "历史分配（非责任）"), ("current", "会话当前分配（非责任）")
+        ("responsible", "考核坐席（与统计报表一致）"), ("replied", "本轮全部回复坐席"),
+        ("assigned", "历史分配（非责任）"), ("current", "会话当前分配（实时，不随锁定时刻）")
     ]
     assert '<option value="responsible" selected>' in scope.group(1)
     assert "responsible_reply_at" not in html
@@ -1814,3 +2284,29 @@ def test_review_filter_controls_submit_supported_verdicts(control, name):
     assert re.findall(r'<option value="([^"]*)">([^<]*)</option>', select.group(1)) == [
         ("", "全部结果"), ("passed", "合格"), ("failed", "不合格"), ("pending", "待定")
     ]
+
+
+@pytest.mark.parametrize("source", [ADMIN_PAGE, ADMIN_PAGE.parents[2] / "statistics/web/reports.js"])
+def test_jump_pure_function_uses_shared_raw_inputs(source):
+    text = source.read_text(encoding="utf-8")
+    parser = re.search(r"const parsePageTarget = .*?\n    };", text, flags=re.S).group(0)
+    program = "const assert=require('node:assert/strict');" + parser
+    program += "for(const [raw,page] of " + json.dumps(PAGE_INPUTS) + ") {const result=parsePageTarget(raw,10);assert.equal(result.ok,page!==null);assert.equal(result.page,page);if(page===null)assert.equal(result.message,'请输入整数页码');}"
+    result = subprocess.run([NODE,"-"],input=program,text=True,encoding="utf-8",capture_output=True,timeout=15)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_jump_inputs_preserve_raw_text():
+    class Inputs(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            values = dict(attrs)
+            if tag == "input" and values.get("id", "").endswith("JumpInput"):
+                found.append(values)
+    found = []
+    Inputs().feed(ADMIN_PAGE.read_text(encoding="utf-8"))
+    Inputs().feed((ADMIN_PAGE.parents[2] / "statistics/web/reports.js").read_text(encoding="utf-8"))
+    assert len(found) == 5
+    for attrs in found:
+        assert attrs["type"] == "text"
+        assert attrs["inputmode"] == "numeric"
+        assert "min" not in attrs

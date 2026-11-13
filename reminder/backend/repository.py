@@ -141,7 +141,7 @@ class ReminderRepository:
                     self._make_plugin_capacity(connection, account_id, agent_id, max_devices)
                 else:
                     # 管理员绑定保持旧行为：重新绑定会吊销该席位的已有设备。
-                    connection.execute(f"UPDATE {DEVICES} SET active=FALSE WHERE account_id=%s AND agent_id=%s",
+                    connection.execute(f"UPDATE {DEVICES} SET active=FALSE WHERE account_id=%s AND agent_id=%s AND active",
                                        (account_id, agent_id))
                 connection.execute(f"""INSERT INTO {DEVICES}
                     (id, account_id, agent_id, agent_name, token_hash, auth_kind, auth_version)
@@ -179,7 +179,7 @@ class ReminderRepository:
                     if max_devices is None:
                         connection.execute(
                             "UPDATE " + DEVICES
-                            + " SET active=FALSE WHERE account_id=%s AND agent_id=%s AND id<>%s",
+                            + " SET active=FALSE WHERE account_id=%s AND agent_id=%s AND id<>%s AND active",
                             (device["account_id"], agent_id, device["id"]),
                         )
                     else:
@@ -206,11 +206,19 @@ class ReminderRepository:
         connection = self.connections.acquire()
         try:
             with connection.transaction():
+                token_hash = hashlib.sha256(token.encode()).hexdigest()
+                # 客户端每 2 秒轮询一次；last_seen_at 只用于满额时淘汰最久未见的设备，
+                # 精确到分钟即可。未过期时只读，避免每次轮询都写一行、产生死元组。
                 row = connection.execute(f"""UPDATE {DEVICES}
                     SET last_seen_at=CURRENT_TIMESTAMP
                     WHERE token_hash=%s AND active=TRUE
+                      AND (last_seen_at IS NULL OR last_seen_at < CURRENT_TIMESTAMP - INTERVAL '60 seconds')
                     RETURNING id,account_id,agent_id,agent_name,auth_kind,auth_version,binding_version""",
-                    (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
+                    (token_hash,)).fetchone()
+                if row is None:
+                    row = connection.execute(f"""SELECT id,account_id,agent_id,agent_name,auth_kind,
+                        auth_version,binding_version FROM {DEVICES} WHERE token_hash=%s AND active=TRUE""",
+                        (token_hash,)).fetchone()
                 return dict(zip(("id", "account_id", "agent_id", "agent_name", "auth_kind",
                                  "auth_version", "binding_version"), row)) if row else None
         finally:

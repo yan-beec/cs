@@ -1,9 +1,10 @@
 import json
 import unittest
-from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, Mock, call, patch
+from datetime import datetime, timezone
+from unittest.mock import MagicMock, Mock, call, patch
 
 from ics_agent.app.chatwoot import routes as main
+from ics_agent.app.chatwoot.jobs import WebhookJob
 from ics_agent.app.chatwoot.state import ContactBlockRepository
 from ics_agent.app.core.models import ChatwootWebhookEvent
 from ics_agent.app.chatwoot.payload import (
@@ -72,71 +73,26 @@ class ContactBlockedPayloadTest(unittest.TestCase):
             )
         )
 
-    def test_contact_update_is_recognized_as_block_event(self) -> None:
-        event = ChatwootWebhookEvent(
-            event="contact_updated",
-            id=42,
-            account={"id": 1},
-            raw={
-                "event": "contact_updated",
-                "id": 42,
-                "account": {"id": 1},
-                "contact": {"id": 42, "blocked": True},
-            },
-        )
-
-        self.assertTrue(main._is_contact_block_event(event))
-        self.assertTrue(main._should_process_webhook_event(event))
-
-    def test_conversation_update_with_blocked_sender_is_block_event(self) -> None:
-        event = ChatwootWebhookEvent(
-            event="conversation_updated",
-            id=58,
-            account={"id": 1},
-            conversation={
-                "id": 58,
-                "account_id": 1,
-                "meta": {
-                    "sender": {
+    def test_web_mute_contact_update_is_not_processed(self) -> None:
+        # Chatwoot 网页端静音只保留 Chatwoot 自身功能，不进入 ICS。
+        for blocked in (True, False):
+            with self.subTest(blocked=blocked):
+                event = ChatwootWebhookEvent(
+                    event="contact_updated",
+                    id=42,
+                    account={"id": 1},
+                    raw={
+                        "event": "contact_updated",
                         "id": 42,
-                        "blocked": True,
-                    }
-                },
-            },
-            raw={
-                "event": "conversation_updated",
-                "id": 58,
-                "account": {"id": 1},
-                "conversation": {
-                    "id": 58,
-                    "account_id": 1,
-                    "meta": {
-                        "sender": {
-                            "id": 42,
-                            "blocked": True,
-                        }
+                        "account": {"id": 1},
+                        "contact": {"id": 42, "blocked": blocked},
+                        "changed_attributes": [
+                            {"blocked": {"previous_value": not blocked, "current_value": blocked}}
+                        ],
                     },
-                },
-            },
-        )
+                )
 
-        self.assertTrue(main._is_contact_block_event(event))
-        self.assertTrue(main._should_process_webhook_event(event))
-
-    def test_conversation_update_with_unblocked_sender_is_block_event(self) -> None:
-        event = parse_event(json.dumps({
-            "event": "conversation_updated",
-            "id": 58,
-            "account": {"id": 1},
-            "conversation": {
-                "id": 58,
-                "account_id": 1,
-                "meta": {"sender": {"id": 42, "blocked": False}},
-            },
-        }).encode())
-
-        self.assertTrue(main._is_contact_block_event(event))
-        self.assertTrue(main._should_process_webhook_event(event))
+                self.assertFalse(main._should_process_webhook_event(event))
 
     def test_reads_contact_id_from_flat_conversation_event_sender(self) -> None:
         for event_name in ("conversation_updated", "conversation_status_changed"):
@@ -163,201 +119,85 @@ class ContactBlockedPayloadTest(unittest.TestCase):
         self.assertIsNone(main._webhook_contact_id(event))
 
 
-class ContactBlockEventTest(unittest.IsolatedAsyncioTestCase):
-    async def test_flat_conversation_update_arms_twenty_four_hour_contact_block(
+class WebMuteIsolationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_conversation_update_with_mute_change_does_not_touch_blacklist(
         self,
     ) -> None:
-        event = parse_event(json.dumps({
-            "event": "conversation_updated",
-            "id": 58,
-            "account": {"id": 1},
-            "inbox_id": 7,
-            "status": "resolved",
-            "meta": {
-                "sender": {"id": 42, "blocked": True, "type": "contact"},
-                "assignee": {"id": 9, "type": "user"},
-                "assignee_type": "User",
-            },
-            "changed_attributes": [{
-                "last_activity_at": {
-                    "previous_value": "2026-10-09T06:44:00Z",
-                    "current_value": "2026-10-09T06:44:39Z",
-                },
-            }],
-        }).encode())
-        now = datetime(2026, 10, 9, 6, 44, 39, tzinfo=timezone.utc)
-        expected_expiry = now + timedelta(hours=24)
-        repository = Mock()
-
-        self.assertTrue(main._is_contact_block_event(event))
-        self.assertTrue(main._should_process_webhook_event(event))
-        with (
-            patch.object(main, "contact_block_repository", repository),
-            patch.object(main, "_resolve_blocked_contact_conversations", AsyncMock()),
-            patch.object(
-                main,
-                "settings",
-                main.settings.model_copy(
-                    update={"chatwoot_block_duration_seconds": 86400}
-                ),
-            ),
-            patch.object(main, "datetime") as datetime_mock,
-        ):
-            datetime_mock.now.return_value = now
-            result = await main._process_contact_block_event(event)
-
-        repository.arm.assert_called_once_with(
-            account_id="1",
-            contact_id="42",
-            blocked_until=expected_expiry,
-            refresh_existing=False,
-        )
-        repository.deactivate.assert_not_called()
-        self.assertEqual(result["route"], "contact_block_armed")
-        self.assertEqual(result["blocked_until"], expected_expiry.isoformat())
-
-    async def test_contact_update_arms_seven_day_block(self) -> None:
-        event = ChatwootWebhookEvent(
-            event="contact_updated",
-            id=42,
-            account={"id": 1},
-            raw={
-                "event": "contact_updated",
-                "id": 42,
-                "account": {"id": 1},
-                "contact": {"id": 42, "blocked": True},
-                "changed_attributes": [
-                    {"blocked": {"previous_value": False, "current_value": True}}
-                ],
-            },
-        )
-        blocked_until = datetime.now(timezone.utc)
-        repository = Mock()
-        repository.arm = Mock()
-
-        with (
-            patch.object(main, "contact_block_repository", repository),
-            patch.object(main, "_resolve_blocked_contact_conversations", AsyncMock()),
-            patch.object(
-                main,
-                "settings",
-                main.settings.model_copy(
-                    update={"chatwoot_block_duration_seconds": 604800}
-                ),
-            ),
-            patch.object(main, "datetime") as datetime_mock,
-        ):
-            datetime_mock.now.return_value = blocked_until
-            result = await main._process_contact_block_event(event)
-
-        repository.arm.assert_called_once()
-        call = repository.arm.call_args.kwargs
-        self.assertEqual(call["account_id"], "1")
-        self.assertEqual(call["contact_id"], "42")
-        self.assertEqual(
-            call["blocked_until"],
-            blocked_until.replace() + main.timedelta(seconds=604800),
-        )
-        self.assertTrue(call["refresh_existing"])
-        self.assertEqual(result["route"], "contact_block_armed")
-
-    async def test_conversation_update_with_blocked_sender_arms_block(
-        self,
-    ) -> None:
-        event = ChatwootWebhookEvent(
-            event="conversation_updated",
-            id=58,
-            account={"id": 1},
-            conversation={
-                "id": 58,
-                "account_id": 1,
-                "meta": {"sender": {"id": 42, "blocked": True}},
-            },
-            raw={
-                "event": "conversation_updated",
-                "id": 58,
-                "account": {"id": 1},
-                "conversation": {
+        for blocked in (True, False):
+            with self.subTest(blocked=blocked):
+                event = parse_event(json.dumps({
+                    "event": "conversation_updated",
                     "id": 58,
-                    "account_id": 1,
-                    "meta": {"sender": {"id": 42, "blocked": True}},
-                },
-            },
-        )
-        repository = Mock()
-        repository.arm = Mock()
+                    "account": {"id": 1},
+                    "status": "open",
+                    "meta": {"sender": {"id": 42, "blocked": blocked}},
+                    "changed_attributes": [
+                        {"blocked": {"previous_value": not blocked, "current_value": blocked}}
+                    ],
+                }).encode())
+                blocks = Mock()
+                client = Mock()
+                controls = Mock()
 
-        with (
-            patch.object(main, "contact_block_repository", repository),
-            patch.object(main, "_resolve_blocked_contact_conversations", AsyncMock()),
-        ):
-            result = await main._process_contact_block_event(event)
+                with (
+                    patch.object(main, "contact_block_repository", blocks),
+                    patch.object(main, "conversation_control_repository", controls),
+                    patch.object(main, "get_chatwoot_client", return_value=client),
+                ):
+                    result = await main._process_webhook_job_unlocked(
+                        WebhookJob("mute-change", event),
+                    )
 
-        repository.arm.assert_called_once()
-        call = repository.arm.call_args.kwargs
-        self.assertEqual(call["account_id"], "1")
-        self.assertEqual(call["contact_id"], "42")
-        self.assertFalse(call["refresh_existing"])
-        self.assertEqual(result["route"], "contact_block_armed")
-
-    async def test_contact_update_with_unblocked_contact_deactivates_block(self) -> None:
-        event = ChatwootWebhookEvent(
-            event="contact_updated",
-            id=42,
-            account={"id": 1},
-            raw={
-                "event": "contact_updated",
-                "id": 42,
-                "account": {"id": 1},
-                "contact": {"id": 42, "blocked": False},
-                "changed_attributes": [
-                    {"blocked": {"previous_value": True, "current_value": False}}
-                ],
-            },
-        )
-        repository = Mock()
-
-        with patch.object(main, "contact_block_repository", repository):
-            result = await main._process_contact_block_event(event)
-
-        repository.deactivate.assert_called_once_with(
-            account_id="1", contact_id="42",
-        )
-        repository.arm.assert_not_called()
-        self.assertEqual(result["route"], "contact_block_deactivated")
+                self.assertEqual(result["route"], "conversation_status")
+                self.assertEqual(blocks.mock_calls, [])
+                client.set_conversation_status.assert_not_called()
+                client.set_contact_blocked.assert_not_called()
 
 
 class ContactBlockRepositoryTest(unittest.TestCase):
-    def test_arm_qualifies_existing_active_column(self) -> None:
+    def _repository(self):
         connection = Mock()
         connection.transaction = MagicMock()
         connection.transaction.return_value.__enter__.return_value = None
         cursor = connection.cursor.return_value
         pool = Mock()
         pool.acquire.return_value = connection
-        repository = ContactBlockRepository(connections=pool)
+        return ContactBlockRepository(connections=pool), cursor
 
-        repository.arm(
-            account_id="1",
-            contact_id="42",
-            blocked_until=datetime.now(timezone.utc),
-        )
+    def test_is_active_requires_unexpired_active_row(self) -> None:
+        repository, cursor = self._repository()
+        cursor.fetchone.return_value = (1,)
+        now = datetime.now(timezone.utc)
 
-        sql = cursor.execute.call_args.args[0]
-        self.assertIn("INSERT INTO chatwoot_contact_block AS current_block", sql)
-        self.assertIn("WHEN current_block.active", sql)
-        self.assertIn("THEN current_block.blocked_until", sql)
+        self.assertTrue(repository.is_active(account_id="1", contact_id="42", now=now))
+        sql, params = cursor.execute.call_args.args
+        self.assertIn("active = TRUE AND blocked_until > %s", sql)
+        self.assertEqual(params, ("1", "42", now))
+        cursor.fetchone.return_value = None
+        self.assertFalse(repository.is_active(account_id="1", contact_id="42", now=now))
+
+    def test_legacy_rows_are_marked_chatwoot_muted_on_upgrade(self) -> None:
+        repository, cursor = self._repository()
+        repository.ensure_table()
+        statements = " ".join(item.args[0] for item in cursor.execute.call_args_list)
+        self.assertIn("ADD COLUMN IF NOT EXISTS chatwoot_muted BOOLEAN NOT NULL DEFAULT TRUE", statements)
+        self.assertIn("ALTER COLUMN chatwoot_muted SET DEFAULT FALSE", statements)
+
+    def test_deactivate_clears_legacy_mute_flag(self) -> None:
+        repository, cursor = self._repository()
+        repository.deactivate(account_id="1", contact_id="42")
+        self.assertIn("chatwoot_muted = FALSE", cursor.execute.call_args.args[0])
 
 
 class MutedHandoffNoticeTest(unittest.IsolatedAsyncioTestCase):
-    async def test_muted_handoff_sends_notice_without_opening_conversation(
+    async def test_muted_handoff_looks_like_busy_seats_and_keeps_ai(
         self,
     ) -> None:
         from ics_agent.app.chatwoot import routes as main
 
         client = Mock()
         client.set_conversation_status = Mock(return_value={})
-        client.send_message = Mock(return_value={"id": 99})
+        client.send_message = Mock(side_effect=[{"id": 98}, {"id": 99}])
         event = ChatwootWebhookEvent(
             event="message_created",
             account={"id": 1},
@@ -372,30 +212,33 @@ class MutedHandoffNoticeTest(unittest.IsolatedAsyncioTestCase):
                 main.conversation_control_repository,
                 "record_conversation_status",
             ) as record_status,
+            patch.object(main, "settings", main.settings.model_copy(update={
+                "chatwoot_handoff_notice_enabled": True,
+            })),
         ):
             result = await main._suppress_muted_handoff(
                 event=event,
                 event_key="test-event",
             )
 
+        # 不结束会话（结束会触发满意度评价），保持 AI 的 pending。
         client.set_conversation_status.assert_called_once_with(
             account_id="1",
             conversation_id="22",
-            status="resolved",
+            status="pending",
         )
+        self.assertNotIn("resolved", str(record_status.call_args_list))
         self.assertEqual(
             client.send_message.call_args_list,
             [
                 call(account_id="1", conversation_id="22", content="正在为您转接人工客服，请稍等..."),
-                call(account_id="1", conversation_id="22", content="非常抱歉，当前人工座席繁忙，请稍后再试。"),
+                call(account_id="1", conversation_id="22", content=main.HANDOFF_NO_AGENT_MESSAGE),
             ],
         )
-        record_status.assert_called_once()
         self.assertEqual(result["route"], "muted_contact")
-        self.assertEqual(
-            result["answer"],
-            "非常抱歉，当前人工座席繁忙，请稍后再试。",
-        )
+        self.assertEqual(result["handoff_reason"], "contact_blocked")
+        self.assertFalse(result["handoff_required"])
+        self.assertEqual(result["answer"], main.HANDOFF_NO_AGENT_MESSAGE)
         self.assertEqual(result["chatwoot_reply"]["message_id"], "99")
 
 

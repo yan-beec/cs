@@ -14,11 +14,28 @@ python -m quality.processing.worker --rebuild --source-key chatwoot-main --accou
 ```
 
 Windows 开发使用 `C:\Users\lenovo\Anaconda3\envs\cs\python.exe`。
-执行前必须按现有迁移流程应用新增的 `002_query.sql`；没有自动启动或自动改库。
+执行前必须按现有迁移流程应用全部迁移，包含 `010_round_replay_windows.sql`，
+再重建并启动解析进程；程序不会自动改库。原有查询投影不需清空。
 `--rebuild` 会从不可变事件重建选定来源的可变查询投影，并补充缺失快照，
 不会覆盖、删除原始事件或历史快照。正在由其他工作进程处理的会话会跳过。
 显式重建成功会完成该会话已读取的 failed 任务；其他工作进程持有的 processing
 任务仍由其租约管理。
+
+迁移 `011_query_scaling.sql` 增加统计用的每轮预计算表与索引。工作进程在整理会话的同一事务里
+写入该会话轮次的统计结果（`service_facts.py`）；队列空闲时自动为迁移前的历史轮次分批回填，
+从最新轮次开始，不需要手动执行。迁移本身只建索引和空表：建索引期间归档页面可正常读取，
+工作进程短暂等待后重试；在约百万轮、千万条消息的规模下预计需要数十秒到数分钟。
+
+迁移 `013_responsible_seat.sql` 给每轮预计算结果加上主责坐席（ICS 分配，否则转人工后首个有效公开回复的坐席），
+只加两列可空字段，不重写表、瞬间完成。**须先执行迁移再上线新代码**（新代码写入和读取这两列）。
+`FACT_VERSION` 升到 3 后，旧结果不再采用：报表对这些轮次现场按新规则计算，工作进程空闲时自动回填。
+
+迁移 `014_consultation_segments.sql` 给每轮预计算结果加上咨询活跃段 `consultation_spans`（tstzmultirange；只取转人工成功后的有效消息，相邻间隔超过10分钟切段，每段从第一条消息到主责坐席最后一条公开回复），
+只加一列可空字段，瞬间完成。**须先执行迁移再上线新代码**。`FACT_VERSION` 升到 6，历史轮次自动回填；回填完成前长区间的坐席细化会慢一些（现场计算）。
+
+迁移 `018_response_seconds_total.sql` + `FACT_VERSION` 9（2026-11-11）：每轮预存响应总秒数 `response_seconds_total`，报表平均响应 = Σ总秒数 ÷ Σ`response_samples`（按次加权）；
+响应计时每段从转人工后客户一段连续发言的最后一条有效消息起，转人工指令不作起点、客户发言前的坐席消息不算首响；
+`consultation_spans` 为转人工成功→解决的时间线（转人工、之后任何人的有效消息、解决），相邻间隔超过 600 秒切段，归 ICS 分配坐席，协助轮次为空。
 
 配置读取现有 `ARCHIVE_POSTGRES_HOST/PORT/DB/SSLMODE` 与
 `ARCHIVE_INGEST_USER/PASSWORD`，独立配置包括：
@@ -29,6 +46,9 @@ Windows 开发使用 `C:\Users\lenovo\Anaconda3\envs\cs\python.exe`。
 | `ARCHIVE_PROCESSOR_LEASE_SECONDS` | 120 |
 | `ARCHIVE_PROCESSOR_MAX_ATTEMPTS` | 8 |
 | `ARCHIVE_PROCESSOR_POLL_SECONDS` | 2 |
+| `ARCHIVE_PROCESSOR_RECENT_ROUNDS` | 50 |
+| `ARCHIVE_PROCESSOR_INDEX_BATCH_SIZE` | 500 |
+| `ARCHIVE_PROCESSOR_INDEX_BATCH_BYTES` | 8388608 |
 | `ARCHIVE_PROCESSOR_MAX_CONVERSATION_EVENTS` | 20000 |
 | `ARCHIVE_PROCESSOR_MAX_CONVERSATION_BYTES` | 67108864 |
 | `CHATWOOT_SESSION_IDLE_TIMEOUT_SECONDS` | 21600 |
@@ -37,8 +57,9 @@ Windows 开发使用 `C:\Users\lenovo\Anaconda3\envs\cs\python.exe`。
 `null`。启动时读取该文件；变更映射后重启并按需要重建投影。
 
 每个持久化任务都有唯一领取令牌和租约；会话级事务锁避免多个进程同时
-重建同一会话。成功时，快照追加、查询投影替换、当前任务及已读取范围内
-queued/retry 任务的完成在同一事务提交。其他工作进程持有的有效租约不被覆盖。
+重建同一会话。每步的快照追加、对应窗口的查询投影更新和重放进度在同一事务
+提交；整个计划完成后才将实际读取范围内的 queued/retry 任务标记完成。
+正常分批推进不会消耗失败重试次数。其他工作进程持有的有效租约不被覆盖。
 进程中断后过期租约可恢复；失败按指数退避重试，达到上限标记 failed。
 错误记录仅保存异常类型，日志不输出对话正文或凭据。
 
@@ -118,11 +139,25 @@ message ID、已证明的业务 round ID 别名和 `ics_closed_at` 关联已解�
 事件更新可变查询投影，不修改已有快照，即使旧快照曾未解析出评分。评价卡
 的创建、更新不计入公开服务回复，也不会开启或拆分咨询轮次。
 
-首版每次批处理重放整个会话，保证乱序和重复投递不会累加计数或倒退最新
-消息版本。重放不加载原始字节副本，先检查事件数和 JSON 文本字节预算，
-只读取已检查的高水位以内事件。`MAX_CONVERSATION_EVENTS`、
-`MAX_CONVERSATION_BYTES`、SQL 超时和独立连接池限制资源。
-超长会话超过上限会进入重试/失败，需后续增量检查点优化；失败不会丢失原始事件。
+日常重算同来源、同账号、同 contact 客户的最近 50 轮，跨 Chatwoot 会话计算
+窗口，但每个会话分别维护轮次状态。旧原始事件、消息版本、已生成的轮次和评价
+继续保留并可查询，不会因为移出窗口而删除。轮次 ID 以及会话内的累计轮号保留。
+人工实际接管、当前分配、解决状态等通过轮次起点的检查点传递，避免窗口起点
+误判为首次接待。未能确定 contact 的记录按会话隔离。
+
+首次升级会分批补齐事件定位索引，从已有历史建立检查点；首次整理和显式重建
+都可能覆盖完整历史，但不把完整载荷一次性加载到内存。新增事件先按 500 条、
+8 MiB 的页面生成小型定位信息；这些信息用于定位客户消息、轮次边界和受影响
+轮次。旧消息编辑、删除、迟到消息、历史评价会将修复起点前移，并分批修复后续
+轮次。重放进度持久化，进程重启可继续。历史修复期间查询可能暂时看到部分轮次
+已更新、部分轮次待更新，待该会话的任务完成后收敛。
+
+`MAX_CONVERSATION_EVENTS` 和 `MAX_CONVERSATION_BYTES` 保留原环境变量名，
+现在约束单次实际解析批次，不再约束会话累计事件或字节。每批最多 50 轮，
+先检查定位信息中的事件数和 JSON 文本字节，再读取对应载荷；超出预算时自动
+减少本批轮数。单独一轮仍超过预算时继续进入重试/失败，避免失去内存保护。
+因此累计超过 20000 事件或 64 MiB 可以正常继续；一轮本身异常巨大仍需处理。
+重放不加载原始字节副本，SQL 超时和独立连接池仍限制资源。
 达到最大尝试次数后仍反复过期的工作租约会标记 failed，避免进程持续崩溃时无上限重领。
 
 测试：
@@ -134,5 +169,5 @@ python -m unittest quality.tests.test_processing
 数据库集成测试 `quality.tests.test_query_database` 仅在
 `PROCESSING_TEST_DATABASE=1` 时启用，并限制数据库名为
 `quality_query_test_` 或 `quality_capture_test_` 前缀。先在一次性测试库
-应用 001/002，再设置 `PROCESSING_TEST_ADMIN_PASSWORD` 和独立连接参数；
+应用全部迁移，再设置 `PROCESSING_TEST_ADMIN_PASSWORD` 和独立连接参数；
 绝不能指向现有生产或本机业务归档库。

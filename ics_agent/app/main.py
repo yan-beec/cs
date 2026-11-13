@@ -32,10 +32,19 @@ from ics_agent.channels.bootstrap import initialize_channel
 from ics_agent.rag.graph import get_rag_graph
 from ics_agent.rag.memory import get_conversation_memory_manager
 from reminder.backend.routes import router as reminder_router
+from .blacklist.routes import router as blacklist_router
+from .blacklist.runtime import get_blacklist_runtime
+from .handoff_queue.runtime import get_handoff_queue_runtime
+from .handoff_queue.routes import router as handoff_queue_router
+from .quick_replies.routes import router as quick_replies_router
+from .quick_replies.runtime import get_quick_replies_runtime
+from quality.blacklist.runtime import start_blacklist_sync, stop_blacklist_sync
 from reminder.backend.repository import get_repository as get_reminder_repository
 from quality.query.routes import router as quality_query_router
 from ics_agent.statistics.routes import router as statistics_router
 from quality.query.runtime import get_query_runtime
+from quality.offline.routes import router as offline_archive_router
+from quality.offline.jobs import get_offline_jobs
 from quality.assignment.runtime import start_assignment_sync, stop_assignment_sync
 from quality.presence.runtime import get_presence_runtime
 from .chatwoot.schema_recovery import ConversationControlSchemaRecovery
@@ -150,10 +159,26 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
     await get_query_runtime().start()
     try:
+        await get_offline_jobs().start()
+    except Exception as exc:
+        logger.warning("Offline archive startup unavailable: %s", type(exc).__name__)
+    try:
         await get_presence_runtime().start(get_query_runtime())
     except Exception as exc:
         logger.warning("Archive presence startup unavailable: %s", type(exc).__name__)
+    await get_handoff_queue_runtime().start(settings)
     await start_assignment_sync()
+    # 黑名单为独立功能：自有连接池和后台任务，启动失败只影响黑名单接口。
+    try:
+        await get_blacklist_runtime().start(settings)
+        await start_blacklist_sync()
+    except Exception as exc:
+        logger.warning("事件=应用.黑名单.启动失败 错误类型=%s", type(exc).__name__)
+    # 坐席快捷回复同步：独立连接池，启动失败只影响快捷回复接口。
+    try:
+        await get_quick_replies_runtime().start(settings)
+    except Exception as exc:
+        logger.warning("事件=应用.快捷回复.启动失败 错误类型=%s", type(exc).__name__)
     if control_schema_failed:
         await control_schema_recovery.start(settings)
     log_event(logger, logging.INFO, "app.lifecycle.started")
@@ -162,12 +187,26 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     finally:
         await stop_chatwoot_webhook_workers()
         await control_schema_recovery.close()
+        await get_handoff_queue_runtime().close()
         await stop_assignment_sync()
+        try:
+            await stop_blacklist_sync()
+            await get_blacklist_runtime().close()
+        except Exception as exc:
+            logger.warning("事件=应用.黑名单.关闭失败 错误类型=%s", type(exc).__name__)
+        try:
+            await get_quick_replies_runtime().close()
+        except Exception as exc:
+            logger.warning("事件=应用.快捷回复.关闭失败 错误类型=%s", type(exc).__name__)
         try:
             await get_presence_runtime().close()
         except Exception as exc:
             logger.warning("Archive presence shutdown unavailable: %s", type(exc).__name__)
         await get_query_runtime().close()
+        try:
+            await get_offline_jobs().close()
+        except Exception as exc:
+            logger.warning("Offline archive shutdown unavailable: %s", type(exc).__name__)
         await memory_manager.shutdown()
         log_event(logger, logging.INFO, "app.lifecycle.stopped")
 
@@ -199,5 +238,9 @@ app.include_router(public_router)
 app.include_router(admin_router)
 app.include_router(chatwoot_webhook_router)
 app.include_router(reminder_router)
+app.include_router(blacklist_router)
+app.include_router(handoff_queue_router)
+app.include_router(quick_replies_router)
 app.include_router(quality_query_router)
+app.include_router(offline_archive_router)
 app.include_router(statistics_router)

@@ -75,17 +75,31 @@ def test_filtered_download_reuses_exact_filters_and_ignores_pagination(download_
         result.cleanup()
 
 
-@pytest.mark.parametrize("path,mode,scope", [
-    ("customers/customer-one/export.xlsx", "customers", {"customer_id": "customer-one"}),
-    ("rounds/round-one/export.xlsx", "rounds", {"round_id": "round-one"}),
+@pytest.mark.parametrize("path,mode,scope,params", [
+    ("customers/customer-one/export.xlsx", "customers", {"customer_id": "customer-one"}, {"customer_query": "甲", "page": 9}),
+    ("rounds/round-one/export.xlsx", "rounds", {"round_id": "round-one"}, {"keyword": "ignored", "page": 9}),
 ])
-def test_detail_download_does_not_inherit_any_list_filters(download_client, path, mode, scope):
+def test_detail_download_does_not_inherit_list_filters_without_round_scope(download_client, path, mode, scope, params):
     client, runtime, _ = download_client
     result = artifact()
     runtime.export.return_value = result
     try:
-        assert client.get("/admin/api/quality/" + path, params={"keyword": "ignored", "page": 9}).status_code == 200
+        assert client.get("/admin/api/quality/" + path, params=params).status_code == 200
         runtime.export.assert_awaited_once_with(mode, ArchiveFilters(), **scope)
+    finally:
+        result.cleanup()
+
+
+def test_filtered_customer_detail_download_keeps_round_filters(download_client):
+    client, runtime, _ = download_client
+    result = artifact()
+    runtime.export.return_value = result
+    try:
+        assert client.get("/admin/api/quality/customers/customer-one/export.xlsx",
+                          params={"source_key": "s", "account_id": 1, "agent_id": "7"}).status_code == 200
+        mode, filters = runtime.export.call_args.args
+        assert mode == "customers" and filters.agent_id == "7" and filters.source_key == "s"
+        assert runtime.export.call_args.kwargs == {"customer_id": "customer-one"}
     finally:
         result.cleanup()
 

@@ -274,7 +274,9 @@ class WebhookIdempotencyRepository:
                     WHERE event_key IN (
                         SELECT event_key
                         FROM {WEBHOOK_TABLE_NAME}
-                        WHERE status IN ('completed', 'failed')
+                        -- 进程崩溃时丢在内存队列里的 queued/processing 记录不会再被处理，
+                        -- 超过保留期后与终态记录一起清理，避免表只增不减。
+                        WHERE status IN ('completed', 'failed', 'queued', 'processing')
                           AND updated_at < CURRENT_TIMESTAMP
                               - (%s * INTERVAL '1 day')
                         ORDER BY updated_at
@@ -653,17 +655,11 @@ class WebhookJobQueue:
             return
 
     async def _cleanup_loop(self) -> None:
+        # 启动后先清理一次：按天间隔时，频繁重启的服务以前一次都清不到。
         while True:
             settings = get_rag_settings()
-            await asyncio.sleep(
-                settings.webhook_idempotency_cleanup_interval_seconds
-            )
             try:
-                await asyncio.to_thread(
-                    self._repository.cleanup_expired,
-                    retention_days=settings.webhook_idempotency_retention_days,
-                    batch_size=settings.webhook_idempotency_cleanup_batch_size,
-                )
+                await self._drain_expired(settings)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -673,3 +669,25 @@ class WebhookJobQueue:
                     "webhook.idempotency.cleanup.failed",
                     error_type=type(exc).__name__,
                 )
+            await asyncio.sleep(
+                settings.webhook_idempotency_cleanup_interval_seconds
+            )
+
+    async def _drain_expired(self, settings) -> int:
+        """分批删到不足一批为止；每批之间短暂让出，单轮最多 200 批。
+
+        每天的 webhook 远多于一批（默认 1000 行），只删一批会让表持续膨胀。
+        """
+        batch_size = settings.webhook_idempotency_cleanup_batch_size
+        total = 0
+        for _ in range(200):
+            deleted = await asyncio.to_thread(
+                self._repository.cleanup_expired,
+                retention_days=settings.webhook_idempotency_retention_days,
+                batch_size=batch_size,
+            )
+            total += deleted
+            if deleted < batch_size:
+                break
+            await asyncio.sleep(0.2)
+        return total

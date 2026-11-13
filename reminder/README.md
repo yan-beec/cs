@@ -4,9 +4,17 @@
 
 本插件不修改 Chatwoot 源码，也不新增一套独立后端。服务端提醒接口随 ICS 一起运行，桌面客户端负责登录、轮询提醒、强弹窗和确认收到；Chrome/Edge 浏览器插件负责核验 Chatwoot 登录状态、复用标签页并打开会话。
 
-将本功能更新到服务器时，请按[提醒功能服务器更新部署手册](../docs/reminder-server-update.md)逐步操作。手册区分服务器后端更新与客服电脑安装升级，并提供 `ssh ics`、指定仓库 `test` 分支拉取、配置核对、验收和回滚步骤。
+> **客服电脑客户端已改用独立的 ICS 坐席客户端（Electron 版）。** 源码位于 `D:\project\chatwoot\services\chatwoot\desktop-client`，打包和分发都在该项目中完成（`npm run build:reminder`、`npm run package:win`、`npm run build:installer`，产物为该项目的 `dist/installer/ICSReminderSetup.exe`）。
+>
+> 本目录已于 2026-11-06 删除打包功能（`packaging/`、`requirements-build.txt`、安装器测试和 `build/`、`dist/` 下的旧版产物），不再生成旧的纯 Python 托盘提醒安装包，以免覆盖安装后的 Electron 客户端。以下内容保留：
+>
+> - `backend/`：挂在 ICS 上的提醒接口（插件登录、席位绑定与切换、提醒轮询、确认），Electron 客户端继续调用这些接口。
+> - `protocol.py`、`client/`：Electron 客户端内置的强提醒组件由 `desktop-client/scripts/import-reminder.cjs` 从这里复制，修改后需在该项目重新导入并验证。
+> - `extension/`：旧版浏览器插件源码，仅作参考。
+>
+> 下文中关于构建安装包、安装旧版客户端和浏览器插件的章节是历史记录，不再适用。
 
-发给客服的安装说明请使用[客服安装与使用说明（网页阅读版）](docs/客服安装与使用说明.html)，可双击打开；同时保留[Markdown 文档](docs/客服安装与使用说明.md)。说明按客服实际点击顺序介绍安装、浏览器连接、选择本人座席和测试。
+将本功能更新到服务器时，请按[提醒功能服务器更新部署手册](../docs/reminder-server-update.md)逐步操作。手册中的服务器后端更新步骤仍然有效；客服电脑安装请改用 Electron 客户端的安装包。
 
 ## 一、功能和运行方式
 
@@ -134,63 +142,13 @@ Set-Location D:\project\CS
 
 ## 五、安装 Windows 客户端
 
-### 使用本次已构建的安装包
+本目录不再提供客户端打包和安装包。客服电脑请安装 ICS 坐席客户端（Electron 版），在 `D:\project\chatwoot\services\chatwoot\desktop-client` 中按其 README 构建，分发该项目的 `dist/installer/ICSReminderSetup.exe`。
 
-本次新版安装包位于：
-
-```text
-D:\project\CS\reminder\dist\browser-plugin\ICSReminderSetup.exe
-```
-
-本次更新版本为 `1.0.3`，新增会话标签和详情中的收件箱名称显示，并保留“打开 Chatwoot 工作台”、打开后保留弹窗、全部逐条确认后收起及会话标签与摘要字号调整。服务端和客服电脑都需要更新：服务端提供收件箱信息，客户端负责显示；只更新其中一端不能完整启用此功能。新版客户端兼容旧服务端和缺少收件箱字段的提醒，仍可正常接收、打开和确认。
-
-本次使用单独输出目录，避免覆盖仍在运行的旧版 `reminder/dist/ICSReminder.exe`。请使用上面的新版安装包；关闭旧客户端窗口只会隐藏到托盘，需要从托盘选择“退出程序”才会退出。
-
-安装操作：
-
-1. 将 `ICSReminderSetup.exe` 复制到客服电脑；只需分发这一个文件。
-2. 如已有旧版，先从系统托盘退出提醒程序，并关闭连接插件的浏览器。
-3. 双击安装包，确认“安装目录”。默认是 `%LOCALAPPDATA%\Programs\ICSReminder`；也可以点击“选择安装目录”或直接输入路径，例如 `D:\ICSReminder`。请选择当前 Windows 用户有写入权限的独立程序目录，再点击“安装到本机”。安装不需要 Python 或 Conda；使用有写入权限的目录时无需管理员权限。
-4. 安装包自动安装桌面程序、本机浏览器连接组件、插件文件和安装说明，并注册 Chrome/Edge 通信、开始菜单入口和 Windows 卸载项。程序不包含项目 `.env`、ICS 管理员密码或 Chatwoot Token。
-5. 点击“查看插件安装说明”，按下一节完成浏览器插件加载、站点授权和登录。安装后可点击“启动提醒程序”，也可从开始菜单打开“ICS 客服提醒”。
-
-当前浏览器插件尚未上架 Chrome Web Store / Edge Add-ons，安装包会准备插件文件，但浏览器中的加载和首次站点授权仍需手动完成。详细说明见[浏览器插件与统一安装包](docs/browser-extension-install.md)。
-
-### 在当前环境重新构建
-
-使用项目指定的 `cs` Python 环境：
-
-```powershell
-Set-Location D:\project\CS
-& 'C:\Users\lenovo\Anaconda3\envs\cs\python.exe' -m pip install -r reminder\requirements-build.txt
-& 'C:\Users\lenovo\Anaconda3\envs\cs\python.exe' reminder\packaging\build.py --installer
-```
-
-上述命令默认输出到 `reminder/dist/`，生成 `ICSReminderSetup.exe`、`ICSReminder.exe`、`ICSBrowserHost.exe` 和 `ICSChatwootExtension.zip`。安装包已内置桌面程序、连接组件、插件和说明，客服电脑只需接收 `ICSReminderSetup.exe`。构建缓存位于 `reminder/build/`，不需要复制。
-
-要沿用本次的独立输出目录，使用：
-
-```powershell
-& 'C:\Users\lenovo\Anaconda3\envs\cs\python.exe' reminder\packaging\build.py --installer --output-dir reminder\dist\browser-plugin
-```
-
-单独构建桌面程序时可省略 `--installer`，但这不会生成浏览器连接组件和安装包；首次使用完整功能应运行统一安装包。
-
-首次测试桌面弹窗而不连接 ICS：
+开发时如需单独查看本目录的旧版提醒窗口，可运行演示模式（只测试本机置顶窗口和提示音，不连接 ICS）：
 
 ```powershell
 & 'C:\Users\lenovo\Anaconda3\envs\cs\python.exe' -m reminder.client.main --demo
 ```
-
-演示模式只测试置顶窗口和提示音，不读取服务器、Chatwoot 或本机设备凭据。
-
-### 升级和卸载
-
-升级时先从托盘退出桌面客户端，并关闭插件所在的浏览器，再运行新版安装包。安装向导会读取已有安装目录，按原目录升级，保留 `%APPDATA%\ICSReminder` 下的设备登录和席位配置。本地插件更新后，在扩展管理页点击“重新加载”或重启浏览器，再确认连接恢复。
-
-如需更换已经安装的程序目录，请先卸载旧版，再运行安装包选择新目录重装。卸载会保留设备配置，重装后在浏览器扩展管理页移除原插件，再加载新安装目录下的 `extension` 文件夹并完成站点授权。不要直接移动已安装的文件夹，否则本机连接登记、快捷方式和浏览器插件路径可能失效。
-
-卸载时同样先退出客户端和浏览器，在 Windows 设置的应用列表中找到“ICS 客服提醒”并卸载。卸载向导固定使用该程序的安装目录，不提供目录修改。卸载会移除程序、本机通信登记、快捷方式和卸载项，保留 `%APPDATA%\ICSReminder` 下的设备配置。浏览器插件需要在 Chrome/Edge 扩展管理页单独移除。
 
 ## 六、首次使用客户端
 
@@ -327,7 +285,7 @@ docker compose up -d --no-deps --force-recreate ics-agent
 
 ### 更新安装提示文件被占用
 
-在系统托盘选择“退出程序”，并退出连接插件的 Chrome/Edge 后重试。仅关闭客户端主窗口不会结束程序。构建时如需保留正在运行的旧版，可使用前面的 `--output-dir reminder\dist\browser-plugin` 单独输出新版。
+在系统托盘选择“退出程序”，并退出连接插件的 Chrome/Edge 后重试。仅关闭客户端主窗口不会结束程序。
 
 ### 自选目录无法安装，或希望更换安装目录
 

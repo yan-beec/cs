@@ -69,7 +69,7 @@ class AppSettings(BaseSettings):
     chatwoot_csat_message: str = Field(
         default="本次服务已结束，请评价本次服务。", min_length=1, max_length=1000,
     )
-    chatwoot_csat_display_type: str = Field(default="emoji", pattern="^(emoji|star)$")
+    chatwoot_csat_display_type: str = Field(default="star", pattern="^(emoji|star)$")
     chatwoot_csat_api_timeout: float = Field(default=5.0, gt=0, le=30)
     # 仅用户新消息刷新此窗口；resolved 会立即结束当前咨询。
     chatwoot_session_idle_timeout_seconds: int = Field(default=21600, gt=0)
@@ -97,6 +97,12 @@ class AppSettings(BaseSettings):
         ge=1,
         le=1000,
     )
+    # 坐席客户端黑名单管理（拉黑原因、2h/24h/72h/永久、解除备注、历史）。
+    # 独立连接池与后台任务，关闭后不影响原有禁言和转人工拒接。
+    chatwoot_blacklist_enabled: bool = True
+    chatwoot_blacklist_reconcile_seconds: int = Field(default=30, ge=5, le=3600)
+    # 坐席客户端"我的快捷回复"跨设备同步（每个坐席一份，存 ICS 数据库）。
+    chatwoot_quick_replies_enabled: bool = True
     chatwoot_api_timeout: float = Field(default=15.0, gt=0)
 
     # ICS 桌面提醒试验功能；客户端短轮询，不另起服务。

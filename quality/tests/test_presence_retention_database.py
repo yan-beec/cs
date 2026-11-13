@@ -114,11 +114,35 @@ class PresenceRetentionDatabaseTest(unittest.TestCase):
                 %s-(2*(%s+1-n)-1)*interval '1 minute' FROM generate_series(1,%s) n""",
             (source, account, self.cutoff, count, self.cutoff, count, count))
 
+    def assert_rollups_mirror_samples(self):
+        """R2 (migration 020): per-minute and per-seat-day presence rollups always equal the samples."""
+        expected = self.admin.execute("""
+            SELECT source_key,account_id,sampled_minute,
+                count(*) FILTER(WHERE availability_status='online') AS online,
+                count(*) FILTER(WHERE availability_status='busy') AS busy,
+                count(*) FILTER(WHERE availability_status='offline') AS offline,
+                count(*) FILTER(WHERE availability_status='unknown') AS unknown,count(*) AS samples
+            FROM archive.agent_presence_samples WHERE source_key LIKE %s GROUP BY 1,2,3 ORDER BY 1,2,3""",
+            (self.source + "%",)).fetchall()
+        stored = self.admin.execute("""SELECT source_key,account_id,sampled_minute,online,busy,offline,unknown,samples
+            FROM ops.presence_minutes WHERE source_key LIKE %s ORDER BY 1,2,3""", (self.source + "%",)).fetchall()
+        self.assertEqual(stored, expected)
+        expected = self.admin.execute("""
+            SELECT source_key,account_id,agent_id,(sampled_minute AT TIME ZONE 'Asia/Shanghai')::date AS day,
+                count(*) FILTER(WHERE availability_status='online') AS online_minutes,
+                count(*) FILTER(WHERE availability_status='unknown') AS unknown_minutes
+            FROM archive.agent_presence_samples WHERE source_key LIKE %s GROUP BY 1,2,3,4 ORDER BY 1,2,3,4""",
+            (self.source + "%",)).fetchall()
+        stored = self.admin.execute("""SELECT source_key,account_id,agent_id,day,online_minutes,unknown_minutes
+            FROM ops.presence_agent_days WHERE source_key LIKE %s ORDER BY 1,2,3,4""", (self.source + "%",)).fetchall()
+        self.assertEqual(stored, expected)
+
     def test_cutoff_preserves_45_days_from_0400_and_crossing_or_open_periods(self):
         old = self.cutoff-timedelta(minutes=1)
         retained = self.cutoff+timedelta(minutes=1)
         for minute in (old, self.cutoff, retained):
             self.sample(minute)
+        self.assert_rollups_mirror_samples()
         self.period(old-timedelta(minutes=2), old)
         self.period(old-timedelta(minutes=1), self.cutoff)
         self.period(old, retained)
@@ -127,6 +151,7 @@ class PresenceRetentionDatabaseTest(unittest.TestCase):
         self.writer.execute("SET TIME ZONE 'America/Los_Angeles'")
         self.assertEqual(self.cleanup(), {"deleted_samples": 1, "deleted_periods": 2})
         self.assertEqual(self.sample_minutes(), [self.cutoff, retained])
+        self.assert_rollups_mirror_samples()
         periods = self.admin.execute("""SELECT started_minute,ended_minute FROM ops.agent_presence_periods
             WHERE source_key=%s ORDER BY started_minute""", (self.source,)).fetchall()
         self.assertEqual(periods, [{"started_minute": old, "ended_minute": retained},
@@ -164,6 +189,7 @@ class PresenceRetentionDatabaseTest(unittest.TestCase):
         state = self.cleanup_state()
         self.assertEqual((state["batches"], state["status"]), (1, "pending"))
         self.assertEqual(len(self.sample_minutes()), 1)
+        self.assert_rollups_mirror_samples()
         result = self.run_cleanup()
         self.assertEqual((result["deleted_samples"], result["deleted_periods"]), (1, 1))
         self.assertEqual((result["batches"], result["cleanup_status"]), (2, "completed"))

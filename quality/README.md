@@ -30,6 +30,8 @@
 | `ops.message_index` | 逻辑消息查询视图，关联不可变原始版本和所属轮次 |
 | `archive.rating_snapshots`、`ops.rating_index` | 不可变评价观察和可重算关联；无法证明归属的评价独立展示 |
 | `ops.backfill_jobs` | 历史及遗漏补录范围、进度和重试 |
+| `ops.event_replay_index`、`ops.replay_message_index`、`ops.replay_round_index` | 不含正文的事件定位、逻辑消息时间和轮次边界，用于按窗口解析 |
+| `ops.conversation_replay_state` | 可恢复的分批整理与解析进度 |
 | `ops.schema_migrations` | 仅维护账号可读写的迁移版本与校验值 |
 
 目前不创建每日模型评分表，后续通过新版本迁移加入已有 `quality` 数据库分区。
@@ -50,6 +52,11 @@
 `003_assignment_writer` 为 ICS 固定责任记录增加独立的 `archive_assignment` 账号，不授予消息快照、派生索引或任务更新权限。启用 `ARCHIVE_ASSIGNMENT_SYNC_ENABLED=true` 前配置独立随机 `ARCHIVE_ASSIGNMENT_PASSWORD` 并执行迁移；迁移入口从环境安全设置该账号密码。ICS 分配成功后先在自己的数据库持久保存按轮唯一的快照，再用受限账号异步追加到归档库，归档失败不阻断客服分配。详见[责任口径与配置](query/README.md)。
 
 `008_round_reviews`增加永久质检备注；`009_dual_round_reviews`提供相互独立的AI质检和人工质检手动结果，可同时不合格，共用一份文本备注。原单项结果归入人工质检，AI质检默认待定，原备注及修改历史保留。`archive_reader`通过唯一受限函数追加备注版本，对备注表没有直接新增、修改或删除权限。备注独立于可重建的轮次索引，永久保留各次保存记录；当前版本显示在详情固定区域并随单Sheet聊天记录导出，不受45天坐席状态清理影响。不新增密码配置，不向ICS提供管理员或采集凭据。
+
+`010_round_replay_windows` 将日常全会话重放改为同一客户最近 50 轮重算，保留所有旧历史查询。
+首次整理、显式重建和旧消息修复分批推进，进度持久化；原事件数和字节限制用于单次解析批次，
+累计历史超过 2 万事件或 64 MiB 不再直接导致失败。单轮本身过大时仍保留内存保护。
+升级先执行迁移，再更新 `quality-worker`；首次建立定位索引可能比后续日常处理耗时。
 
 ## 服务器自动迁移
 

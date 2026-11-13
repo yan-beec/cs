@@ -83,9 +83,9 @@ def test_chat_export_is_one_filtered_sheet_with_no_metadata_and_single_pass(mode
     assert stats == {"customers": 0, "rounds": 0, "messages": 2, "message_rows": 2, "ratings": 0, "sheets": ["聊天记录"]}
     assert [customers.iterations, rounds.iterations, messages.iterations] == [0, 0, 1]
     sheet = workbook.active
-    assert list(next(sheet.values)) == ["客户", "发送时间（北京时间）", "发送人", "发送人类型", "聊天内容", "会话ID", "消息ID", "消息标记", "附件", "轮次", "AI质检", "人工质检", "质检备注"]
-    assert sheet.max_row == 3 and sheet.max_column == 13
-    assert sheet.freeze_panes == "A2" and sheet.auto_filter.ref == "A1:M3"
+    assert list(next(sheet.values)) == ["客户", "发送时间（北京时间）", "发送人", "发送人类型", "聊天内容", "会话ID", "消息ID", "消息标记", "附件", "会话内轮次", "用户累计咨询", "AI质检", "人工质检", "质检备注"]
+    assert sheet.max_row == 3 and sheet.max_column == 14
+    assert sheet.freeze_panes == "A2" and sheet.auto_filter.ref == "A1:N3"
     assert sheet.column_dimensions["E"].width >= 80
     assert sheet["A1"].font.bold and sheet["A1"].fill.fgColor.rgb == "00234E70"
     assert sheet["E2"].alignment.wrap_text
@@ -137,7 +137,7 @@ def test_long_message_reconstructs_exact_text_with_emoji_illegal_characters_and_
     chunks = [row["聊天内容"] or "" for row in rows]
     assert all(len(chunk.encode("utf-16-le")) // 2 <= 32767 for chunk in chunks)
     assert _restore("".join(chunks)) == content
-    assert workbook.active.auto_filter.ref == f"A1:M{len(rows) + 1}"
+    assert workbook.active.auto_filter.ref == f"A1:N{len(rows) + 1}"
 
 
 @pytest.mark.parametrize("content", ["", "x" * 32767, "x" * 32768, "😀" * 16383 + "a", "😀" * 16384, "[ICS-ESC]" + r"literal\u0000", "C:\\folder\\file.txt\t正文\n换行\r回车"],
@@ -262,12 +262,24 @@ def test_unknown_mode_is_rejected_before_destination_is_written():
 def test_independent_ai_and_human_verdicts_share_the_chat_sheet(ai_status, human_status):
     note = '=原文备注\n复核说明'
     _, workbook, _ = _export({"messages": [_message(ai_review_status=ai_status,
-        human_review_status=human_status, review_remark=note), _message(round_id=None)]})
+        human_review_status=human_status, review_remark=note, round_no=1, customer_round_seq=4),
+        _message(round_id=None, customer_round_seq=9)]})
     rows = _rows(workbook.active)
     labels = {"passed": "合格", "failed": "不合格", "pending": "待定"}
     assert rows[0]["AI质检"] == labels[ai_status]
     assert rows[0]["人工质检"] == labels[human_status]
     assert rows[0]["质检备注"] == note
     assert rows[1]["AI质检"] is None and rows[1]["人工质检"] is None
-    assert workbook.active["M2"].data_type == "s"
-    assert workbook.active.auto_filter.ref == "A1:M3"
+    # 会话内轮次与用户累计咨询分列；未归轮消息不显示累计次序。
+    assert rows[0]["会话内轮次"] == 1 and rows[0]["用户累计咨询"] == 4
+    assert rows[1]["用户累计咨询"] is None
+    assert workbook.active["N2"].data_type == "s"
+    assert workbook.active.auto_filter.ref == "A1:N3"
+
+
+def test_pure_ai_chat_export_leaves_human_review_blank():
+    _, workbook, _ = _export({"messages": [_message(reception_type="ai_only",
+        ai_review_status="passed", human_review_status=None)]})
+    row = _rows(workbook.active)[0]
+    assert row["AI质检"] == "合格"
+    assert row["人工质检"] is None

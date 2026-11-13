@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
+from psycopg.errors import UndefinedTable
 import threading
 
 from psycopg.rows import dict_row
@@ -15,6 +17,7 @@ from ics_agent.app.chatwoot.state import ASSIGNMENT_OUTBOX_TABLE
 from .config import AssignmentSyncSettings
 
 
+logger = logging.getLogger(__name__)
 BATCH_SIZE = 20
 
 
@@ -49,6 +52,8 @@ class AssignmentEvent:
     conversation_id: int
     source_time: datetime
     raw_body: bytes
+    event_type: str = "ics_assignment_recorded"
+    event_type: str = "ics_assignment_recorded"
 
 
 def assignment_event(settings: AssignmentSyncSettings, row: dict) -> AssignmentEvent:
@@ -145,7 +150,11 @@ class AssignmentSyncRepository:
 
     def append(self, row: dict) -> None:
         try:
-            event = assignment_event(self.settings, row)
+            if "business_round_id" in row:
+                event = assignment_event(self.settings, row)
+            else:
+                from .queue_evidence import queue_event
+                event = queue_event(self.settings, row)
         except ValueError as error:
             raise AssignmentEvidenceInvalid("Invalid source assignment evidence") from error
         with self.target_pool.connection() as connection:
@@ -153,9 +162,9 @@ class AssignmentSyncRepository:
                 INSERT INTO archive.events
                     (source_key,account_id,event_key,event_type,ingestion_kind,conversation_id,
                      source_time,raw_body,payload)
-                VALUES (%s,%s,%s,'ics_assignment_recorded','backfill',%s,%s,%s,convert_from(%s,'UTF8')::jsonb)
+                VALUES (%s,%s,%s,%s,'backfill',%s,%s,%s,convert_from(%s,'UTF8')::jsonb)
                 ON CONFLICT (source_key,account_id,event_key) DO NOTHING RETURNING id
-            """, (self.settings.source_key, event.account_id, event.event_key, event.conversation_id,
+            """, (self.settings.source_key, event.account_id, event.event_key, event.event_type, event.conversation_id,
                   event.source_time, event.raw_body, event.raw_body)).fetchone()
             if inserted is None:
                 inserted = connection.execute("""
@@ -169,6 +178,12 @@ class AssignmentSyncRepository:
         # Leaving the target connection commits both the evidence and the job.
 
     def acknowledge(self, row: dict) -> None:
+        if "business_round_id" not in row:
+            with self.source_pool.connection() as connection:
+                connection.execute("""UPDATE ics_handoff_queue_event_outbox SET delivered_at=CURRENT_TIMESTAMP
+                    WHERE account_id=%s AND conversation_id=%s AND trigger_message_id=%s AND delivered_at IS NULL""",
+                    (row["account_id"],row["conversation_id"],row["trigger_message_id"]))
+            return
         with self.source_pool.connection() as connection:
             connection.execute(f"""
                 UPDATE {ASSIGNMENT_OUTBOX_TABLE} SET delivered_at=CURRENT_TIMESTAMP
@@ -178,6 +193,14 @@ class AssignmentSyncRepository:
     def quarantine(self, row: dict, error_code: str) -> bool:
         if error_code not in {"evidence_conflict", "invalid_evidence"}:
             raise ValueError("Unsupported assignment isolation code")
+        if "business_round_id" not in row:
+            with self.source_pool.connection() as connection:
+                result = connection.execute("""UPDATE ics_handoff_queue_event_outbox
+                    SET delivery_error_code=%s,delivery_failed_at=CURRENT_TIMESTAMP
+                    WHERE account_id=%s AND conversation_id=%s AND trigger_message_id=%s
+                    AND delivered_at IS NULL AND delivery_error_code IS NULL""",
+                    (error_code,row["account_id"],row["conversation_id"],row["trigger_message_id"]))
+                return result.rowcount > 0
         with self.source_pool.connection() as connection:
             result = connection.execute(f"""
                 UPDATE {ASSIGNMENT_OUTBOX_TABLE}
@@ -202,7 +225,19 @@ class AssignmentSyncRepository:
     def sync_once(self, stopping: threading.Event | None = None) -> int:
         self.last_batch_delivered = 0
         self.last_batch_blocked = 0
-        for row in self.pending()[:BATCH_SIZE]:
+        self.last_batch_queue_delivered = 0
+        self.last_batch_queue_blocked = 0
+        assignments, queued = self.pending()[:BATCH_SIZE], self.pending_queue()[:BATCH_SIZE]
+        rows = []
+        groups = [assignments, queued]
+        if getattr(self, "_queue_first", False):
+            groups.reverse()
+        self._queue_first = not getattr(self, "_queue_first", False)
+        for index in range(max(len(assignments), len(queued))):
+            for group in groups:
+                if index < len(group):
+                    rows.append(group[index])
+        for row in rows[:BATCH_SIZE]:
             if stopping is not None and stopping.is_set():
                 break
             try:
@@ -211,7 +246,32 @@ class AssignmentSyncRepository:
                 code = "evidence_conflict" if isinstance(error, AssignmentEvidenceConflict) else "invalid_evidence"
                 if self.quarantine(row, code):
                     self.last_batch_blocked += 1
+                    if "business_round_id" not in row:
+                        self.last_batch_queue_blocked += 1
                 continue
             self.acknowledge(row)
             self.last_batch_delivered += 1
+            if "business_round_id" not in row:
+                self.last_batch_queue_delivered += 1
         return self.last_batch_delivered
+
+    def pending_queue(self):
+        try:
+            with self.source_pool.connection() as connection:
+                return connection.execute("""SELECT * FROM ics_handoff_queue_event_outbox
+                    WHERE delivered_at IS NULL AND delivery_error_code IS NULL AND account_id=ANY(%s)
+                    ORDER BY decided_at,account_id,conversation_id,trigger_message_id LIMIT %s""",
+                    ([str(value) for value in sorted(self.settings.account_ids)],BATCH_SIZE)).fetchall()
+        except UndefinedTable:
+            logger.warning("archive.queue_evidence.source_table_unavailable")
+            return []
+
+    def queue_evidence_counts(self):
+        try:
+            with self.source_pool.connection() as connection:
+                return connection.execute("""SELECT COUNT(*) FILTER(WHERE delivery_error_code IS NULL) AS pending_count,
+                    COUNT(*) FILTER(WHERE delivery_error_code IS NOT NULL) AS blocked_count
+                    FROM ics_handoff_queue_event_outbox WHERE delivered_at IS NULL AND account_id=ANY(%s)""",
+                    ([str(value) for value in sorted(self.settings.account_ids)],)).fetchone()
+        except UndefinedTable:
+            return {"pending_count": None, "blocked_count": None}

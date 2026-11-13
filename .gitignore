@@ -150,5 +150,9 @@ knowledge_base_in/vector_store/
 # Model files and training artifacts
 models/
 artifacts/
+database/archive-exports/
 checkpoints/
 runs/
+
+# Sandbox/test scratch output (tracked files here stay tracked)
+outputs/

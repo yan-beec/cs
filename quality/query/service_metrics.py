@@ -20,10 +20,12 @@ def _time(value):
 class RoundServiceMetrics:
     """Consume one round's messages once, ordered by creation time and message ID.
 
-    A customer burst waits from its first unanswered message until the next
-    public human reply. Consecutive agent replies add no response samples. The
-    first wait starts at an observed handoff, never in the earlier bot phase.
-    Completed waits over 600 seconds are excluded from timing samples.
+    Every wait runs from the last message of a customer burst after the
+    transfer until the next public human reply (R3, same rule as
+    quality.processing.service_facts). The customer must speak after the
+    transfer: the transfer request starts no wait and a seat speaking first
+    (greeting) is no response. Consecutive agent replies add no response
+    samples. Completed waits over 600 seconds are excluded from timing samples.
     """
 
     def __init__(self, round_item):
@@ -52,8 +54,9 @@ class RoundServiceMetrics:
         # handoff_completed_at can be inferred from the first reply itself;
         # treating that value as a request would invent a zero-second response.
         self.phase_at = self.handoff_at
-        self.pending_at = self.handoff_at
+        self.pending_at = None
         self.first_reply_at = None
+        self.first_wait = None
         self.last_role = None
         self.last_is_agent = None
         self.unknown_message_time = False
@@ -62,6 +65,15 @@ class RoundServiceMetrics:
         self.customer_count = self.agent_count = 0
         self.response_seconds = 0.0
         self.response_count = 0
+        # Seats with a valid public reply at or after the transfer (same rule as
+        # quality.processing.service_facts). A seat other than the responsible
+        # one (ICS assignment, else the first replying seat) makes the round an
+        # assisted round that the statistics reports assess for nobody.
+        self.responding_seats = set()
+        self.first_responding_seat = None
+        self.assigned_seat = (str(round_item.get("responsible_agent_id"))
+            if round_item.get("responsibility_basis") == "ics_assignment"
+            and round_item.get("responsible_agent_id") not in (None, "") else None)
 
     def observe(self, message):
         data = message.get("data") or {}
@@ -79,11 +91,17 @@ class RoundServiceMetrics:
             return
         self.last_role = role
         self.last_is_agent = agent if role in {"agent", "contact", "bot"} else None
+        if (agent and self.handoff_at is not None and at >= self.handoff_at
+                and message.get("sender_id") not in (None, "")
+                and message.get("valid_content", True) is not False):
+            seat = str(message.get("sender_id"))
+            if self.first_responding_seat is None:
+                self.first_responding_seat = seat
+            self.responding_seats.add(seat)
         if (contact and self.handoff_trigger_message_id is not None
-                and at == self.phase_at
                 and str(message.get("message_id")) == self.handoff_trigger_message_id):
             # The message that caused a successful ICS assignment is the
-            # transfer request, not the first post-transfer customer reply.
+            # transfer request, not a post-transfer customer message.
             return
         if self.phase_at is None and agent:
             # Without an observed transfer, only the first actual human reply
@@ -93,14 +111,17 @@ class RoundServiceMetrics:
             return
         if contact:
             self.customer_count += 1
-            if self.pending_at is None:
-                self.pending_at = at
+            # A burst waits from its last message.
+            self.pending_at = at
         elif agent:
             self.agent_count += 1
             if self.first_reply_at is None:
                 self.first_reply_at = at
             if self.pending_at is not None:
                 seconds = (at - self.pending_at).total_seconds()
+                if self.first_wait is None:
+                    # The first completed wait is the first response.
+                    self.first_wait = seconds
                 if 0 <= seconds <= MAX_RESPONSE_SECONDS:
                     self.response_seconds += seconds
                     self.response_count += 1
@@ -117,8 +138,10 @@ class RoundServiceMetrics:
             first_status = "missing_handoff_time" if human else "not_handed_off"
         elif self.first_reply_at is None:
             first_status = "awaiting_agent"
+        elif self.first_wait is None:
+            first_status = "not_counted"
         else:
-            seconds = (self.first_reply_at - self.handoff_at).total_seconds()
+            seconds = self.first_wait
             if seconds > MAX_RESPONSE_SECONDS:
                 first_status = "over_limit"
             else:
@@ -149,4 +172,6 @@ class RoundServiceMetrics:
             "human_phase_customer_count": customers,
             "human_phase_agent_count": agents,
             "human_phase_message_count": customers + agents if customers is not None and agents is not None else None,
+            "responding_seat_count": len(self.responding_seats),
+            "seat_timing_excluded": bool(self.responding_seats - {self.assigned_seat or self.first_responding_seat}),
         }

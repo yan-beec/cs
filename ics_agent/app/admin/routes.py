@@ -46,6 +46,13 @@ from ics_agent.rag.memory import get_conversation_memory_manager
 logger = logging.getLogger(__name__)
 router = APIRouter()
 ADMIN_PAGE_PATH = Path(__file__).resolve().parents[1] / "admin.html"
+ADMIN_FAVICON_PATH = Path(__file__).resolve().parents[1] / "favicon.svg"
+
+
+@router.get("/admin/favicon.svg", include_in_schema=False)
+def admin_favicon() -> FileResponse:
+    """提供管理后台浏览器标签和收藏夹使用的站点图标。"""
+    return FileResponse(ADMIN_FAVICON_PATH, media_type="image/svg+xml")
 
 
 @router.get("/admin/webhook-jobs/{event_key}")

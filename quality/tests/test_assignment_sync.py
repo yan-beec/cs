@@ -144,9 +144,9 @@ class TargetPool:
         class Connection:
             def execute(self, sql, values):
                 if "INSERT INTO archive.events" in sql:
-                    source, account, key, conversation, at, raw, matching_raw = values
+                    source, account, key, event_type, conversation, at, raw, matching_raw = values
                     assert raw == matching_raw
-                    assert "'ics_assignment_recorded','backfill'" in sql
+                    assert event_type == "ics_assignment_recorded" and "'backfill'" in sql
                     identity = (source, account, key)
                     row = None
                     if identity not in pending_events:
@@ -189,6 +189,8 @@ class SourcePool:
 
         class Connection:
             def execute(self, sql, values):
+                if "FROM ics_handoff_queue_event_outbox" in sql:
+                    return SimpleNamespace(fetchall=lambda: [], fetchone=lambda: {"pending_count":0,"blocked_count":0})
                 if "SELECT COUNT(*)" in sql:
                     pool.count_queries += 1
                     accounts, = values
@@ -478,6 +480,7 @@ def test_bad_configuration_is_isolated_and_logged_without_credential_values(capl
 def runtime_repository():
     repository = Mock(last_batch_blocked=0, last_batch_delivered=0)
     repository.queue_counts.return_value = {"pending_count": 0, "blocked_count": 0}
+    repository.queue_evidence_counts.return_value = {"pending_count": 0, "blocked_count": 0}
     return repository
 
 

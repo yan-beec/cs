@@ -1,5 +1,7 @@
 # 浏览器插件与统一安装包
 
+> **已停用：** 本文描述的是旧版纯 Python 提醒客户端及其安装包，打包功能已于 2026-11-06 从 `reminder/` 删除。客服电脑请改用 ICS 坐席客户端（Electron 版，源码在 `D:\project\chatwoot\services\chatwoot\desktop-client`）的安装包。
+
 当前提供 Windows 10/11 当前用户安装包，不需要 Python 或 Conda。安装到当前 Windows 用户有写入权限的目录时，无需管理员权限。桌面客户端继续负责强弹窗、提示音和提醒确认；浏览器插件通过 Native Messaging 接管 Chatwoot 页面检测与打开。
 
 ## 首次安装
