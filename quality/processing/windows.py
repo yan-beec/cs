@@ -20,13 +20,14 @@ def event_locator(event):
     rating = _rating(event, message, event_time(event), event.get("message_id")) if is_rating(message) else {}
     assignment = obj(payload.get("assignment")) if event["event_type"] == "ics_assignment_recorded" else {}
     valid_assignment = _assignment(event)
+    queue = projector._queue_decision(event)
     contact = contact_payload(payload, conversation_payload(event))
     return {
         "event_id": event["id"], "source_key": event["source_key"], "account_id": event["account_id"],
         "conversation_id": event["conversation_id"], "event_type": event["event_type"],
         "event_at": event_time(event), "state_at": at, "message_id": event.get("message_id"),
         "sent_at": timestamp(message.get("created_at")) if event["event_type"].startswith("message_") else None,
-        "anchor_message_id": positive_id(assignment.get("trigger_message_id")) or rating.get("invitation_message_id"),
+        "anchor_message_id": (queue["trigger_message_id"] if queue else None) or positive_id(assignment.get("trigger_message_id")) or rating.get("invitation_message_id"),
         "closed_at": rating.get("closed_at"), "assignment_started_at": timestamp(assignment.get("session_started_at")),
         "contact_id": text(contact.get("id")) if positive_id(contact.get("id")) else None,
         "is_resolution": state["status"] == "resolved", "payload_bytes": event["payload_bytes"],

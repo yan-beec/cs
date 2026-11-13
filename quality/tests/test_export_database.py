@@ -109,18 +109,21 @@ class ExportDatabaseTest(unittest.TestCase):
             event(7, 6, event_type="conversation_status_changed", status="resolved"), event(8, 7))
         self.receive_assignment()
         self.drain()
-        workbook = self.export_workbook(filters=self.filters(agent_id="8"))
+        # ICS assigned seat 8, seats 7 and 9 answered: an assisted round with no
+        # assessed seat, so the default (assessed seat) export of every seat is empty ...
+        for agent_id in ("7", "8", "9"):
+            excluded = self.export_workbook(filters=self.filters(agent_id=agent_id))
+            self.assertEqual(sheet_rows(excluded, "聊天记录"), [])
+        # ... while the replying seats still find it, with the actual repliers kept.
+        workbook = self.export_workbook(filters=self.filters(agent_id="9", agent_scope="replied"))
         messages = {row["消息ID"]: row for row in sheet_rows(workbook, "聊天记录")}
         self.assertEqual(set(messages), {"1", "3", "4", "5", "6"})
         self.assertEqual((messages["4"]["发送人"], messages["4"]["聊天内容"]), ("final reply", "message 4"))
-        for agent_id in ("7", "9"):
-            excluded = self.export_workbook(filters=self.filters(agent_id=agent_id))
-            self.assertEqual(sheet_rows(excluded, "聊天记录"), [])
         assigned = self.export_workbook(filters=self.filters(agent_id="8", agent_scope="current"))
         self.assertEqual({row["消息ID"] for row in sheet_rows(assigned, "聊天记录")}, {"1", "3", "4", "5", "6", "8"})
-        # The responsible-agent filter selects a customer; all their rounds follow.
-        history = self.export_workbook("customers", self.filters(agent_id="8"))
-        self.assertEqual({row["消息ID"] for row in sheet_rows(history, "聊天记录")}, {"1", "3", "4", "5", "6", "8"})
+        # 按客户导出与列表/详情一致：只导出该坐席参与的轮次，不带出该用户的后续轮次。
+        history = self.export_workbook("customers", self.filters(agent_id="9", agent_scope="replied"))
+        self.assertEqual({row["消息ID"] for row in sheet_rows(history, "聊天记录")}, {"1", "3", "4", "5", "6"})
 
     def test_chat_export_keeps_archived_sender_names_and_does_not_rewrite_evidence(self):
         self.receive(event(1),
@@ -154,7 +157,11 @@ class ExportDatabaseTest(unittest.TestCase):
         self.receive(missing_time, event(2, 1, message_id=101, content="select this customer"),
                      event(3, 2, message_id=102, conversation_id=22, content="outside conversation filter"))
         self.drain()
-        workbook = self.export_workbook("customers", self.filters(conversation_id=12, keyword="select this customer"))
+        # 带轮次级条件（会话、关键词）时只导出命中的轮次。
+        matched = self.export_workbook("customers", self.filters(conversation_id=12, keyword="select this customer"))
+        self.assertEqual({row["消息ID"] for row in sheet_rows(matched, "聊天记录")}, {"101"})
+        # 只按用户筛选时仍导出完整历史（含未归轮消息）。
+        workbook = self.export_workbook("customers", self.filters(customer_query="客户甲"))
         self.assertEqual(workbook.sheetnames, ["聊天记录"])
         messages = sheet_rows(workbook, "聊天记录")
         self.assertEqual({row["消息ID"] for row in messages}, {"100", "101", "102"})
@@ -172,8 +179,11 @@ class ExportDatabaseTest(unittest.TestCase):
         workbook = self.export_workbook("rounds", excluded, round_id=selected_round["round_id"])
         self.assertEqual([row["会话ID"] for row in sheet_rows(workbook, "聊天记录")], [str(selected_round["conversation_id"])])
         self.assertEqual(len(sheet_rows(workbook, "聊天记录")), 1)
-        workbook = self.export_workbook("customers", excluded, customer_id=customer_id)
+        workbook = self.export_workbook("customers", self.filters(), customer_id=customer_id)
         self.assertEqual(len(sheet_rows(workbook, "聊天记录")), 2)
+        # 详情带轮次级筛选导出时只含命中轮次；一个都不命中则明确提示未找到。
+        with self.assertRaises(ExportNotFound):
+            self.exporter.create_export("customers", excluded, customer_id=customer_id)
         for mode, scope in (("rounds", {"round_id": "round:does-not-exist"}),
                             ("customers", {"customer_id": "customer:does-not-exist"})):
             with self.subTest(mode=mode), self.assertRaises(ExportNotFound):

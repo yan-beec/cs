@@ -32,7 +32,7 @@
 | --- | --- | --- |
 | ics_agent/、knowledge_base_in/、quality/、statistics/ Python 代码 | Git 拉取、同步、构建、重建应用；若 `quality-worker` 正在运行还要重建该进程 | 是 |
 | reminder/backend/、reminder/protocol.py 服务端代码 | Git 拉取、同步 reminder、构建、重建应用 | 是 |
-| reminder/client/、reminder/extension/、reminder/packaging/ 客户端或插件 | 按提醒模块说明构建安装包、升级客服电脑、重新加载浏览器插件 | 服务器通常无需 build；混合后端变更时需要 |
+| reminder/client/、reminder/protocol.py 提醒组件 | 在 Electron 客户端项目（desktop-client）运行 `node scripts/import-reminder.cjs D:/project/CS/reminder` 重新导入、验证并打包，再升级客服电脑；CS 中已不再打包客户端 | 服务器通常无需 build；混合后端变更时需要 |
 | requirements.txt、Dockerfile | Git 拉取、同步、构建、重建应用 | 是 |
 | docker-compose.yml | Git 拉取、同步、重建应用 | 建议执行 |
 | docker-compose.archive.yml、deploy/archive/、quality/database/、quality/deploy/ | 按归档/质检流程同步；执行质量数据库迁移和校验，再构建应用 | 迁移或服务代码变化时是 |

@@ -5,3 +5,15 @@ deploy/chatwoot/message_retention.rb text eol=lf
 deploy/chatwoot/run-message-retention.sh text eol=lf
 # Keep the new migration checksum identical in Windows and Linux checkouts.
 quality/database/migrations/010_round_replay_windows.sql text eol=lf
+quality/database/migrations/011_query_scaling.sql text eol=lf
+quality/database/migrations/012_contact_blacklist.sql text eol=lf
+quality/database/migrations/013_responsible_seat.sql text eol=lf
+quality/database/migrations/014_consultation_segments.sql text eol=lf
+quality/database/migrations/015_aligned_round_facts.sql text eol=lf
+quality/database/migrations/016_stat_day_rollups.sql text eol=lf
+quality/database/migrations/017_blacklist_duration_2h.sql text eol=lf
+quality/database/migrations/018_response_seconds_total.sql text eol=lf
+quality/database/migrations/019_scene_round_reviews.sql text eol=lf
+quality/database/migrations/020_admin_precompute.sql text eol=lf
+
+quality/database/migrations/021_rating_reviews.sql text eol=lf

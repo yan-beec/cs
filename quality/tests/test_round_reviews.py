@@ -66,7 +66,7 @@ def test_stale_browser_edit_returns_conflict(review_client):
     client, runtime, _ = review_client
     runtime.call.side_effect = ReviewConflict()
     response = client.put("/admin/api/quality/rounds/r1/review", json={"ai_status": "failed", "human_status": "failed"})
-    assert response.status_code == 409 and "其他窗口" in response.json()["detail"]
+    assert response.status_code == 409 and "已被他人修改" in response.json()["detail"]
 
 
 def test_failed_database_save_is_not_reported_as_success(review_client):
@@ -84,3 +84,29 @@ def test_review_conflict_does_not_disable_other_archive_queries():
     with pytest.raises(ReviewConflict):
         asyncio.run(runtime.call("save_round_review", "r1", "failed", "passed", "", "admin", 0))
     assert runtime.ready
+
+
+def test_pure_ai_review_accepts_explicit_null_human_verdict(review_client):
+    client, runtime, _ = review_client
+    response = client.put("/admin/api/quality/rounds/r1/review",
+                          json={"ai_status": "passed", "human_status": None})
+    assert response.status_code == 200
+    assert runtime.call.await_args.args[3] is None
+
+
+def test_scene_validation_returns_422_without_disabling_queries(review_client):
+    from quality.query.repository import ReviewValidationError
+
+    client, runtime, _ = review_client
+    runtime.call.side_effect = ReviewValidationError("纯 AI 轮次不适用人工质检。", "ai_only")
+    response = client.put("/admin/api/quality/rounds/r1/review",
+                          json={"ai_status": "passed", "human_status": "passed"})
+    assert response.status_code == 422
+    assert response.json()["detail"]["reception_type"] == "ai_only"
+    query = QueryRuntime()
+    query.ready = True
+    query.repository = Mock()
+    query._execute = AsyncMock(side_effect=ReviewValidationError("请选择完整组合。", "human"))
+    with pytest.raises(ReviewValidationError):
+        asyncio.run(query.call("save_round_review", "r1", "passed", None, "", "admin", 0))
+    assert query.ready

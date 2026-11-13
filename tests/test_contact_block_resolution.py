@@ -46,30 +46,6 @@ def _control(*, handoff_required=True):
     )
 
 
-def _event(*, contact_only=False, explicit_change=True, event_at=BLOCKED_AT):
-    payload = {
-        "event": "contact_updated" if contact_only else "conversation_updated",
-        "id": 42 if contact_only else 56,
-        "account": {"id": 1},
-        "updated_at": event_at.isoformat(),
-        "changed_attributes": (
-            [{"blocked": {"previous_value": False, "current_value": True}}]
-            if explicit_change else
-            [{"last_activity_at": {
-                "previous_value": STARTED_AT.isoformat(),
-                "current_value": event_at.isoformat(),
-            }}]
-        ),
-    }
-    if contact_only:
-        payload.pop("updated_at")
-        payload["blocked"] = True
-    else:
-        payload["status"] = "open"
-        payload["meta"] = {"sender": {"id": 42, "blocked": True}}
-    return parse_event(json.dumps(payload).encode())
-
-
 def _conversation(*, status="open", blocked=True):
     return {
         "id": 56,
@@ -80,7 +56,9 @@ def _conversation(*, status="open", blocked=True):
     }
 
 
-class ContactBlockResolutionTest(unittest.IsolatedAsyncioTestCase):
+class BlacklistHandoffEndTest(unittest.IsolatedAsyncioTestCase):
+    """ICS 客户端拉黑后结束进行中的人工接待（不再依赖 Chatwoot 静音回调）。"""
+
     def setUp(self):
         self.control = _control()
         self.repository = Mock()
@@ -101,9 +79,9 @@ class ContactBlockResolutionTest(unittest.IsolatedAsyncioTestCase):
         self.client = Mock()
         self.client.list_contact_conversations.return_value = [_conversation()]
         self.client.get_conversation.return_value = _conversation()
-        self.client.get_contact.return_value = {"id": 42, "blocked": True}
         self.client.set_conversation_status.return_value = {"status": "resolved"}
         self.blocks = Mock()
+        self.blocks.is_active.return_value = True
         self.locks = {}
         stack = ExitStack()
         self.addCleanup(stack.close)
@@ -115,15 +93,13 @@ class ContactBlockResolutionTest(unittest.IsolatedAsyncioTestCase):
             stack.enter_context(patch.object(routes, name, value))
         stack.enter_context(patch.object(routes, "get_chatwoot_client", return_value=self.client))
 
-    async def resolve(self, event):
-        return await routes._resolve_blocked_contact_conversations(
-            event, received_at=RECEIVED_AT,
+    async def end(self):
+        return await routes.end_blacklisted_handoffs(
+            account_id="1", contact_id="42", blocked_at=BLOCKED_AT,
         )
 
-    async def test_contact_event_resolves_its_ics_handoff_without_conversation_id(self):
-        await routes._process_contact_block_event(
-            _event(contact_only=True), received_at=RECEIVED_AT,
-        )
+    async def test_block_resolves_ongoing_ics_handoff(self):
+        await self.end()
 
         self.client.list_contact_conversations.assert_called_once_with(
             account_id="1", contact_id="42",
@@ -132,108 +108,64 @@ class ContactBlockResolutionTest(unittest.IsolatedAsyncioTestCase):
             account_id="1", conversation_id="56", status="resolved",
         )
         self.repository.record_conversation_status.assert_called_once_with(
-            account_id="1", conversation_id="56", status="resolved", event_at=RECEIVED_AT,
+            account_id="1", conversation_id="56", status="resolved", event_at=BLOCKED_AT,
         )
         self.assertFalse(self.control.handoff_required)
         self.assertTrue(self.control.ai_enabled)
-        self.blocks.arm.assert_called_once()
+        self.client.set_contact_blocked.assert_not_called()
 
-    async def test_blocked_activity_snapshot_repairs_existing_handoff(self):
-        await self.resolve(_event(explicit_change=False))
-
-        self.client.list_contact_conversations.assert_not_called()
-        self.client.set_conversation_status.assert_called_once_with(
-            account_id="1", conversation_id="56", status="resolved",
-        )
-        self.assertFalse(self.control.handoff_required)
-
-    async def test_repeated_blocked_snapshot_does_not_interrupt_ai_consultation(self):
+    async def test_ai_consultation_keeps_running(self):
+        # 结束 AI 咨询会弹出满意度评价、暴露拉黑；智能客服应继续接待。
         self.control = _control(handoff_required=False)
-        for status in ("pending", "resolved", "open", "snoozed"):
-            with self.subTest(status=status):
-                self.client.get_conversation.return_value = _conversation(status=status)
-                await self.resolve(_event(explicit_change=False))
+        self.client.get_conversation.return_value = _conversation(status="pending")
+        await self.end()
 
         self.client.set_conversation_status.assert_not_called()
         self.repository.record_conversation_status.assert_not_called()
         self.assertIsNone(self.control.session_closed_at)
 
-    async def test_explicit_block_ends_active_ai_consultation_once(self):
-        self.control = _control(handoff_required=False)
-        self.client.get_conversation.return_value = _conversation(status="pending")
-        await self.resolve(_event())
-        self.client.get_conversation.return_value = _conversation(status="resolved")
-        await self.resolve(_event())
-
-        self.client.set_conversation_status.assert_called_once()
-        self.assertEqual(self.control.session_closed_at, BLOCKED_AT)
-
-    async def test_old_block_event_does_not_resolve_new_consultation(self):
+    async def test_consultation_started_after_block_is_not_resolved(self):
         self.control = replace(
             _control(), session_started_at=BLOCKED_AT + timedelta(seconds=1),
         )
-        await self.resolve(_event())
+        await self.end()
 
         self.client.set_conversation_status.assert_not_called()
-        self.repository.record_conversation_status.assert_not_called()
         self.assertTrue(self.control.handoff_required)
 
     async def test_non_ics_conversation_is_not_changed(self):
         self.repository.get.side_effect = None
         self.repository.get.return_value = None
-        await self.resolve(_event(contact_only=True))
+        await self.end()
 
         self.client.set_conversation_status.assert_not_called()
         self.repository.record_conversation_status.assert_not_called()
 
-    async def test_delayed_block_does_not_resolve_contact_already_unblocked(self):
+    async def test_unblocked_before_lock_is_not_resolved(self):
+        self.blocks.is_active.return_value = False
+        await self.end()
+
+        self.client.set_conversation_status.assert_not_called()
+        self.repository.record_conversation_status.assert_not_called()
+
+    async def test_chatwoot_mute_state_is_irrelevant(self):
+        # 会话详情里的 sender.blocked=False（网页端未静音）不影响 ICS 黑名单。
         self.client.get_conversation.return_value = _conversation(blocked=False)
-        self.client.get_contact.return_value = {"id": 42, "blocked": False}
-        await self.resolve(_event())
+        await self.end()
 
-        self.client.set_conversation_status.assert_not_called()
-        self.repository.record_conversation_status.assert_not_called()
+        self.client.set_conversation_status.assert_called_once_with(
+            account_id="1", conversation_id="56", status="resolved",
+        )
 
     async def test_already_resolved_handoff_is_released_without_extra_status_request(self):
         self.client.get_conversation.return_value = _conversation(status="resolved")
-        await self.resolve(_event())
+        await self.end()
 
         self.client.set_conversation_status.assert_not_called()
         self.assertFalse(self.control.handoff_required)
         self.assertEqual(self.control.session_closed_at, BLOCKED_AT)
 
-    async def test_explicit_block_resolves_when_conversation_omits_blocked_field(self):
-        self.client.get_conversation.return_value = {
-            "id": 56,
-            "status": "open",
-        }
-        await self.resolve(_event())
-
-        self.client.set_conversation_status.assert_called_once_with(
-            account_id="1", conversation_id="56", status="resolved",
-        )
-        self.repository.record_conversation_status.assert_called_once_with(
-            account_id="1", conversation_id="56", status="resolved", event_at=BLOCKED_AT,
-        )
-
-    async def test_status_failure_propagates_and_retry_preserves_original_block_time(self):
-        self.client.set_conversation_status.side_effect = [
-            ChatwootAPIError("Temporary failure", status_code=503),
-            {"status": "resolved"},
-        ]
-        with self.assertRaises(ChatwootAPIError):
-            await self.resolve(_event())
-        self.repository.record_conversation_status.assert_not_called()
-        self.assertTrue(self.control.handoff_required)
-
-        await self.resolve(_event())
-
-        self.assertEqual(self.client.set_conversation_status.call_count, 2)
-        self.repository.record_conversation_status.assert_called_once_with(
-            account_id="1", conversation_id="56", status="resolved", event_at=BLOCKED_AT,
-        )
-
-    async def test_contact_event_waits_for_in_flight_conversation_operation(self):
+    async def test_waits_for_in_flight_conversation_operation(self):
         attempted = asyncio.Event()
 
         class ObservedLock(asyncio.Lock):
@@ -245,7 +177,7 @@ class ContactBlockResolutionTest(unittest.IsolatedAsyncioTestCase):
         self.locks["1:56"] = lock
         await lock.acquire()
         attempted.clear()
-        task = asyncio.create_task(self.resolve(_event(contact_only=True)))
+        task = asyncio.create_task(self.end())
         try:
             await asyncio.wait_for(attempted.wait(), timeout=2)
             self.assertFalse(task.done())
@@ -259,8 +191,58 @@ class ContactBlockResolutionTest(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class BlacklistLookupTest(unittest.IsolatedAsyncioTestCase):
+    def _message(self, sender):
+        payload = {
+            "event": "message_created", "id": 1202, "account": {"id": 1},
+            "conversation": {"id": 56, "account_id": 1, "status": "pending"},
+            "message_type": "incoming", "content": "转人工",
+        }
+        if sender is not None:
+            payload["sender"] = sender
+        return parse_event(json.dumps(payload).encode())
+
+    async def test_reads_ics_table_not_chatwoot_mute(self):
+        blocks = Mock()
+        client = Mock()
+        for sender_blocked, active in ((True, False), (False, True), (True, True), (False, False)):
+            with self.subTest(sender_blocked=sender_blocked, active=active):
+                blocks.is_active.return_value = active
+                with (
+                    patch.object(routes, "contact_block_repository", blocks),
+                    patch.object(routes, "get_chatwoot_client", return_value=client),
+                ):
+                    result = await routes._ics_contact_blacklisted(
+                        self._message({"id": 42, "type": "contact", "blocked": sender_blocked}),
+                    )
+                self.assertIs(result, active)
+                self.assertEqual(blocks.is_active.call_args.kwargs["contact_id"], "42")
+        client.get_conversation.assert_not_called()
+        client.get_contact.assert_not_called()
+
+    async def test_missing_contact_id_is_looked_up_from_conversation(self):
+        blocks = Mock()
+        blocks.is_active.return_value = True
+        client = Mock()
+        client.get_conversation.return_value = _conversation()
+        with (
+            patch.object(routes, "contact_block_repository", blocks),
+            patch.object(routes, "get_chatwoot_client", return_value=client),
+        ):
+            self.assertTrue(await routes._ics_contact_blacklisted(self._message(None)))
+        self.assertEqual(blocks.is_active.call_args.kwargs["contact_id"], "42")
+
+    async def test_lookup_failure_is_unknown(self):
+        blocks = Mock()
+        blocks.is_active.side_effect = RuntimeError("db down")
+        with patch.object(routes, "contact_block_repository", blocks):
+            self.assertIsNone(await routes._ics_contact_blacklisted(
+                self._message({"id": 42, "type": "contact"}),
+            ))
+
+
 class BlockedMessageRecoveryTest(unittest.IsolatedAsyncioTestCase):
-    async def test_message_after_missed_block_event_recovers_ai_without_becoming_old_message(self):
+    async def test_message_from_blacklisted_contact_in_old_handoff_recovers_ai(self):
         human_control = _control()
         ai_control = replace(
             human_control, handoff_required=False, ai_enabled=True,
@@ -290,7 +272,7 @@ class BlockedMessageRecoveryTest(unittest.IsolatedAsyncioTestCase):
         }
         with (
             patch.object(routes, "conversation_control_repository", repository),
-            patch.object(routes, "_chatwoot_contact_blocked", AsyncMock(return_value=True)),
+            patch.object(routes, "_ics_contact_blacklisted", AsyncMock(return_value=True)),
             patch.object(routes, "_refresh_handoff_from_chatwoot_status", AsyncMock(return_value=human_control)),
             patch.object(routes, "_can_auto_reply", return_value=False),
             patch.object(routes, "_build_webhook_answer", AsyncMock(return_value=answer)) as build_answer,
@@ -309,15 +291,29 @@ class BlockedMessageRecoveryTest(unittest.IsolatedAsyncioTestCase):
 
 
 class ContactBlockReaperTest(unittest.IsolatedAsyncioTestCase):
-    async def test_due_block_is_released_by_one_scan(self):
+    async def test_due_block_is_deactivated_without_touching_chatwoot_mute(self):
         repository = Mock()
-        block = ContactBlock(
-            account_id="1",
-            contact_id="42",
-            blocked_until=BLOCKED_AT,
+        repository.list_due.return_value = [
+            ContactBlock(account_id="1", contact_id="42", blocked_until=BLOCKED_AT),
+        ]
+        client = Mock()
+
+        with (
+            patch.object(routes, "contact_block_repository", repository),
+            patch.object(routes, "get_chatwoot_client", return_value=client),
+        ):
+            await routes._expire_due_contact_blocks_once()
+
+        client.set_contact_blocked.assert_not_called()
+        repository.deactivate.assert_called_once_with(
+            account_id="1", contact_id="42",
         )
-        repository.list_due.return_value = [block]
-        repository.deactivate.return_value = None
+
+    async def test_legacy_block_also_unmutes_chatwoot_once(self):
+        repository = Mock()
+        repository.list_due.return_value = [
+            ContactBlock(account_id="1", contact_id="42", blocked_until=BLOCKED_AT, chatwoot_muted=True),
+        ]
         client = Mock()
         client.set_contact_blocked.return_value = {"blocked": False}
 
@@ -334,10 +330,10 @@ class ContactBlockReaperTest(unittest.IsolatedAsyncioTestCase):
             account_id="1", contact_id="42",
         )
 
-    async def test_failed_release_remains_active_for_next_scan(self):
+    async def test_failed_legacy_unmute_remains_active_for_next_scan(self):
         repository = Mock()
         repository.list_due.return_value = [
-            ContactBlock(account_id="1", contact_id="42", blocked_until=BLOCKED_AT),
+            ContactBlock(account_id="1", contact_id="42", blocked_until=BLOCKED_AT, chatwoot_muted=True),
         ]
         client = Mock()
         client.set_contact_blocked.side_effect = ChatwootAPIError(

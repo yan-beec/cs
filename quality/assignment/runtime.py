@@ -26,6 +26,8 @@ class AssignmentSyncRuntime:
         self.status = "disabled"
         self.pending_count = None
         self.blocked_count = None
+        self.queue_pending_count = None
+        self.queue_blocked_count = None
         self.counts_sampled_at = None
         self._next_counts_at = 0
 
@@ -42,6 +44,7 @@ class AssignmentSyncRuntime:
             return
         self.stopping.clear()
         self.pending_count = self.blocked_count = self.counts_sampled_at = None
+        self.queue_pending_count = self.queue_blocked_count = None
         self._next_counts_at = 0
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="quality-assignment")
         self.status = "connecting"
@@ -64,6 +67,15 @@ class AssignmentSyncRuntime:
             # Include durable changes even if a later row fails in this pass.
             blocked = self.repository.last_batch_blocked
             completed = self.repository.last_batch_delivered
+            queue_blocked = getattr(self.repository, "last_batch_queue_blocked", 0)
+            queue_completed = getattr(self.repository, "last_batch_queue_delivered", 0)
+            queue_blocked = queue_blocked if isinstance(queue_blocked, int) else 0
+            queue_completed = queue_completed if isinstance(queue_completed, int) else 0
+            self.queue_blocked_count = (self.queue_blocked_count or 0) + queue_blocked
+            if self.queue_pending_count is not None:
+                self.queue_pending_count = max(0, self.queue_pending_count - queue_blocked - queue_completed)
+            blocked -= queue_blocked
+            completed -= queue_completed
             self.blocked_count = (self.blocked_count or 0) + blocked
             if self.pending_count is not None:
                 self.pending_count = max(0, self.pending_count - blocked - completed)
@@ -72,6 +84,9 @@ class AssignmentSyncRuntime:
             counts = self.repository.queue_counts()
             self.pending_count = counts["pending_count"]
             self.blocked_count = counts["blocked_count"]
+            queue_counts = self.repository.queue_evidence_counts()
+            self.queue_pending_count = queue_counts["pending_count"]
+            self.queue_blocked_count = queue_counts["blocked_count"]
             self.counts_sampled_at = datetime.now(timezone.utc).isoformat()
             self._next_counts_at = time.monotonic() + QUEUE_COUNTS_SECONDS
         return delivered
@@ -84,7 +99,7 @@ class AssignmentSyncRuntime:
                 try:
                     await asyncio.shield(future)
                     failures = 0
-                    self.status = "degraded" if self.blocked_count else "ready"
+                    self.status = "degraded" if self.blocked_count or self.queue_blocked_count or self.queue_pending_count is None else "ready"
                 except asyncio.CancelledError:
                     # Do not close pools while their sole worker still commits.
                     self.stopping.set()

@@ -169,6 +169,7 @@ class RoundReplay:
             connection.execute("UPDATE ops.message_index SET round_id=NULL WHERE round_id=ANY(%s)", (ids,))
             connection.execute("UPDATE ops.rating_index SET round_id=NULL,status='unlinked' WHERE round_id=ANY(%s)", (ids,))
             connection.execute("DELETE FROM ops.round_agent_index WHERE round_id=ANY(%s)", (ids,))
+            connection.execute("DELETE FROM ops.round_service_facts WHERE round_id=ANY(%s)", (ids,))
             connection.execute("DELETE FROM ops.round_index WHERE round_id=ANY(%s)", (ids,))
 
     def start_cursor(self, connection, scope, plan):
@@ -192,7 +193,7 @@ class RoundReplay:
             WHERE a.source_key=%s AND a.account_id=%s AND a.conversation_id=%s
         """, (*scope, *scope, scope[2], self.settings.processor_recent_rounds, *scope)).fetchone()["n"]
         facts, params = self.facts(scope, plan["high_water"])
-        dirty = connection.execute(facts + f"""SELECT min(LEAST(x.event_at,x.state_at,x.message_at,
+        dirty = self.execute_facts(connection, facts + f"""SELECT min(LEAST(x.event_at,x.state_at,x.message_at,
                 x.link_at,x.assignment_started_at,x.assignment_at,
                 CASE WHEN x.data->>'assignment_key' IS NOT NULL OR x.data->>'rating'='true' THEN
                     (SELECT min(LEAST(p.link_at,p.assignment_started_at,p.assignment_at))
@@ -213,11 +214,29 @@ class RoundReplay:
         return (checkpoint["round_no"], checkpoint["seed"]) if checkpoint else (1, {})
 
     @staticmethod
+    def execute_facts(connection, query, parameters):
+        """批量连接重放元数据，避免冷统计信息下逐事件重复扫描时间索引。"""
+        previous = connection.execute("""SELECT current_setting('enable_nestloop') AS nestloop,
+            current_setting('jit') AS jit""").fetchone()
+        connection.execute("""SELECT set_config('enable_nestloop','off',true),
+            set_config('jit','off',true)""")
+        # 正文和任务仍按主键定位；不可避免的循环连接不应触发高成本 JIT 编译。
+        # 不复用之前的准备计划，确保当前规划设置对本次查询生效。
+        result = connection.execute(query, parameters, prepare=False)
+        # SQL 失败时交给外层事务回滚恢复设置，不能再发 SQL 遮盖原始异常。
+        connection.execute("""SELECT set_config('enable_nestloop',%s,true),
+            set_config('jit',%s,true)""", (previous["nestloop"], previous["jit"]))
+        return result
+
+    @staticmethod
     def facts(scope, high_water):
         query = """WITH raw_facts AS (
             SELECT x.*,j.status AS job_status,m.sent_at AS message_at,am.sent_at AS anchor_at,
                 a.started_at AS explicit_round_at,(x.data->>'assignment_at')::timestamptz AS assignment_at
-            FROM ops.event_replay_index x JOIN ops.event_jobs j ON j.event_id=x.event_id
+            FROM ops.event_replay_index x
+            JOIN LATERAL (
+                SELECT j.status FROM ops.event_jobs j WHERE j.event_id=x.event_id OFFSET 0
+            ) j ON TRUE
             LEFT JOIN ops.replay_message_index m ON m.source_key=x.source_key AND m.account_id=x.account_id
                 AND m.conversation_id=x.conversation_id AND m.message_id=x.message_id
             LEFT JOIN ops.replay_message_index am ON am.source_key=x.source_key AND am.account_id=x.account_id
@@ -378,18 +397,20 @@ class RoundReplay:
             start = anchors[0]["started_at"] if anchors and plan["cursor"] > 1 else None
             end = following["started_at"] if following else None
             selection, params = self.window_selection(scope, plan["high_water"], start, end)
-            budget = connection.execute(selection + "SELECT count(*) AS n,COALESCE(sum(payload_bytes),0) AS bytes FROM selected", params).fetchone()
+            budget = self.execute_facts(connection, selection + "SELECT count(*) AS n,COALESCE(sum(payload_bytes),0) AS bytes FROM selected", params).fetchone()
             if budget["n"] <= self.settings.processor_max_conversation_events and budget["bytes"] <= self.settings.processor_max_conversation_bytes:
                 break
             if size <= 1:
                 bound = "byte bound" if budget["bytes"] > self.settings.processor_max_conversation_bytes else "event bound"
                 raise RuntimeError("Single replay round exceeds configured " + bound)
             size = max(1, size // 2)
-        events = connection.execute(selection + """SELECT e.id,e.source_key,e.account_id,e.conversation_id,
+        events = self.execute_facts(connection, selection + """SELECT e.id,e.source_key,e.account_id,e.conversation_id,
                 e.message_id,e.event_type,e.ingestion_kind,e.source_time,e.received_at,e.payload,
                 s.message_in_window AS _message_in_window,s.state_in_window AS _state_in_window,
                 s.rating_in_window AS _rating_in_window
-            FROM selected s JOIN archive.events e ON e.id=s.event_id ORDER BY e.id
+            FROM selected s JOIN LATERAL (
+                SELECT e.* FROM archive.events e WHERE e.id=s.event_id OFFSET 0
+            ) e ON TRUE ORDER BY e.id
         """, params).fetchall()
         if events:
             projection = self.repository._write_projection(connection, events, replay_seed=plan["seed"],

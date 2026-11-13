@@ -90,6 +90,8 @@ def test_partial_failure_retains_last_good_values_and_backs_off():
             now[0] = 301
             client.list_agents.side_effect = ChatwootAPIError("secret upstream body", status_code=403)
             client.list_inboxes.return_value = [{"id": 3, "name": "New inbox name"}]
+            await directory.enrich({})
+            await directory.refresh
             result = await directory.enrich({})
             assert result["directory"]["status"] == "stale"
             assert result["agents"][0]["agent_name"] == "Seat"
@@ -177,6 +179,8 @@ def test_invalid_live_response_preserves_both_cached_directories():
                 previous = await directory.enrich({})
             now[0] = 301
             with patch.object(client, "_request_json", return_value={"raw_response": "<html>Bad gateway</html>"}):
+                await directory.enrich({})
+                await directory.refresh
                 result = await directory.enrich({})
             assert result["directory"]["status"] == "stale"
             assert result["agents"] == previous["agents"]
@@ -563,7 +567,8 @@ def test_presence_timeout_and_cancelled_waiter_preserve_one_actual_sampling_task
             gate.set()
             await asyncio.wait_for(asyncio.shield(pending), timeout=1)
             now[0] = 8
-            result = await directory.presence(force_refresh=True)
+            # 完成回调已经写回真实采样；普通读取复用，不额外强制采集。
+            result = await directory.presence()
             assert result["status"] == "ready"
             assert result["sampled_at"] == (SAMPLE_START+timedelta(seconds=7)).isoformat()
             assert client.list_agents.call_count == 1

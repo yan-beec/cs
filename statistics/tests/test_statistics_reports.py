@@ -62,6 +62,23 @@ def test_custom_period_rejects_incomplete_reversed_and_out_of_bounds_dates(first
         ReportPeriod.build("custom", first, last)
 
 
+@pytest.mark.parametrize("first,last,size", [
+    (date(2026, 1, 1), date(2026, 12, 31), 365),
+    (date(2026, 1, 1), date(2027, 1, 1), 366),
+    (date(2028, 1, 1), date(2028, 12, 31), 366),
+])
+def test_custom_period_accepts_up_to_366_inclusive_calendar_days(first, last, size):
+    period = ReportPeriod.build("custom", first, last)
+    assert len(period.buckets) == size
+    assert period.start.date() == first
+    assert (period.end - timedelta(days=1)).date() == last
+
+
+def test_custom_period_rejects_367_inclusive_calendar_days():
+    with pytest.raises(ValueError, match="自定义时间段最多 366 天（含起止日期），请缩小范围。"):
+        ReportPeriod.build("custom", date(2026, 1, 1), date(2027, 1, 2))
+
+
 def minute(at, online, *, samples=2):
     return {"bucket": at, "online": online, "busy": 0, "offline": samples - online,
             "unknown": 0, "peak_online": online, "observed_minutes": 1, "samples": samples}
@@ -157,6 +174,7 @@ def test_paginated_reports_share_validation_and_bounded_executor(client, endpoin
     args, kwargs = runtime._execute.call_args
     assert args[0].__name__ == ("quality_report" if endpoint == "quality" else "agent_report")
     assert len(args[1].buckets) == 12
+    assert kwargs.pop("budget").connect_seconds == 1
     assert kwargs == {"source_key": None, "account_id": None, "page": 2, "page_size": 10}
     runtime._execute.reset_mock()
     assert browser.get(f"/admin/api/statistics/{endpoint}", params={"page": 0}).status_code == 422
@@ -170,6 +188,7 @@ def test_reports_use_bounded_archive_executor_and_calendar_filters(client):
     args, kwargs = runtime._execute.call_args
     assert args[0].__self__.pool is runtime.repository.pool
     assert args[1].start.day == 1 and len(args[1].buckets) == 29
+    assert kwargs.pop("budget").connect_seconds == 1
     assert kwargs == {"source_key": "one", "account_id": 1, "channel_key": "wechat"}
 
 
@@ -186,6 +205,7 @@ def test_custom_range_reaches_each_report_with_inclusive_end_and_existing_filter
     assert period.start.isoformat() == "2025-12-30T00:00:00+08:00"
     assert period.end.isoformat() == "2026-01-03T00:00:00+08:00"
     assert period.grain == "day" and len(period.buckets) == 4
+    assert kwargs.pop("budget").connect_seconds == 1
     assert kwargs == {"source_key": "one", "account_id": 1,
                       **({"channel_key": "wechat"} if endpoint == "time" else {"page": 2, "page_size": 10})}
 
@@ -204,6 +224,21 @@ def test_invalid_custom_ranges_are_rejected_before_any_database_query(client, en
     browser, runtime, _ = client
     assert browser.get(f"/admin/api/statistics/{endpoint}", params=params).status_code == 422
     runtime._execute.assert_not_called()
+
+
+@pytest.mark.parametrize("endpoint", [
+    "time", "agents", "quality", "time/export.xlsx", "agents/export.xlsx", "quality/export.xlsx",
+    "users", "users/detail", "users/export.xlsx",
+])
+def test_oversized_custom_range_returns_422_for_reports_exports_and_users(client, endpoint):
+    _, _, app = client
+    browser = TestClient(app, raise_server_exceptions=False)
+    response = browser.get(f"/admin/api/statistics/{endpoint}", params={
+        "mode": "custom", "start_date": "2026-01-01", "end_date": "2027-01-02",
+        "source_key": "one", "account_id": 1, "contact_id": "42",
+    })
+    assert response.status_code == 422
+    assert response.json()["detail"] == "自定义时间段最多 366 天（含起止日期），请缩小范围。"
 
 
 def test_report_failure_does_not_disable_archive_and_can_retry(client):
@@ -228,3 +263,80 @@ def test_statistics_directory_does_not_shadow_python_standard_library():
     import statistics
     assert statistics.mean([1, 2, 3]) == 2
     assert not hasattr(statistics, "__path__")
+
+
+def test_user_ranking_window_refines_day_and_custom_with_inclusive_minutes(client):
+    """R13：用户统计按日/自定义可加二级时刻，结束时刻含该分钟；前 100 名最多 5 页。"""
+    browser, runtime, _ = client
+    assert browser.get("/admin/api/statistics/users", params={"mode": "custom", "start_date": "2026-11-09",
+        "end_date": "2026-11-09", "start_time": "09:00", "end_time": "18:59", "channel_key": "wechat"}).status_code == 200
+    args, kwargs = runtime._execute.call_args
+    assert args[0].__name__ == "user_report"
+    assert args[1].start.isoformat() == "2026-11-09T09:00:00+08:00"
+    assert args[1].end.isoformat() == "2026-11-09T19:00:00+08:00"
+    assert kwargs.pop("budget").connect_seconds == 1
+    assert kwargs == {"source_key": None, "account_id": None, "channel_key": "wechat", "page": 1, "page_size": 20}
+    metadata = args[1].metadata(args[1].start)
+    assert (metadata["start_label"], metadata["end_label"]) == ("2026-11-09 09:00:00", "2026-11-09 18:59:59")
+    runtime._execute.reset_mock()
+    for params in ({"page": 6}, {"mode": "month", "start_time": "09:00"}, {"start_time": "9:00"},
+                   {"start_time": "18:00", "end_time": "09:00"}):
+        assert browser.get("/admin/api/statistics/users", params=params).status_code == 422, params
+    runtime._execute.assert_not_called()
+
+
+def test_user_trace_requires_scoped_contact(client):
+    browser, runtime, _ = client
+    assert browser.get("/admin/api/statistics/users/detail", params={"contact_id": "42"}).status_code == 422
+    assert browser.get("/admin/api/statistics/users/detail", params={
+        "source_key": "one", "account_id": 1, "contact_id": "42", "date": "2026-11-09"}).status_code == 200
+    args, kwargs = runtime._execute.call_args
+    assert args[0].__name__ == "user_detail"
+    assert kwargs.pop("budget").connect_seconds == 1
+    assert kwargs == {"source_key": "one", "account_id": 1, "contact_id": "42", "channel_key": None}
+
+
+def test_refined_period_clips_buckets_and_keeps_full_day_by_default():
+    period = ReportPeriod.build("day", date(2026, 11, 9))
+    assert period.refine() is period
+    assert period.refine(datetime.min.time(), datetime.min.time().replace(hour=23, minute=59)) is period
+    window = period.refine(datetime.min.time().replace(hour=9), None)
+    assert window.refined and not period.refined and window.metadata(window.start)["refined"]
+    assert window.start.hour == 9 and window.end == period.end and len(window.buckets) == 15
+    assert window.buckets[0]["start"] == window.start
+
+
+def test_original_reports_accept_only_whole_hour_time_detail(client):
+    """R10：时间统计/坐席细化/质检统计也可指定时刻，但只到整点（回复类指标按小时预聚合）。"""
+    browser, runtime, _ = client
+    for kind, method in (("time", "time_report"), ("agents", "agent_report"), ("quality", "quality_report")):
+        runtime._execute.reset_mock()
+        assert browser.get(f"/admin/api/statistics/{kind}", params={"date": "2026-11-09", "start_time": "09:00",
+                                                                     "end_time": "18:59"}).status_code == 200, kind
+        args, _ = runtime._execute.call_args
+        assert args[0].__name__ == method
+        assert (args[1].start.isoformat(), args[1].end.isoformat()) == ("2026-11-09T09:00:00+08:00",
+                                                                         "2026-11-09T19:00:00+08:00")
+        assert args[1].refined and [b["label"] for b in args[1].buckets][0] == "09:00" and len(args[1].buckets) == 10
+        runtime._execute.reset_mock()
+        for params in ({"start_time": "09:30"}, {"end_time": "18:30"}, {"mode": "month", "start_time": "09:00"}):
+            assert browser.get(f"/admin/api/statistics/{kind}", params=params).status_code == 422, (kind, params)
+        runtime._execute.assert_not_called()
+
+
+def test_composer_reads_rollups_only_for_days_fully_inside_the_window():
+    from quality.processing import rollups
+    seen = {}
+    def fake_clean(connection, days, now):
+        seen["days"] = list(days)
+        return set(days)
+    original = rollups.clean_days
+    rollups.clean_days = fake_clean
+    try:
+        start = datetime(2026, 11, 7, 9, tzinfo=BEIJING)
+        end = datetime(2026, 11, 9, 19, tzinfo=BEIJING)
+        composer = rollups.Composer(None, start, end, datetime(2026, 11, 11, tzinfo=BEIJING), period_variant=None)
+    finally:
+        rollups.clean_days = original
+    assert seen["days"] == [date(2026, 11, 8)]
+    assert composer.live_days == [date(2026, 11, 7), date(2026, 11, 9)]

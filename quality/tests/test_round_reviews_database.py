@@ -7,9 +7,9 @@ from openpyxl import load_workbook
 import psycopg
 
 from quality.query.export import ExportRepository
-from quality.query.repository import ArchiveFilters, QueryRepository, ReviewConflict
+from quality.query.repository import ArchiveFilters, QueryRepository, ReviewConflict, ReviewValidationError
 from quality.tests import test_query_database as fixture
-from quality.tests.test_processing import event
+from quality.tests.test_processing import agent_reply, event
 
 
 @unittest.skipUnless(os.environ.get("PROCESSING_TEST_DATABASE") == "1", "Requires an isolated query test database")
@@ -28,7 +28,7 @@ class RoundReviewDatabaseTest(unittest.TestCase):
 
     def setUp(self):
         fixture.QueryDatabaseTest.setUp(self)
-        self.receive(event(1, 0))
+        self.receive(event(1, 0), agent_reply(100, .1))
         self.drain()
         self.round = self.reader.list_rounds(ArchiveFilters(source_key=self.source))["items"][0]
         self.round_id = self.round["round_id"]
@@ -109,12 +109,12 @@ class RoundReviewDatabaseTest(unittest.TestCase):
                 self.assertEqual(row["质检备注"], '=HYPERLINK("https://example.test","新备注")')
                 note_column = list(values[0]).index("质检备注") + 1
                 self.assertEqual(workbook.active.cell(2, note_column).data_type, "s")
-                self.assertTrue(workbook.active.auto_filter.ref.startswith("A1:M"))
+                self.assertTrue(workbook.active.auto_filter.ref.startswith("A1:N"))
             finally:
                 workbook.close()
 
     def test_review_filters_require_both_verdicts_on_one_round_and_use_latest_revision(self):
-        self.receive(event(2, 1, conversation_id=13))
+        self.receive(event(2, 1, conversation_id=13), agent_reply(101, 1.1, conversation_id=13))
         self.drain()
         other_round = next(row for row in self.rows("ops.round_index") if row["conversation_id"] == 13)
         first = self.reader.save_round_review(self.round_id, "failed", "passed", "第一轮", "admin", 0)
@@ -135,8 +135,8 @@ class RoundReviewDatabaseTest(unittest.TestCase):
         repository = ExportRepository(self._export_settings())
         repository.open()
         self.addCleanup(repository.close)
-        for mode, expected_messages in (("rounds", {"1"}), ("customers", {"1", "2"})):
-            # Customer exports keep the complete history of matched customers.
+        for mode, expected_messages in (("rounds", {"1", "100"}), ("customers", {"1", "100"})):
+            # 按客户 + 轮次级筛选（质检结果）只导出命中轮次，不展开该用户其他轮次。
             artifact = repository.create_export(mode, filters)
             self.addCleanup(artifact.cleanup)
             workbook = load_workbook(artifact.path)
@@ -167,7 +167,7 @@ class RoundReviewDatabaseTest(unittest.TestCase):
 
     def test_customer_light_verdicts_belong_to_latest_round_not_an_older_review(self):
         original = self.reader.save_round_review(self.round_id, "failed", "passed", "旧轮次", "admin", 0)
-        self.receive(event(2, 1, event_type="conversation_status_changed", status="resolved"), event(3, 2))
+        self.receive(event(2, 1, event_type="conversation_status_changed", status="resolved"), event(3, 2), agent_reply(102, 2.1))
         self.drain()
         filters = ArchiveFilters(source_key=self.source)
         customer = self.reader.list_customers(filters)["items"][0]
@@ -179,6 +179,55 @@ class RoundReviewDatabaseTest(unittest.TestCase):
         self.assertEqual((latest_review["ai_status"], latest_review["human_status"], latest_review["revision"]),
                          ("passed", "failed", saved["revision"]))
         self.assertEqual(self.reader.round_review(self.round_id)["revision"], original["revision"])
+
+    def test_pure_ai_null_verdict_and_current_scene_validation(self):
+        self.receive(event(2, 1, conversation_id=13))
+        self.drain()
+        pure = next(row for row in self.rows("ops.round_index") if row["conversation_id"] == 13)
+        round_id = pure["round_id"]
+        self.assertIsNone(self.reader.round_review(round_id)["human_status"])
+        for human in ("passed", "failed", "pending"):
+            with self.assertRaises(ReviewValidationError) as caught:
+                self.reader.save_round_review(round_id, "passed", human, "拒绝误填", "admin", 0)
+            self.assertEqual(caught.exception.reception_type, "ai_only")
+        saved = self.reader.save_round_review(round_id, "passed", None, "保留 AI 结果", "admin", 0)
+        self.assertIsNone(saved["human_status"])
+        self.assertIsNone(self.reader.round_review(round_id)["human_status"])
+        self.assertIsNone(self.reader.round_detail(round_id)["round"]["review"]["human_status"])
+        pure_only = dict(source_key=self.source, conversation_id="13")
+        for human in ("passed", "failed", "pending"):
+            filters = ArchiveFilters(**pure_only, human_review_status=human)
+            self.assertEqual(self.reader.list_rounds(filters)["total"], 0)
+            self.assertEqual(self.reader.list_customers(filters)["total"], 0)
+            self.assertEqual(self.reader.overview(filters)["total_rounds"], 0)
+        repository = ExportRepository(self._export_settings())
+        repository.open()
+        self.addCleanup(repository.close)
+        artifact = repository.create_export("rounds", ArchiveFilters(**pure_only))
+        self.addCleanup(artifact.cleanup)
+        workbook = load_workbook(artifact.path)
+        try:
+            values = list(workbook.active.values)
+            row = dict(zip(values[0], values[1]))
+            self.assertEqual(row["AI质检"], "合格")
+            self.assertIsNone(row["人工质检"])
+        finally:
+            workbook.close()
+        self.receive(agent_reply(101, 2, conversation_id=13))
+        self.drain()
+        current = self.reader.round_review(round_id)
+        self.assertEqual(current["reception_type"], "human")
+        self.assertEqual(current["ai_status"], "passed")
+        self.assertIsNone(current["human_status"])
+        self.assertEqual(self.reader.list_rounds(ArchiveFilters(**pure_only, human_review_status="pending"))["total"], 1)
+        with self.assertRaises(ReviewValidationError) as caught:
+            self.reader.save_round_review(round_id, "passed", None, "页面尚未刷新", "admin", int(saved["revision"]))
+        self.assertEqual(caught.exception.reception_type, "human")
+        changed = self.reader.save_round_review(round_id, "passed", "failed", "补全人工结论", "admin", int(saved["revision"]))
+        self.assertEqual((changed["ai_status"], changed["human_status"]), ("passed", "failed"))
+        history = [row for row in self.rows("quality.round_reviews") if row["round_id"] == round_id]
+        self.assertEqual(len(history), 2)
+        self.assertTrue(any(row["human_status"] is None for row in history))
 
     def _export_settings(self):
         from quality.query.config import QuerySettings

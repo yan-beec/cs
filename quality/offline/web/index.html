@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="__CSP__">
+<meta name="referrer" content="no-referrer">
+<title>__TITLE__</title><style>__STYLE__</style></head><body>
+<header class="top"><div><h1 id="title">__TITLE__</h1><p id="summary">正在读取留档…</p><p id="exportScope"></p></div>
+<p class="note">本页为单文件离线留档，无需联网即可查看。图片、视频和音频已内嵌，源端到期后仍可查看；单个过大或超出页面总量上限的附件只保留原始链接。“会话内第 N 轮”只在单个 Chatwoot 会话中计数，“用户第 N 次咨询”按该用户全部会话的轮次先后计算。</p></header>
+<div class="layout">
+<aside class="toc" aria-label="轮次目录">
+<form id="filters" autocomplete="off">
+<div class="search"><input name="customer_query" maxlength="200" placeholder="用户 / 联系人 / H5 ID / 业务用户 ID"><input name="keyword" maxlength="200" placeholder="正文关键词（含历史版本）"></div>
+<p class="filter-note">只在本文件导出集合内筛选。当前分配、黑名单、评分与质检以导出快照为准；重置恢复本文件全集。</p>
+<details><summary>更多筛选</summary><div class="grid">
+<label>Chatwoot 收件箱<select name="inbox_selection"><option value="">全部</option></select></label>
+<label>接待分类<select name="reception_type" data-param="reception_type"></select></label>
+<label>AI 质检<select name="ai_review_status" data-param="ai_review_status"></select></label>
+<label>人工质检<select name="human_review_status" data-param="human_review_status"></select></label>
+<label>黑名单<select name="blacklist" data-param="blacklist"></select></label>
+<label>坐席<select name="agent_selection"><option value="">全部</option></select></label>
+<label>坐席范围<select name="agent_scope" data-param="agent_scope"></select></label>
+<label>会话 ID<input name="conversation_id" inputmode="numeric" pattern="[1-9][0-9]*"></label>
+<label>轮次编号（会话内）<input name="round_no" inputmode="numeric" pattern="[1-9][0-9]*"></label>
+<label>筛选时间依据<select name="time_field" data-param="time_field"></select></label>
+<fieldset><legend>开始时间（北京时间）</legend><div class="shortcuts"><button type="button" data-days="1">今天</button><button type="button" data-days="0">昨天</button><button type="button" data-days="7">近 7 天</button><button type="button" data-days="30">近 30 天</button></div><input type="date" name="start_date"><details><summary>指定时刻 ▸</summary><select name="start_hour" aria-label="开始时间：时"></select><select name="start_minute" aria-label="开始时间：分"></select></details></fieldset>
+<fieldset><legend>结束时间（北京时间，含）</legend><input type="date" name="end_date"><details><summary>指定时刻 ▸</summary><select name="end_hour" aria-label="结束时间：时"></select><select name="end_minute" aria-label="结束时间：分"></select></details></fieldset>
+<label>评价状态<select name="rating_status" data-param="rating_status"></select></label>
+<label>评价分数比较<select name="rating_op" data-param="rating_op"></select></label>
+<label>评价分数<select name="rating" data-param="rating"></select></label>
+<label>流单<select name="lost" data-param="lost"></select></label>
+<label>接待结果（统计口径）<select name="outcome" data-param="outcome"></select></label>
+<label>考核归属<select name="attribution"><option value="">不限</option><option value="assisted">协助轮次（整轮不计考核）</option><option value="unassigned">无 ICS 分配坐席</option></select></label>
+<label>有效对话<select name="dialogue" data-param="dialogue"></select></label>
+<label>消息范围<select name="message_scope" data-param="message_scope"></select></label>
+<label>排序<select name="sort"><option value="customer">按用户分组</option><option value="newest">按时间（新→旧）</option><option value="oldest">按时间（旧→新）</option></select></label>
+</div></details>
+<div class="actions"><button type="submit" class="primary">筛选</button><button type="reset">重置</button></div>
+</form>
+<p id="status" class="status" role="status"></p>
+<ol id="toc" class="entries"></ol>
+<nav class="pager"><button id="prev" type="button">上一页</button><span id="pageinfo"></span><button id="next" type="button">下一页</button></nav>
+</aside>
+<main id="chat" class="chat" aria-live="polite"><div class="placeholder">从左侧目录选择一轮对话查看聊天内容</div></main>
+</div>
+<div id="lightbox" class="lightbox" hidden><img id="lightboxImage" alt=""></div>
+<!--ICS-DATA-->
+<script>__SCRIPT__</script></body></html>

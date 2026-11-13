@@ -21,6 +21,22 @@ Windows 开发使用 `C:\Users\lenovo\Anaconda3\envs\cs\python.exe`。
 显式重建成功会完成该会话已读取的 failed 任务；其他工作进程持有的 processing
 任务仍由其租约管理。
 
+迁移 `011_query_scaling.sql` 增加统计用的每轮预计算表与索引。工作进程在整理会话的同一事务里
+写入该会话轮次的统计结果（`service_facts.py`）；队列空闲时自动为迁移前的历史轮次分批回填，
+从最新轮次开始，不需要手动执行。迁移本身只建索引和空表：建索引期间归档页面可正常读取，
+工作进程短暂等待后重试；在约百万轮、千万条消息的规模下预计需要数十秒到数分钟。
+
+迁移 `013_responsible_seat.sql` 给每轮预计算结果加上主责坐席（ICS 分配，否则转人工后首个有效公开回复的坐席），
+只加两列可空字段，不重写表、瞬间完成。**须先执行迁移再上线新代码**（新代码写入和读取这两列）。
+`FACT_VERSION` 升到 3 后，旧结果不再采用：报表对这些轮次现场按新规则计算，工作进程空闲时自动回填。
+
+迁移 `014_consultation_segments.sql` 给每轮预计算结果加上咨询活跃段 `consultation_spans`（tstzmultirange；只取转人工成功后的有效消息，相邻间隔超过10分钟切段，每段从第一条消息到主责坐席最后一条公开回复），
+只加一列可空字段，瞬间完成。**须先执行迁移再上线新代码**。`FACT_VERSION` 升到 6，历史轮次自动回填；回填完成前长区间的坐席细化会慢一些（现场计算）。
+
+迁移 `018_response_seconds_total.sql` + `FACT_VERSION` 9（2026-11-11）：每轮预存响应总秒数 `response_seconds_total`，报表平均响应 = Σ总秒数 ÷ Σ`response_samples`（按次加权）；
+响应计时每段从转人工后客户一段连续发言的最后一条有效消息起，转人工指令不作起点、客户发言前的坐席消息不算首响；
+`consultation_spans` 为转人工成功→解决的时间线（转人工、之后任何人的有效消息、解决），相邻间隔超过 600 秒切段，归 ICS 分配坐席，协助轮次为空。
+
 配置读取现有 `ARCHIVE_POSTGRES_HOST/PORT/DB/SSLMODE` 与
 `ARCHIVE_INGEST_USER/PASSWORD`，独立配置包括：
 

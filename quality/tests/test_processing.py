@@ -318,7 +318,7 @@ class ProcessingProjectionTest(unittest.TestCase):
         self.assertIsNone(data["responsible_agent_id"])
         self.assertIsNone(data["last_public_reply_at"])
 
-    def test_ics_assignment_without_public_reply_confirms_responsibility_only(self):
+    def test_ics_assignment_without_public_reply_confirms_success_and_responsibility(self):
         result = project(event(1), ics_assignment(2))
         data = result.rounds[0]["data"]
         self.assertEqual(data["responsible_agent_id"], "8")
@@ -326,7 +326,7 @@ class ProcessingProjectionTest(unittest.TestCase):
         self.assertIsNone(data["responsible_agent_name"])
         self.assertIsNone(data["last_public_agent_id"])
         self.assertIsNone(data["last_public_message_id"])
-        self.assertEqual(result.rounds[0]["reception_type"], "ai_only")
+        self.assertEqual(result.rounds[0]["reception_type"], "human")
         self.assertFalse(data["has_agent_reply"])
         self.assertEqual(data["counts"]["agent"], 0)
 

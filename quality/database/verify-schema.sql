@@ -102,9 +102,9 @@ BEGIN
         END IF;
     END LOOP;
 
-    -- Minute presence observations use a separate writer, never the chat ingest role.
+    -- Minute presence observations and ICS blacklist history use separate writers, never the chat ingest role.
     FOR target_table IN SELECT tablename FROM pg_tables
-        WHERE schemaname = 'archive' AND tablename <> 'agent_presence_samples' LOOP
+        WHERE schemaname = 'archive' AND tablename NOT IN ('agent_presence_samples', 'contact_block_events') LOOP
         IF NOT has_table_privilege('archive_ingest', 'archive.' || target_table, 'SELECT')
             OR NOT has_table_privilege('archive_ingest', 'archive.' || target_table, 'INSERT') THEN
             RAISE EXCEPTION 'FAIL: ingest cannot append evidence: %', target_table;
@@ -121,6 +121,15 @@ BEGIN
             END IF;
         END LOOP;
     END LOOP;
+
+    IF to_regclass('archive.contact_block_events') IS NOT NULL AND (
+        NOT has_table_privilege('archive_assignment', 'archive.contact_block_events', 'SELECT,INSERT')
+        OR has_table_privilege('archive_assignment', 'archive.contact_block_events', 'UPDATE,DELETE,TRUNCATE')
+        OR NOT has_table_privilege('archive_reader', 'archive.contact_block_events', 'SELECT')
+        OR has_table_privilege('archive_reader', 'archive.contact_block_events', 'INSERT,UPDATE,DELETE,TRUNCATE')
+        OR has_table_privilege('archive_ingest', 'archive.contact_block_events', 'INSERT,UPDATE,DELETE,TRUNCATE')) THEN
+        RAISE EXCEPTION 'FAIL: blacklist history has incorrect writer/reader permissions';
+    END IF;
 
     FOREACH target_table IN ARRAY ARRAY['event_jobs', 'attachment_jobs', 'conversation_index', 'backfill_jobs'] LOOP
         IF NOT has_table_privilege('archive_ingest', 'ops.' || target_table, 'SELECT')

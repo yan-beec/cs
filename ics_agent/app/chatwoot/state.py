@@ -66,11 +66,13 @@ class ConversationControl:
 
 @dataclass(frozen=True)
 class ContactBlock:
-    """一个 Chatwoot 联系人的临时静音记录。"""
+    """一个 ICS 黑名单联系人的到期记录。"""
 
     account_id: str
     contact_id: str
     blocked_until: datetime
+    # 旧版本拉黑时同时设置了 Chatwoot 静音；到期时需要顺带取消。
+    chatwoot_muted: bool = False
 
 
 class ConversationControlRepository:
@@ -237,6 +239,16 @@ class ConversationControlRepository:
                             (scope_key, agent_id, active)
                         """.strip()
                     )
+                    # 预留记录只置为失效、从不删除，主键扫描会随历史转人工量增长；
+                    # 容量统计和陈旧预留回收都只看当前有效的少量记录。
+                    cursor.execute(
+                        f"""
+                        CREATE INDEX IF NOT EXISTS
+                        {HANDOFF_RESERVATION_TABLE}_active_idx
+                        ON {HANDOFF_RESERVATION_TABLE} (account_id, updated_at)
+                        WHERE active
+                        """.strip()
+                    )
                     # 旧版本升级或服务重启时，已结束的会话不应继续占用
                     # 人工容量；此时 reservation 表已经存在。
                     cursor.execute(
@@ -245,7 +257,8 @@ class ConversationControlRepository:
                         SET active = FALSE,
                             updated_at = CURRENT_TIMESTAMP
                         FROM {CONVERSATION_CONTROL_TABLE} AS control
-                        WHERE reservation.account_id = control.account_id
+                        WHERE reservation.active
+                          AND reservation.account_id = control.account_id
                           AND reservation.conversation_id = control.conversation_id
                           AND control.last_chatwoot_status = 'resolved'
                         """.strip()
@@ -368,6 +381,11 @@ class ConversationControlRepository:
                         f"CREATE INDEX IF NOT EXISTS {ASSIGNMENT_OUTBOX_TABLE}_deliverable_idx "
                         f"ON {ASSIGNMENT_OUTBOX_TABLE} (recorded_at, account_id, conversation_id) "
                         "WHERE delivered_at IS NULL AND delivery_error_code IS NULL"
+                    )
+                    # 同步状态统计“待同步/需核查”数量，只看尚未送达的少量记录。
+                    cursor.execute(
+                        f"CREATE INDEX IF NOT EXISTS {ASSIGNMENT_OUTBOX_TABLE}_undelivered_idx "
+                        f"ON {ASSIGNMENT_OUTBOX_TABLE} (account_id) WHERE delivered_at IS NULL"
                     )
                     cursor.execute(
                         f"CREATE INDEX IF NOT EXISTS {ASSIGNMENT_OUTBOX_TABLE}_history_idx "
@@ -1450,7 +1468,7 @@ def get_conversation_control_repository() -> ConversationControlRepository:
 
 
 class ContactBlockRepository:
-    """保存 Chatwoot 静音联系人及其自动解除时间。"""
+    """ICS 黑名单的当前状态与到期时间（与 Chatwoot 静音无关）。"""
 
     def __init__(
         self,
@@ -1486,55 +1504,62 @@ class ContactBlockRepository:
                         ON {CONTACT_BLOCK_TABLE} (active, blocked_until)
                         """.strip()
                     )
+                    # 黑名单管理（客户端选择 2 小时/24 小时/72 小时/永久）写入的期限标记为
+                    # pinned，Chatwoot 回调时不再按默认时长重算；永久拉黑记为 infinity，
+                    # 到期解除任务自然不会选中。其他来源的行为保持不变。
+                    cursor.execute(
+                        f"""
+                        ALTER TABLE {CONTACT_BLOCK_TABLE}
+                        ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE
+                        """.strip()
+                    )
+                    # 黑名单与 Chatwoot 静音已脱钩：新记录不再静音 Chatwoot 联系人。
+                    # 升级前已存在的记录都伴随过 Chatwoot 静音，补列时标记为 TRUE，
+                    # 到期或解除时顺带取消一次，之后新写入一律为 FALSE。
+                    cursor.execute(
+                        f"""
+                        ALTER TABLE {CONTACT_BLOCK_TABLE}
+                        ADD COLUMN IF NOT EXISTS chatwoot_muted BOOLEAN NOT NULL DEFAULT TRUE
+                        """.strip()
+                    )
+                    cursor.execute(
+                        f"""
+                        ALTER TABLE {CONTACT_BLOCK_TABLE}
+                        ALTER COLUMN chatwoot_muted SET DEFAULT FALSE
+                        """.strip()
+                    )
                 finally:
                     cursor.close()
         finally:
             connection.close()
 
-    def arm(
+    def is_active(
         self,
         *,
         account_id: str,
         contact_id: str,
-        blocked_until: datetime,
-        refresh_existing: bool = True,
-    ) -> None:
+        now: datetime,
+    ) -> bool:
+        """联系人当前是否在 ICS 黑名单中（已到期但尚未扫描的记录不算）。"""
         account_id, contact_id = _validate_contact_reference(
             account_id,
             contact_id,
         )
         connection = self._connections.acquire()
         try:
-            with connection.transaction():
-                cursor = connection.cursor()
-                try:
-                    cursor.execute(
-                        f"""
-                        INSERT INTO {CONTACT_BLOCK_TABLE} AS current_block (
-                            account_id, contact_id, blocked_until, active
-                        )
-                        VALUES (%s, %s, %s, TRUE)
-                        ON CONFLICT (account_id, contact_id)
-                        DO UPDATE SET
-                            blocked_until = CASE
-                                WHEN current_block.active AND %s
-                                    THEN EXCLUDED.blocked_until
-                                WHEN current_block.active
-                                    THEN current_block.blocked_until
-                                ELSE EXCLUDED.blocked_until
-                            END,
-                            active = TRUE,
-                            updated_at = CURRENT_TIMESTAMP
-                        """.strip(),
-                        (
-                            account_id,
-                            contact_id,
-                            blocked_until,
-                            refresh_existing,
-                        ),
-                    )
-                finally:
-                    cursor.close()
+            cursor = connection.cursor()
+            try:
+                cursor.execute(
+                    f"""
+                    SELECT 1 FROM {CONTACT_BLOCK_TABLE}
+                    WHERE account_id = %s AND contact_id = %s
+                      AND active = TRUE AND blocked_until > %s
+                    """.strip(),
+                    (account_id, contact_id, now),
+                )
+                return cursor.fetchone() is not None
+            finally:
+                cursor.close()
         finally:
             connection.close()
 
@@ -1557,6 +1582,8 @@ class ContactBlockRepository:
                         f"""
                         UPDATE {CONTACT_BLOCK_TABLE}
                         SET active = FALSE,
+                            pinned = FALSE,
+                            chatwoot_muted = FALSE,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE account_id = %s AND contact_id = %s
                         """.strip(),
@@ -1579,7 +1606,7 @@ class ContactBlockRepository:
             try:
                 cursor.execute(
                     f"""
-                    SELECT account_id, contact_id, blocked_until
+                    SELECT account_id, contact_id, blocked_until, chatwoot_muted
                     FROM {CONTACT_BLOCK_TABLE}
                     WHERE active = TRUE AND blocked_until <= %s
                     ORDER BY blocked_until
@@ -1592,6 +1619,7 @@ class ContactBlockRepository:
                         account_id=str(row[0]),
                         contact_id=str(row[1]),
                         blocked_until=row[2],
+                        chatwoot_muted=bool(row[3]),
                     )
                     for row in cursor.fetchall()
                 ]
@@ -1618,5 +1646,5 @@ _CONTACT_BLOCK_REPOSITORY = ContactBlockRepository()
 
 
 def get_contact_block_repository() -> ContactBlockRepository:
-    """返回进程级联系人静音仓库。"""
+    """返回进程级黑名单状态仓库。"""
     return _CONTACT_BLOCK_REPOSITORY

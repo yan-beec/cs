@@ -173,7 +173,7 @@ class _Table:
 _MESSAGE_COLUMNS = [
     ("客户", 22), ("发送时间（北京时间）", 28), ("发送人", 22), ("发送人类型", 14),
     ("聊天内容", 85), ("会话ID", 22), ("消息ID", 22), ("消息标记", 20), ("附件", 65),
-    ("轮次", 10), ("AI质检", 12), ("人工质检", 12), ("质检备注", 55),
+    ("会话内轮次", 12), ("用户累计咨询", 14), ("AI质检", 12), ("人工质检", 12), ("质检备注", 55),
 ]
 _RATING_COLUMNS = [
     ("实例来源", 20), ("账号ID", 20), ("会话ID", 20), ("评价键", 28), ("轮次ID", 25),
@@ -187,7 +187,8 @@ def _attachment_text(attachments):
     files = []
     for attachment in attachments or ():
         name = _text(attachment.get("filename"))
-        url = _text(attachment.get("source_url"))
+        # 非图片/音视频不导出地址，只标注已拦截。
+        url = "（非图片/视频文件，已安全拦截，不提供地址）" if attachment.get("blocked") else _text(attachment.get("source_url"))
         files.append("\n".join(value for value in (name, url) if value))
     return "\n\n".join(value for value in files if value)
 
@@ -206,8 +207,11 @@ def _message_values(row):
         role, None, _text(row.get("conversation_id")), _text(row.get("message_id")),
         "、".join(marks), _attachment_text(row.get("attachments")),
         row.get("round_no"),
+        # 会话内轮次只在单个 Chatwoot 会话中递增；用户累计咨询按该客户全部轮次排序。
+        row.get("customer_round_seq") if row.get("round_id") else None,
         _enum("review_status", row.get("ai_review_status") or "pending") if row.get("round_id") else "",
-        _enum("review_status", row.get("human_review_status") or "pending") if row.get("round_id") else "",
+        _enum("review_status", row.get("human_review_status") or "pending")
+        if row.get("round_id") and row.get("reception_type") != "ai_only" else "",
         row.get("review_remark") or "",
     ]
 

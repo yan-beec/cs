@@ -98,7 +98,7 @@ class HandoffInboxMetadataTest(unittest.IsolatedAsyncioTestCase):
             patch.object(routes, "settings", routes.settings.model_copy(update={"reminder_enabled": True})),
             patch.object(routes, "conversation_control_repository", repo),
             patch.object(routes, "_refresh_handoff_from_chatwoot_status", new=AsyncMock(return_value=control)),
-            patch.object(routes, "_chatwoot_contact_blocked", new=AsyncMock(return_value=False)),
+            patch.object(routes, "_ics_contact_blacklisted", new=AsyncMock(return_value=False)),
             patch.object(routes, "ensure_notification") as ensure,
             patch.object(routes, "_run_rag_query", new=AsyncMock()) as rag,
         ):

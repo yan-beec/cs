@@ -204,7 +204,7 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
             ) as has_available,
             patch.object(
                 main,
-                "_chatwoot_contact_blocked",
+                "_ics_contact_blacklisted",
                 new=AsyncMock(return_value=False),
             ),
             patch.object(
@@ -292,7 +292,7 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
             ),
             patch.object(
                 main,
-                "_chatwoot_contact_blocked",
+                "_ics_contact_blacklisted",
                 new=AsyncMock(return_value=False),
             ),
             patch.object(
@@ -346,7 +346,7 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
                 with (
                     patch.object(main, "conversation_control_repository", repository),
                     patch.object(main, "_refresh_handoff_from_chatwoot_status", AsyncMock(return_value=initial_control)),
-                    patch.object(main, "_chatwoot_contact_blocked", AsyncMock(return_value=False)),
+                    patch.object(main, "_ics_contact_blacklisted", AsyncMock(return_value=False)),
                     patch.object(main, "_has_available_handoff_agent", AsyncMock(return_value=True)) as has_available_agent,
                     patch.object(main, "_select_handoff_agent", AsyncMock(return_value="11")),
                     patch.object(main, "_complete_handoff", AsyncMock(return_value={"route": "handoff"})) as complete_handoff,
@@ -625,7 +625,7 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
                         patch.object(main, "get_chatwoot_client", return_value=client),
                         patch.object(main, "_refresh_handoff_from_chatwoot_status", AsyncMock(return_value=control)),
                         patch.object(main, "_has_available_handoff_agent", AsyncMock(return_value=available)),
-                        patch.object(main, "_chatwoot_contact_blocked", AsyncMock(return_value=blocked)),
+                        patch.object(main, "_ics_contact_blacklisted", AsyncMock(return_value=blocked)),
                         patch.object(main, "_select_handoff_agent", AsyncMock(return_value=selected)),
                         patch.object(main, "_set_ai_chatwoot_status", AsyncMock(return_value=True)),
                         patch.object(main, "_build_webhook_answer", AsyncMock()) as answer,
@@ -639,7 +639,8 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
                             main.WebhookJob(event_key=f"reject-{media_type}-{name}", event=event),
                         )
 
-                    busy_message = main.MUTED_HANDOFF_MESSAGE if blocked else main.HANDOFF_NO_AGENT_MESSAGE
+                    # 黑名单客户与坐席繁忙对客户完全一致，不能暴露拉黑。
+                    busy_message = main.HANDOFF_NO_AGENT_MESSAGE
                     trigger_message = (
                         "观察到用户需要人工协助，正在转接人工客服，请稍后"
                         if media_type
@@ -688,7 +689,7 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(client.send_message.call_count, 2)
                 self.assertEqual(
                     client.send_message.call_args.kwargs["content"],
-                    main.MUTED_HANDOFF_MESSAGE if muted else main.HANDOFF_NO_AGENT_MESSAGE,
+                    main.HANDOFF_NO_AGENT_MESSAGE,
                 )
                 self.assertTrue(result["chatwoot_reply"]["sent"])
                 self.assertEqual(result["chatwoot_reply"]["message_id"], "202")
@@ -716,7 +717,7 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["chatwoot_reply"]["sent"])
         self.assertIsNone(result["chatwoot_reply"]["message_id"])
 
-    async def test_disabled_notices_skip_trigger_and_preserve_muted_rejection(self) -> None:
+    async def test_disabled_notices_are_silent_for_busy_and_muted_alike(self) -> None:
         for muted in (False, True):
             with self.subTest(muted=muted):
                 client = Mock()
@@ -739,12 +740,7 @@ class HandoffProcessingTest(unittest.IsolatedAsyncioTestCase):
                         await main._suppress_no_agent_handoff(
                             event=event, event_key="notice-off", availability_known=True,
                         )
-                if muted:
-                    client.send_message.assert_called_once_with(
-                        account_id="1", conversation_id="56", content=main.MUTED_HANDOFF_MESSAGE,
-                    )
-                else:
-                    client.send_message.assert_not_called()
+                client.send_message.assert_not_called()
 
     async def test_successful_handoff_sends_success_notice(self) -> None:
         for media_type in (None, "image", "video"):

@@ -24,6 +24,32 @@ HANDOFF_BUSY_NOTICE = (
     "如仍需人工客服，请稍后再次尝试「转人工」。"
 )
 
+# 排队提示是归档撤销本次转人工尝试的证据，需与发送端保持一致。
+HANDOFF_QUEUE_NOTICE_PREFIX = "当前咨询人数较多，您前面还有"
+
+
+def _remember_handoff_attempt(round_row):
+    """保留待确认尝试之前的状态，连续触发不能覆盖第一次保存的状态。"""
+    data = round_row["data"]
+    data.setdefault("_before_handoff_request", {
+        "reception_type": round_row["reception_type"],
+        "handoff": {key: value for key, value in data.items() if key.startswith("handoff_")},
+    })
+
+
+def _restore_queued_attempt(round_row):
+    """撤销排队拦截的尝试，保留更早的拒接和已经确认的人工接待。"""
+    data = round_row["data"]
+    previous = data.pop("_before_handoff_request", None)
+    if previous:
+        round_row["reception_type"] = previous["reception_type"]
+        for key in tuple(data):
+            if key.startswith("handoff_"):
+                data.pop(key)
+        data.update(previous["handoff"])
+    if data.get("handoff_result") != "completed":
+        data["handoff_result"] = "queued"
+
 
 def obj(value):
     return value if isinstance(value, dict) else {}
@@ -375,6 +401,9 @@ def project_conversation(events: list[dict], idle_timeout_seconds=21600, channel
             observed = {**message, "is_rating": False, "attachments": message["data"]["attachments"]}
             timeline.append((message["sent_at"], message["original_event_id"], "observed_message", (message["message_id"], observed)))
 
+    queued_requests = {item["trigger_message_id"] for evidence in events
+                       if (item := _queue_decision(evidence)) is not None}
+    latest_request_queued = False
     current, last_customer_at = None, timestamp(replay_seed.get("last_customer_at"))
     human_taken_over = bool(replay_seed.get("human_taken_over"))
     current_assignee = deepcopy(replay_seed.get("current_assignee", {}))
@@ -397,6 +426,7 @@ def project_conversation(events: list[dict], idle_timeout_seconds=21600, channel
             if value["confirmed"]:
                 human_taken_over = True
                 if current:
+                    current["data"].pop("_before_handoff_request", None)
                     current["reception_type"] = "human"
                     current["data"].update(handoff_result="completed", handoff_completed_at=iso(at))
             if current and value["requested"]:
@@ -449,7 +479,13 @@ def project_conversation(events: list[dict], idle_timeout_seconds=21600, channel
             last_customer_at = at
             current["data"]["last_customer_at"] = iso(at)
             from ics_agent.app.chatwoot.payload import is_explicit_handoff_request
-            if is_explicit_handoff_request(snapshot["content"]):
+            if message_id in queued_requests:
+                latest_request_queued = True
+                if not current["data"].get("handoff_result"):
+                    current["data"]["handoff_result"] = "queued"
+            elif is_explicit_handoff_request(snapshot["content"]):
+                latest_request_queued = False
+                _remember_handoff_attempt(current)
                 current["reception_type"] = "human"
                 # A later explicit request is a new attempt after a busy
                 # refusal.  Keep its timestamp so timing starts from the
@@ -480,12 +516,17 @@ def project_conversation(events: list[dict], idle_timeout_seconds=21600, channel
                 counts[role] += 1
             if (role == "bot" and snapshot["direction"] == "outgoing"
                     and snapshot["content"] == HANDOFF_BUSY_NOTICE):
+                current["data"].pop("_before_handoff_request", None)
                 # The bot's busy notice is durable evidence that the current
                 # transfer attempt was refused.  Do not let that attempt be
                 # used as the first-response clock for a later retry.
                 current["data"].pop("handoff_requested_at", None)
                 current["data"].update(handoff_result="failed", handoff_failed_at=iso(at))
+            if (role == "bot" and snapshot["direction"] == "outgoing"
+                    and (snapshot["content"] or "").startswith(HANDOFF_QUEUE_NOTICE_PREFIX) and not latest_request_queued):
+                _restore_queued_attempt(current)
             if role == "agent" and snapshot["direction"] == "outgoing":
+                current["data"].pop("_before_handoff_request", None)
                 human_taken_over = True
                 current["reception_type"] = "human"
                 current["data"].update(has_agent_reply=True, handoff_result="completed")
@@ -518,10 +559,28 @@ def project_conversation(events: list[dict], idle_timeout_seconds=21600, channel
             candidates = [r for r in output.rounds if r["started_at"] <= message["sent_at"]]
             if candidates:
                 message["round_id"] = candidates[-1]["round_id"]
+                if (not message["is_private"] and message["direction"] != "activity"
+                        and message["sender_role"] != "system"):
+                    # Like timeline messages, a service message never lies after its round's
+                    # last_message_at (archive time filters rely on it as an index bound).
+                    candidates[-1]["last_message_at"] = max(candidates[-1]["last_message_at"], message["sent_at"])
     output.messages = list(logical.values())
     output.agents = list(agent_rows.values())
     output.rating_snapshots = deepcopy(rating_observations)
     _link_assignments(output, events, following_started_at, assignment_context)
+    # 成功证据与真实接待使用相同的跨窗口继承规则，结束轮次会清除此状态。
+    inherited = bool(replay_seed.get("human_taken_over"))
+    for row in output.rounds:
+        inherited = inherited or row["data"].get("takeover_inherited", False)
+        row["data"]["replay_seed"]["human_taken_over"] = inherited
+        row["data"]["takeover_inherited"] = inherited
+        if inherited:
+            row["reception_type"] = "human"
+        inherited = (inherited or row["data"].get("handoff_result") == "completed"
+                     or row["data"].get("has_agent_reply", False) or bool(row["data"].get("handoff_completed_at")))
+        if row["status"] == "resolved":
+            inherited = False
+    output.continuation["human_taken_over"] = inherited
     _link_ratings(output, rating_observations, rating_context)
     service_times = [m["sent_at"] for m in output.messages if m["sent_at"] and not m["data"]["is_rating"] and m["direction"] != "activity" and not m["is_private"]]
     if service_times:
@@ -584,6 +643,28 @@ def _assignment(event):
     return {"event_id": event["id"], "key": key, "agent_id": str(positive_id(agent)),
             "trigger_message_id": positive_id(trigger), "session_started_at": session,
             "assigned_at": assigned, "order_at": assigned or recorded}
+
+
+def _queue_decision(event):
+    """只接受受限写入身份送达的完整排队契约，不从客户消息推断。"""
+    if event["event_type"] != "ics_handoff_queue_decided" or event.get("ingestion_kind") != "backfill":
+        return None
+    payload = obj(event["payload"])
+    value, conversation = obj(payload.get("queue_decision")), obj(payload.get("conversation"))
+    if (payload.get("event") != event["event_type"]
+            or positive_id(obj(payload.get("account")).get("id")) != positive_id(event["account_id"])
+            or positive_id(conversation.get("account_id")) != positive_id(event["account_id"])
+            or positive_id(conversation.get("id")) != positive_id(event["conversation_id"])
+            or not positive_id(event["account_id"]) or not positive_id(event["conversation_id"])
+            or type(value.get("schema_version")) is not int or value["schema_version"] != 1
+            or value.get("origin") != "ics" or value.get("outcome") != "queued"):
+        return None
+    for key in ("contact_id", "trigger_message_id"):
+        if not isinstance(value.get(key), str) or not positive_id(value[key]):
+            return None
+    if any(_assignment_time(value.get(key)) is None for key in ("trigger_at", "decided_at")):
+        return None
+    return {**value, "trigger_message_id": positive_id(value["trigger_message_id"])}
 
 
 def _link_assignments(output, events, following_started_at=None, context=None):
@@ -651,7 +732,7 @@ def _link_assignments(output, events, following_started_at=None, context=None):
             for item in records:
                 conflicts.update(item["candidates"])
             continue
-        selected = min(records, key=lambda item: (item["order_at"], item["event_id"]))
+        selected = min(records, key=lambda item: (item["assigned_at"] is None, item["order_at"], item["event_id"]))
         confirmed.setdefault(selected["round_id"], []).append(selected)
 
     # Names come only from messages by that same observed human sender, never
@@ -674,6 +755,10 @@ def _link_assignments(output, events, following_started_at=None, context=None):
                 responsible_assigned_at=iso(selected["assigned_at"]), responsibility_event_id=selected["event_id"],
                 responsibility_external_round_id=selected["key"],
                 responsibility_trigger_message_id=str(selected["trigger_message_id"]), responsibility_basis="ics_assignment")
+            if selected["assigned_at"] is not None:
+                row["reception_type"] = "human"
+                row["data"].update(handoff_result="completed", handoff_completed_at=iso(selected["assigned_at"]))
+                row["data"].pop("_before_handoff_request", None)
 
 
 def _agent(rows, current, sender, assigned=False, noted=False, reply_at=None):

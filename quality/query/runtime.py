@@ -8,16 +8,46 @@ from functools import lru_cache
 import logging
 import threading
 
+from .budget import archive_budget
+from quality.processing.budget import classify
+from psycopg_pool import PoolTimeout
 from .config import QuerySettings
 from .agents import agent_name_index, archived_agent_name, enrich_round_agents
-from .repository import QueryRepository, ReviewConflict
+from .repository import QueryRepository, ReviewConflict, ReviewValidationError
 from .export import ExportCancelled, ExportFile, ExportNotFound, ExportRepository, ExportTooLarge
 
 logger = logging.getLogger(__name__)
 
+ARCHIVE_READ_METHODS = frozenset({
+    "list_rounds", "overview", "list_customers", "round_detail",
+    "customer_history", "customer_rounds", "round_review", "rating_review", "message_versions",
+    "raw_event", "unlinked_ratings", "filter_options", "processing_status",
+})
+
 
 class ArchiveUnavailable(RuntimeError):
     pass
+
+
+class ArchiveQueryAborted(ArchiveUnavailable):
+    """查询已主动取消。"""
+
+
+class ArchiveBusy(ArchiveUnavailable):
+    """查询名额暂时占满，数据库本身仍可用。"""
+
+
+class ArchiveQueryTimeout(ArchiveUnavailable):
+    """单条查询超过 statement_timeout 被取消：只是这次范围太大，归档库本身正常。"""
+
+
+QUERY_TIMEOUT_DETAIL = "查询超时：所选范围内数据过多，请缩小时间范围或增加筛选条件后重试。"
+
+
+def is_query_timeout(error: BaseException) -> bool:
+    from psycopg import errors
+
+    return isinstance(error, errors.QueryCanceled)
 
 
 class ExportBusy(RuntimeError):
@@ -65,9 +95,9 @@ class QueryRuntime:
         if self.executor is None or self.slots is None:
             raise ArchiveUnavailable()
         try:
-            await asyncio.wait_for(self.slots.acquire(), timeout=0.2)
+            await asyncio.wait_for(self.slots.acquire(), timeout=1.5)
         except asyncio.TimeoutError:
-            raise ArchiveUnavailable("Archive query capacity is busy") from None
+            raise ArchiveBusy("Archive query capacity is busy") from None
         future = asyncio.get_running_loop().run_in_executor(self.executor, partial(function, *args, **kwargs))
         # Cancellation must not release the concurrency slot while the DB thread still runs.
         slots = self.slots
@@ -75,7 +105,17 @@ class QueryRuntime:
         try:
             return await asyncio.shield(future)
         except asyncio.CancelledError:
-            await asyncio.gather(future, return_exceptions=True)
+            # 断开检测和请求清理可能重复取消，始终保护数据库线程对应的 future。
+            # 只有线程真正结束后才能触发回调释放名额，并消费其最终异常。
+            while not future.done():
+                try:
+                    await asyncio.shield(future)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if not future.cancelled():
+                future.exception()
             raise
 
     async def _recover(self):
@@ -110,18 +150,30 @@ class QueryRuntime:
         finally:
             self.ready = False
 
-    async def call(self, method: str, *args, **kwargs):
+    async def call(self, method: str, *args, abort=None, **kwargs):
         if not self.ready or self.repository is None:
             raise ArchiveUnavailable()
+        budget = archive_budget(abort_event=abort) if method in ARCHIVE_READ_METHODS else None
+        if budget is not None:
+            kwargs["budget"] = budget
         try:
             result = await self._execute(getattr(self.repository, method), *args, **kwargs)
         except asyncio.CancelledError:
             raise
         except ArchiveUnavailable:
             raise
-        except ReviewConflict:
+        except (ReviewConflict, ReviewValidationError):
             raise
         except Exception as error:
+            reason = classify(budget, error) if budget is not None else ("statement" if is_query_timeout(error) else None)
+            if reason == "aborted":
+                raise ArchiveQueryAborted() from None
+            if reason in {"expired", "statement"}:
+                # 超时不代表数据库不可用；判定不可用会让所有归档页面一起失败约 10 秒。
+                logger.warning("Archive query timed out: method=%s reason=%s", method, reason)
+                raise ArchiveQueryTimeout() from None
+            if isinstance(error, PoolTimeout):
+                raise ArchiveBusy() from None
             self.ready = False
             self.status = "unavailable"
             logger.warning("Archive query failed: %s", type(error).__name__)
@@ -244,9 +296,13 @@ class QueryRuntime:
             if results and isinstance(results[0], ExportFile):
                 results[0].cleanup()
             raise
-        except (ExportTooLarge, ExportNotFound):
+        except ExportCancelled:
             raise
         except Exception as error:
+            if cancelled.is_set():
+                raise ExportCancelled() from None
+            if isinstance(error, (ExportTooLarge, ExportNotFound)):
+                raise
             # Export failures are local to this request, not query health failures.
             logger.warning("Archive export failed: %s", type(error).__name__)
             raise ArchiveUnavailable() from None

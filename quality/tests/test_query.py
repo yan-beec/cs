@@ -3,8 +3,9 @@
 import asyncio
 from contextlib import nullcontext
 from datetime import datetime, timezone
+import re
 import threading
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -22,7 +23,8 @@ def client(monkeypatch):
     runtime = Mock(enabled=True, ready=True, status="ready")
     runtime.call = AsyncMock(return_value={"items": [], "total": 0, "page": 1, "page_size": 30})
     monkeypatch.setattr(routes, "get_query_runtime", lambda: runtime)
-    assignment = Mock(status="disabled", pending_count=None, blocked_count=None, counts_sampled_at=None)
+    assignment = Mock(status="disabled", pending_count=None, blocked_count=None, counts_sampled_at=None,
+        queue_pending_count=None, queue_blocked_count=None)
     monkeypatch.setattr(routes, "get_assignment_sync_runtime", lambda: assignment)
     app = FastAPI()
     app.include_router(routes.router)
@@ -57,8 +59,10 @@ def test_invalid_review_filters_never_reach_database(client, endpoint, field):
 def test_review_filters_are_shared_by_query_and_export_selection(mode):
     from quality.query.export import ExportRepository
     filters = ArchiveFilters(ai_review_status="failed", human_review_status="passed")
-    where, values = (round_conditions if mode == "rounds" else customer_conditions)(filters)
+    # 按客户 + 轮次级筛选导出命中轮次，与按轮次使用同一选择条件。
+    where, values = round_conditions(filters)
     selection, export_values = ExportRepository._selection(mode, filters)
+    assert selection.startswith("SELECT r.round_id FROM ops.round_index r")
     assert where in selection and export_values == values == ["failed", "passed"]
     assert "review.ai_status = %s AND review.human_status = %s" in where
     assert "review.round_id=r.round_id" in where
@@ -88,7 +92,7 @@ def test_filters_preserve_scope_and_beijing_time(client):
     assert filters.inbox_id == 3
     assert filters.agent_scope == "assigned" and filters.has_attachment is False
     assert filters.start.astimezone(timezone.utc) == datetime(2026, 10, 16, tzinfo=timezone.utc)
-    assert runtime.call.call_args.kwargs == {"page": 1, "page_size": 15}
+    assert runtime.call.call_args.kwargs == {"page": 1, "page_size": 15, "abort": ANY}
 
 
 def test_overview_uses_identical_filters_without_pagination_or_customer_history_expansion(client):
@@ -106,7 +110,7 @@ def test_overview_uses_identical_filters_without_pagination_or_customer_history_
     })
     assert response.status_code == 200 and response.json()["total_rounds"] == 105
     method, filters = runtime.call.call_args.args
-    assert method == "overview" and runtime.call.call_args.kwargs == {}
+    assert method == "overview" and runtime.call.call_args.kwargs == {"abort": ANY}
     assert filters == ArchiveFilters(source_key="server-a", account_id=2, agent_id="9", agent_scope="replied",
         inbox_id=3, customer_query="客户", keyword="原文", channel_key="unmapped", time_field="message_at",
         start=datetime(2026, 10, 16, tzinfo=timezone.utc), end=datetime(2026, 10, 17, tzinfo=timezone.utc),
@@ -134,10 +138,15 @@ def test_overview_unavailable_uses_existing_degraded_response(client):
 def test_overview_is_one_bounded_aggregate_statement_in_a_read_only_snapshot(count):
     connection = Mock()
     connection.transaction.return_value = nullcontext()
-    connection.execute.return_value.fetchone.return_value = {
+    connection.transaction.return_value = nullcontext()
+    aggregate = {
         "participating_agent_count": count, "participating_agents": [],
         "generated_at": datetime(2026, 10, 16, tzinfo=timezone.utc), "average_rating": None,
     }
+    connection.execute.return_value.fetchone.side_effect = [
+        {"now": datetime(2026, 10, 16, tzinfo=timezone.utc)}, aggregate]
+    # Every matched round already has current statistics facts: nothing is computed live.
+    connection.execute.return_value.fetchall.return_value = []
     repository = QueryRepository.__new__(QueryRepository)
     repository.pool = Mock()
     repository.pool.connection.return_value = nullcontext(connection)
@@ -146,17 +155,19 @@ def test_overview_is_one_bounded_aggregate_statement_in_a_read_only_snapshot(cou
     assert result["agents_truncated"] is (count > 200)
     assert result["generated_at"] == "2026-10-16T00:00:00+00:00"
     calls = connection.execute.call_args_list
-    assert len(calls) == 3
+    assert len(calls) == 7
+    calls = [c for c in calls if "set_config" not in c.args[0]]
     assert calls[0].args[0] == "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
-    assert calls[1].args[0] == "SET LOCAL statement_timeout = '3000ms'"
-    statement, values = calls[2].args
+    # Rounds without current facts at the locked time, then one aggregate statement.
+    assert "ops.round_service_facts" in calls[2].args[0]
+    statement, values = calls[3].args
     assert "WITH selected AS MATERIALIZED" in statement and "LIMIT 200" in statement
     expected_where, expected_values = round_conditions(filters)
-    assert expected_where in statement and values == expected_values
+    assert expected_where in statement and values[-len(expected_values):] == expected_values
     assert "count(DISTINCT customer_id)" in statement
     assert "FROM ops.message_index m" in statement and "archive.message_snapshots" in statement
     assert "WHERE r.customer_id IN" not in statement
-    connection.execute.return_value.fetchall.assert_not_called()
+    assert "ops.round_service_facts f" in statement
 
 
 @pytest.mark.parametrize("params", [
@@ -173,19 +184,157 @@ def test_invalid_filters_never_reach_database(client, params):
     runtime.call.assert_not_called()
 
 
-def test_history_is_complete_not_inherited_from_list_filters(client):
+def test_history_without_filters_is_complete(client):
     browser, runtime, _ = client
     runtime.call.return_value = {"customer": {"customer_id": "customer-one"}, "messages": [], "total": 0}
-    assert browser.get("/admin/api/quality/customers/customer-one/history", params={"keyword": "ignored", "reception_type": "human"}).status_code == 200
-    runtime.call.assert_awaited_once_with("customer_history", "customer-one", page=1, page_size=100)
+    assert browser.get("/admin/api/quality/customers/customer-one/history").status_code == 200
+    runtime.call.assert_awaited_once_with("customer_history", "customer-one", page=1, page_size=100, abort=ANY)
 
 
-def test_customer_round_directory_is_paginated_and_not_limited_by_list_filters(client):
+def test_history_with_customer_level_filters_only_is_complete(client):
+    browser, runtime, _ = client
+    runtime.call.return_value = {"customer": {"customer_id": "customer-one"}, "messages": [], "total": 0}
+    assert browser.get("/admin/api/quality/customers/customer-one/history",
+                       params={"customer_query": "甲", "source_key": "s", "account_id": 1}).status_code == 200
+    runtime.call.assert_awaited_once_with("customer_history", "customer-one", page=1, page_size=100, abort=ANY)
+
+
+def test_history_with_round_filters_is_limited_to_matching_rounds(client):
+    browser, runtime, _ = client
+    runtime.call.return_value = {"customer": {"customer_id": "customer-one"}, "messages": [], "total": 0}
+    assert browser.get("/admin/api/quality/customers/customer-one/history", params={
+        "keyword": "退款", "reception_type": "human", "source_key": "s", "account_id": 1, "agent_id": "7"}).status_code == 200
+    method, customer_id = runtime.call.call_args.args
+    assert (method, customer_id) == ("customer_history", "customer-one")
+    filters = runtime.call.call_args.kwargs["filters"]
+    assert filters.agent_id == "7" and filters.keyword == "退款" and filters.reception_type == "human"
+
+
+def test_customer_round_directory_is_paginated_and_limited_by_round_filters(client):
     browser, runtime, _ = client
     response = browser.get("/admin/api/quality/customers/customer-one/rounds",
-        params={"page": 2, "page_size": 50, "keyword": "ignored", "start": "2026-10-16"})
+        params={"page": 2, "page_size": 50, "keyword": "kept", "start": "2026-10-16"})
     assert response.status_code == 200
-    runtime.call.assert_awaited_once_with("customer_rounds", "customer-one", page=2, page_size=50)
+    kwargs = runtime.call.call_args.kwargs
+    assert runtime.call.call_args.args == ("customer_rounds", "customer-one")
+    assert kwargs["page"] == 2 and kwargs["page_size"] == 50
+    assert kwargs["filters"].keyword == "kept" and kwargs["filters"].start is not None
+
+
+def test_customer_round_directory_requires_scope_for_seat_filter(client):
+    browser, runtime, _ = client
+    assert browser.get("/admin/api/quality/customers/c/rounds", params={"agent_id": "7"}).status_code == 422
+    runtime.call.assert_not_called()
+
+
+class FakeConnection:
+    """Records statements; answers by matching fragments of the SQL (first match wins)."""
+
+    def __init__(self, answers):
+        self.answers = answers
+        self.calls = []
+
+    def transaction(self):
+        return nullcontext()
+
+    def execute(self, sql, params=None):
+        self.calls.append((sql, params))
+        for fragment, rows in self.answers:
+            if fragment in sql:
+                break
+        else:
+            rows = []
+        result = Mock()
+        rows = rows() if callable(rows) else rows
+        result.fetchall.return_value = rows
+        result.fetchone.return_value = rows[0] if rows else None
+        return result
+
+    def statements(self, fragment):
+        return [(sql, params) for sql, params in self.calls if fragment in sql]
+
+
+NOW = [{"now": datetime(2026, 10, 16, tzinfo=timezone.utc)}]
+
+
+def test_customer_round_directory_sql_only_lists_matching_rounds():
+    connection = FakeConnection([("SELECT now()", NOW), ("SELECT customer_id FROM ops.customer_index", [{"customer_id": "selected"}]),
+                                 ("SELECT count(*) AS total", [{"total": 2}]),
+                                 ("ORDER BY r.started_at DESC,r.round_id DESC LIMIT", [{"round_id": "r2", "data": {}}])])
+    repository = QueryRepository.__new__(QueryRepository)
+    repository.pool = Mock()
+    repository.pool.connection.return_value = nullcontext(connection)
+    result = repository.customer_rounds("selected", filters=ArchiveFilters(source_key="s", account_id=1, agent_id="7"))
+    assert result["filter_scoped"] is True and result["total"] == 2
+    count_sql, count_values = connection.statements("SELECT count(*) AS total")[0]
+    # The assessed seat is the statistics fact of the same round as the other conditions.
+    assert "r.customer_id=%s AND" in count_sql and "f.responsible_agent_id = %s" in count_sql
+    assert count_values[0] == "selected" and "7" in count_values and count_values[-2:] == ("s", 1)
+    assert count_sql.count("%s") == len(count_values)
+    page_sql, page_values = connection.statements("LIMIT %s OFFSET %s")[0]
+    assert "f.responsible_agent_id = %s" in page_sql and page_values[-2:] == (50, 0)
+    assert page_sql.count("%s") == len(page_values)
+
+
+def test_customer_history_sql_only_reads_messages_of_matching_rounds():
+    connection = Mock()
+    connection.transaction.return_value = nullcontext()
+    customer, total, rows = Mock(), Mock(), Mock()
+    customer.fetchone.return_value = {"customer_id": "c1", "data": {}, "round_count": 1, "total_round_count": 4}
+    total.fetchone.return_value = {"total": 3}
+    rows.fetchall.return_value = []
+    connection.execute.side_effect = [Mock(), Mock(), customer, Mock(), total, Mock(), rows]
+    repository = QueryRepository.__new__(QueryRepository)
+    repository.pool = Mock()
+    repository.pool.connection.return_value = nullcontext(connection)
+    repository._customer_profile = lambda connection, item, profile=None: item
+    repository._blacklist_history = lambda connection, item: None
+    result = repository.customer_history("c1", filters=ArchiveFilters(rating_status="rated", rating=2))
+    assert result["filter_scoped"] is True and result["customer"]["filter_scoped"] is True
+    calls = connection.execute.call_args_list
+    calls = [c for c in calls if "set_config" not in c.args[0]]
+    customer_sql, customer_values = calls[1].args
+    assert customer_sql.count("%s") == len(customer_values)
+    assert customer_values == ("c1", "rated", 2, "c1", "c1", "rated", 2, "c1")
+    assert "m.round_id IS NULL" not in customer_sql, "round attributes can never match unrounded messages"
+    for statement, values in (calls[2].args, calls[3].args):
+        assert "m.round_id IN (SELECT r.round_id FROM ops.round_index r WHERE r.customer_id=%s AND" in statement
+        assert statement.count("%s") == len(values)
+    assert calls[3].args[1][:4] == ["c1", "c1", "rated", 2]
+
+
+def test_customer_list_counts_and_latest_round_follow_matching_rounds():
+    connection = FakeConnection([("SELECT now()", NOW), ("SELECT count(*) AS total FROM ops.customer_index", [{"total": 1}]),
+        ("AS total_round_count", [{"customer_id": "c1", "round_count": 2, "message_count": 5, "total_round_count": 7, "data": {}}])])
+    repository = QueryRepository.__new__(QueryRepository)
+    repository.pool = Mock()
+    repository.pool.connection.return_value = nullcontext(connection)
+    repository._blacklist_flags = lambda connection, items: items
+    result = repository.list_customers(ArchiveFilters(source_key="s", account_id=1, agent_id="7"))
+    assert result["filter_scoped"] is True and result["items"][0]["filter_scoped"] is True
+    list_sql, list_values = connection.statements("AS total_round_count")[0]
+    assert list_sql.count("%s") == len(list_values)
+    assert "m.round_id IN (SELECT r.round_id" in list_sql
+    latest_sql, latest_values = connection.statements("DISTINCT ON (r.customer_id)")[0]
+    assert "r.customer_id=ANY(%s) AND" in latest_sql and "f.responsible_agent_id = %s" in latest_sql
+    assert latest_values[0] == ["c1"] and "7" in latest_values and latest_sql.count("%s") == len(latest_values)
+
+
+@pytest.mark.parametrize("filters,scoped", [
+    (ArchiveFilters(), False),
+    (ArchiveFilters(customer_query="甲", blacklist="ever", source_key="s", account_id=1), False),
+    (ArchiveFilters(agent_scope="replied", time_field="message_at"), False),
+    (ArchiveFilters(source_key="s", account_id=1, agent_id="7"), True),
+    (ArchiveFilters(keyword="退款"), True),
+    (ArchiveFilters(start=datetime(2026, 10, 1, tzinfo=timezone.utc)), True),
+    (ArchiveFilters(message_scope="private"), True),
+    (ArchiveFilters(has_attachment=False), True),
+    (ArchiveFilters(human_review_status="failed"), True),
+    (ArchiveFilters(channel_key="unmapped"), True),
+])
+def test_customer_round_scope_detection(filters, scoped):
+    from quality.query.repository import customer_round_scoped
+    assert customer_round_scoped(filters) is scoped
 
 
 @pytest.mark.parametrize("params", [{"page": 0}, {"page_size": 101}, {"page_size": 0}])
@@ -202,21 +351,19 @@ def test_customer_round_directory_missing_customer_is_explicit(client):
 
 
 def test_customer_round_directory_reads_only_selected_customers_round_metadata():
-    connection = Mock()
-    exists, count, page = Mock(), Mock(), Mock()
-    exists.fetchone.return_value = {"customer_id": "selected"}
-    count.fetchone.return_value = {"total": 60}
-    page.fetchall.return_value = [{"round_id": "r51", "data": {"reception_type": "human"}}]
-    connection.execute.side_effect = [exists, count, page]
+    connection = FakeConnection([("SELECT now()", NOW), ("SELECT customer_id FROM ops.customer_index", [{"customer_id": "selected"}]),
+                                 ("SELECT count(*) AS total", [{"total": 60}]),
+                                 ("ORDER BY r.started_at DESC,r.round_id DESC LIMIT",
+                                  [{"round_id": "r51", "data": {"reception_type": "human"}}])])
     repository = QueryRepository.__new__(QueryRepository)
     repository.pool = Mock()
     repository.pool.connection.return_value = nullcontext(connection)
     result = repository.customer_rounds("selected", page=2, page_size=50)
     assert result["total"] == 60 and result["page"] == 2
     assert result["items"][0]["round_id"] == "r51"
-    calls = connection.execute.call_args_list
-    assert calls[0].args[1] == ("selected",) and calls[1].args[1] == ("selected",)
-    statement, values = calls[2].args
+    assert connection.statements("SELECT customer_id FROM ops.customer_index")[0][1] == ("selected",)
+    assert connection.statements("SELECT count(*) AS total")[0][1] == ("selected",)
+    statement, values = connection.statements("LIMIT %s OFFSET %s")[0]
     assert "WHERE r.customer_id=%s" in statement
     assert "ORDER BY r.started_at DESC,r.round_id DESC" in statement
     assert "LIMIT %s OFFSET %s" in statement and values == ("selected", 50, 50)
@@ -224,24 +371,30 @@ def test_customer_round_directory_reads_only_selected_customers_round_metadata()
 
 
 def test_customer_metrics_batch_only_page_customers_and_stream_message_metadata():
-    connection = Mock()
-    connection.execute.return_value.fetchall.return_value = [
+    connection = FakeConnection([("SELECT now()", NOW), ("DISTINCT ON (r.customer_id)", [
         {"customer_id": "a", "round_id": "latest-a", "started_at": "2026-10-19T08:00:00Z",
          "last_message_at": "2026-10-19T08:03:00Z", "data": {"handoff_requested_at": "2026-10-19T08:01:00Z"},
          "review": {"ai_status": "failed", "human_status": "passed", "revision": "7"}},
         {"customer_id": "b", "round_id": "latest-b", "data": {}},
-    ]
+    ])])
     cursor = Mock()
-    cursor.fetchmany.side_effect = [[{"round_id": "latest-a", "sent_at": "2026-10-19T08:03:00Z",
-                                    "sender_role": "agent", "direction": "outgoing"}], []]
-    connection.cursor.return_value = nullcontext(cursor)
+    # The customer speaks after the transfer (08:01), the seat answers at 08:03.
+    cursor.fetchmany.side_effect = [[{"round_id": "latest-a", "sent_at": "2026-10-19T08:01:00Z",
+                                      "sender_role": "contact", "direction": "incoming"},
+                                     {"round_id": "latest-a", "sent_at": "2026-10-19T08:03:00Z",
+                                      "sender_role": "agent", "direction": "outgoing"}], []]
+    connection.cursor = Mock(return_value=nullcontext(cursor))
     customers = [{"customer_id": "a"}, {"customer_id": "b"}, {"customer_id": "no-round"}]
     QueryRepository._customer_service_metrics(connection, customers)
-    assert connection.execute.call_args.args[1] == (["a", "b", "no-round"],)
-    assert "DISTINCT ON (r.customer_id)" in connection.execute.call_args.args[0]
-    assert cursor.execute.call_args.args[1] == (["latest-a", "latest-b"],)
-    assert "content" not in cursor.execute.call_args.args[0]
+    latest_sql, latest_values = connection.statements("DISTINCT ON (r.customer_id)")[0]
+    assert latest_values == (["a", "b", "no-round"],)
+    assert cursor.execute.call_args.args[1] == (["latest-a", "latest-b"], None, None)
+    # Bodies are only tested server-side for validity; never streamed as a column.
+    selected = cursor.execute.call_args.args[0]
+    assert re.search(r"(^|[\s,])content\s*(,|$|\s+FROM)", selected, re.M) is None
+    assert "valid_content" in selected and "data->'attachments' ELSE" in selected
     assert cursor.fetchmany.call_count == 2 and connection.cursor.call_count == 1
+    # Without stored statistics facts for the round the card keeps the message reading.
     assert customers[0]["latest_round"]["service_metrics"]["first_response_seconds"] == 120
     assert customers[0]["latest_round"]["review"] == {"ai_status": "failed", "human_status": "passed", "revision": "7"}
     assert customers[2]["latest_round"] is None
@@ -292,9 +445,12 @@ def test_status_is_separate_from_original_health(client):
     runtime.ready = False
     runtime.status = "unavailable"
     result = browser.get("/admin/api/quality/status").json()
+    # Server clock for the archive's locked browse time (as_of).
+    assert datetime.fromisoformat(result.pop("server_time")).tzinfo is not None
     assert result == {"enabled": True, "ready": False, "status": "unavailable", "assignment_sync_status": "disabled",
         "assignment_sync_pending_count": None, "assignment_sync_blocked_count": None,
-        "assignment_sync_counts_sampled_at": None}
+        "assignment_sync_counts_sampled_at": None, "queue_decision_sync_pending_count": None,
+        "queue_decision_sync_blocked_count": None}
     assert browser.get("/health").json() == {"status": "ok"}
     runtime.call.assert_not_called()
 
@@ -303,6 +459,7 @@ def test_assignment_sync_degradation_does_not_disable_archive_queries(client, mo
     browser, runtime, _ = client
     runtime.call.return_value = {"jobs": {"queued": 0}}
     assignment = Mock(status="degraded", pending_count=2, blocked_count=1,
+        queue_pending_count=3, queue_blocked_count=4,
         counts_sampled_at="2026-10-16T00:00:00+00:00")
     monkeypatch.setattr(routes, "get_assignment_sync_runtime", lambda: assignment)
     response = browser.get("/admin/api/quality/status")
@@ -313,6 +470,8 @@ def test_assignment_sync_degradation_does_not_disable_archive_queries(client, mo
     assert result["assignment_sync_pending_count"] == 2
     assert result["assignment_sync_blocked_count"] == 1
     assert result["assignment_sync_counts_sampled_at"] == assignment.counts_sampled_at
+    assert result["queue_decision_sync_pending_count"] == 3
+    assert result["queue_decision_sync_blocked_count"] == 4
 
 
 def test_keyword_searches_immutable_versions_and_escapes_literal_wildcards():
@@ -325,10 +484,11 @@ def test_keyword_searches_immutable_versions_and_escapes_literal_wildcards():
 
 def test_seat_search_and_unknown_channels_have_precise_semantics():
     where, values = round_conditions(ArchiveFilters(source_key="s", account_id=1, agent_id="7", channel_key="unmapped"))
-    assert "r.data ->> 'responsible_agent_id' = %s" in where and "r.channel_key IS NULL" in where
-    assert "r.data ->> 'responsibility_basis' = 'ics_assignment'" in where
+    # Default seat = assessed seat of the statistics facts (ICS assignment, not an assisted round).
+    assert "f.responsible_agent_id = %s" in where and "r.channel_key IS NULL" in where
+    assert "ops.round_service_facts f" in where
     assert "a.replied" not in where and "current_assignee_id" not in where
-    assert values == ["s", 1, "7"]
+    assert values == [None, "7", "s", 1]
     with pytest.raises(ValueError):
         round_conditions(ArchiveFilters(agent_id="7"))
 
@@ -347,7 +507,7 @@ def test_agent_filters_default_to_round_responsibility(client, endpoint):
 @pytest.mark.parametrize("builder", [round_conditions, customer_conditions])
 def test_responsibility_filter_is_scoped_to_the_same_round_as_other_conditions(builder):
     where, values = builder(ArchiveFilters(source_key="s", account_id=1, agent_id="7", round_no=2, keyword="proof"))
-    assert "r.data ->> 'responsible_agent_id' = %s" in where
+    assert "f.responsible_agent_id = %s" in where
     assert "r.round_no = %s" in where and "m.round_id=r.round_id" in where
     assert "current_assignee_id" not in where and "round_agent_index" not in where
     assert where.count("%s") == len(values)
@@ -378,19 +538,24 @@ def test_inbox_ids_require_source_and_account_even_outside_http(builder, scope):
         builder(ArchiveFilters(inbox_id=3, **scope))
 
 
-def test_attachment_absence_repeats_the_exact_eligible_customer_message_scope():
+def test_customer_message_filters_select_customers_through_matching_rounds():
     start = datetime(2026, 10, 16, tzinfo=timezone.utc)
     where, values = customer_conditions(ArchiveFilters(
         source_key="s", account_id=1, inbox_id=3, conversation_id=12,
         keyword="proof", message_scope="agent", has_attachment=False,
         time_field="message_at", start=start,
     ))
-    assert where.count("m.conversation_id=%s") == 2
-    assert where.count("m.sender_role=%s AND NOT m.is_private") == 2
-    assert where.count("m.sent_at >= %s") == 2
-    assert where.count("m.data ->> 'inbox_id'") == 2
-    assert "NOT EXISTS" in where
-    assert values == ["s", 1, 12, "3", "%proof%", "agent", start, 12, "3", "%proof%", "agent", start]
+    # 按客户与按轮次同一套轮次条件：客户因命中轮次入选，详情也只展示这些轮次。
+    round_where, round_values = round_conditions(ArchiveFilters(
+        source_key="s", account_id=1, inbox_id=3, conversation_id=12,
+        keyword="proof", message_scope="agent", has_attachment=False,
+        time_field="message_at", start=start,
+    ))
+    assert f"EXISTS (SELECT 1 FROM ops.round_index r WHERE r.customer_id=c.customer_id AND {round_where})" in where
+    # 纯消息类条件仍可命中尚未归轮的消息。
+    assert "m.round_id IS NULL" in where
+    assert values[:2 + len(round_values)] == ["s", 1, *round_values]
+    assert "NOT EXISTS" in where and "m.round_id=r.round_id" in where
     assert where.count("%s") == len(values)
 
 
@@ -521,3 +686,53 @@ def test_background_probe_does_not_mark_a_busy_query_pool_unavailable():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
     asyncio.run(check())
+
+
+def test_rating_operator_and_lost_filters_reach_repository(client):
+    browser, runtime, _ = client
+    runtime.call.return_value = {"items": [], "total": 0, "page": 1, "page_size": 30}
+    response = browser.get("/admin/api/quality/rounds", params={
+        "rating": 4, "rating_op": "lt", "lost": "true", "time_field": "handoff_at",
+        "start": "2026-11-01T00:00:00+08:00", "end": "2026-12-01T00:00:00+08:00"})
+    assert response.status_code == 200
+    filters = runtime.call.call_args.args[1]
+    assert (filters.rating, filters.rating_op, filters.lost, filters.time_field) == (4, "lt", True, "handoff_at")
+    # 未选分数时比较方式不生效；lost=false 等同于不限。
+    browser.get("/admin/api/quality/rounds", params={"rating_op": "gt", "lost": "false"})
+    filters = runtime.call.call_args.args[1]
+    assert (filters.rating, filters.rating_op, filters.lost) == (None, "eq", None)
+
+
+@pytest.mark.parametrize("params", [{"rating_op": "ge"}, {"rating": 6, "rating_op": "lt"}, {"time_field": "assigned"},
+                                    {"metric": "bogus", "start": "2026-11-01T00:00:00+08:00",
+                                     "end": "2026-11-02T00:00:00+08:00"}, {"metric": "low_rating"},
+                                    {"metric_seat": "7"}, {"outcome": "maybe"}])
+def test_rating_operator_and_time_field_are_closed_choices(client, params):
+    browser, runtime, _ = client
+    assert browser.get("/admin/api/quality/rounds", params=params).status_code == 422
+    runtime.call.assert_not_called()
+
+
+@pytest.mark.parametrize("op,sql", [("eq", "r.rating = %s"), ("gt", "r.rating > %s"), ("lt", "r.rating < %s")])
+def test_rating_operator_builds_fixed_comparison(op, sql):
+    where, values = round_conditions(ArchiveFilters(rating=4, rating_op=op))
+    assert sql in where and values == [4]
+    # 大于/小于只比较已评价轮次；等于沿用原有行为。
+    assert ("r.rating_status = 'rated'" in where) is (op != "eq")
+
+
+def test_lost_filter_matches_statistics_rule_and_handoff_clock():
+    from quality.query.repository import customer_round_scoped, customer_unrounded_message_predicate
+    filters = ArchiveFilters(source_key="s", account_id=1, agent_id="7", lost=True, time_field="handoff_at",
+                             start=datetime(2026, 11, 1, tzinfo=timezone.utc))
+    where, values = round_conditions(filters)
+    # R2: the statistics fact is_lost (handoff observed, no human reply as of the locked time),
+    # the same flag as the report's lost count, in one fact predicate with the assessed seat.
+    assert "f.is_lost AND f.responsible_agent_id = %s" in where
+    assert "NOT EXISTS" not in where
+    assert "ops.round_handoff_at(r.data, r.started_at) >= %s" in where
+    assert values[:4] == [None, "7", "s", 1] and values[-1] == filters.start
+    assert where.count("%s") == len(values)
+    lost_only = ArchiveFilters(lost=True)
+    assert customer_round_scoped(lost_only) is True
+    assert customer_unrounded_message_predicate(lost_only, "c.customer_id") is None
