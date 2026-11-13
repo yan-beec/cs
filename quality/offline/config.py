@@ -10,11 +10,12 @@ class OfflineSettings(BaseSettings):
     disk_budget_bytes: int = Field(default=50 * 1024**3, ge=1024)
     min_free_bytes: int = Field(default=2 * 1024**3, ge=0)
     max_file_bytes: int = Field(default=2 * 1024**3, ge=1)
-    # 单页 HTML 内嵌图片、视频和音频；单个超过上限或全页累计超过上限时改为保留原始链接，不让任务失败。
-    max_embed_bytes: int = Field(default=5 * 1024**2, ge=1)            # 单张图片
-    max_embed_video_bytes: int = Field(default=100 * 1024**2, ge=1, le=300 * 1024**2)  # 单个视频/音频
-    # 全页内嵌附件原始字节累计上限；base64 后约 ×1.33，800 MiB ≈ 1.07 GB 页面，超过 1~2 GB 浏览器易卡死。
-    max_embedded_total_bytes: int = Field(default=800 * 1024**2, ge=0)
+    # 双包留档：HTML 只放文字与目录；图片、视频和音频按原文件放进同名“-附件.zip”，解压到 HTML 同一目录即可查看。
+    # 单个超过上限、附件包累计超过上限或留档目录磁盘预算不足时改为保留原始链接，不让任务失败。
+    max_embed_bytes: int = Field(default=50 * 1024**2, ge=1)            # 单张图片
+    max_embed_video_bytes: int = Field(default=500 * 1024**2, ge=1)     # 单个视频/音频（另受 max_file_bytes 限制）
+    # 附件包原始字节累计上限（不做 base64，不进 HTML）。
+    max_embedded_total_bytes: int = Field(default=20 * 1024**3, ge=0)
     timeout_seconds: int = Field(default=86400, ge=10)
     media_timeout_seconds: int = Field(default=20, ge=1, le=120)
     # 任务记录（列表中的历史）保留天数；HTML 文件本身见 downloaded_hours / unclaimed_hours。

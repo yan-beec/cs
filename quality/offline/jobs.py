@@ -25,15 +25,16 @@ import threading
 import time
 import uuid
 
-from .bundle import build_bundle, BundleLimit
+from .bundle import build_bundle, BundleLimit, MEDIA_ARCHIVE, MEDIA_SUFFIX
 from .config import OfflineSettings
 from .media import MediaDownloader
-from .naming import download_name
+from .naming import download_name, media_folder
 
 logger = logging.getLogger(__name__)
 
-# 新版产物为单个 HTML；保留期内的旧版 ZIP 仍可下载。
+# 主产物为 HTML（文字与目录），有附件时另有附件包 media.zip；保留期内的旧版 ZIP 仍可下载。
 ARTIFACTS = ("archive.html", "archive.zip")
+PARTS = ("html", "media")
 RESULT = "result.json"
 ACTIVE = ("queued", "running", "cancelling")
 # 子进程收到取消后应在 1 秒内退出；超过宽限期仍在运行则强制结束。
@@ -124,6 +125,13 @@ class OfflineJobs:
         except (ValueError, TypeError, AttributeError):
             filename = None
         result = {**dict(row), "request": request, "progress": json.loads(row["progress"]), "filename": filename}
+        media = self.media_artifact(row["id"]) if row["status"] in ("completed", "downloaded") else None
+        try:
+            result["media_size"] = media.stat().st_size if media else 0
+        except OSError:
+            result["media_size"] = 0
+        result["media_filename"] = download_name(request, row["created"], MEDIA_SUFFIX) if result["media_size"] and filename else None
+        result["media_folder"] = media_folder(request, request.get("requested_at") or row["created"]) if result["media_filename"] else None
         # 服务器端文件计划删除时间，及当前是否仍可下载（已下载的在保留期内可重新下载）。
         result["delete_at"] = self._delete_at(row["status"], row["updated"])
         result["available"] = self._downloadable(row["id"], row["status"], row["updated"])
@@ -152,6 +160,14 @@ class OfflineJobs:
             if path.is_file():
                 return path
         return None
+
+    def media_artifact(self, job_id):
+        """附件包只与新版 HTML 一起提供。"""
+        if not self.valid_id(job_id):
+            return None
+        work = self.root / job_id
+        path = work / MEDIA_ARCHIVE
+        return path if path.is_file() and (work / ARTIFACTS[0]).is_file() else None
 
     def get(self, job_id):
         if not self.valid_id(job_id):
@@ -347,8 +363,10 @@ class OfflineJobs:
             check()
             with self.connection() as db:
                 # 发布完整产物时再次原子检查取消状态，防止取消与完成互相覆盖。
+                media = path.parent / MEDIA_ARCHIVE
+                size = path.stat().st_size + (media.stat().st_size if media.is_file() else 0)
                 updated = db.execute("UPDATE jobs SET status='completed',size=?,updated=? WHERE id=? AND status='running'",
-                                     (path.stat().st_size, time.time(), job_id)).rowcount
+                                     (size, time.time(), job_id)).rowcount
             if not updated:
                 raise Cancelled()
         except Cancelled:
@@ -378,26 +396,34 @@ class OfflineJobs:
             return "该留档超过保留时间未下载，服务器端文件已删除，请重新生成。"
         return "留档尚未完成或已过期。"
 
-    def ticket(self, job_id):
+    def _sign(self, job_id, part, expires):
+        # 旧版签名不含 part，HTML 保持同一签名格式；附件包签名单独区分，不能互换。
+        message = job_id + ":" + expires if part == "html" else job_id + ":" + part + ":" + expires
+        return hmac.new(self.key, message.encode(), hashlib.sha256).hexdigest()
+
+    def ticket(self, job_id, part="html"):
+        if part not in PARTS:
+            raise ValueError("无效下载")
         job = self.get(job_id)
         if not job or not job["available"]:
             raise ValueError(self._unavailable(job))
+        if part == "media" and not self.media_artifact(job_id):
+            raise ValueError("该留档没有附件包。")
         expires = str(int(time.time()) + 300)
-        signature = hmac.new(self.key, (job_id + ":" + expires).encode(), hashlib.sha256).hexdigest()
-        return expires + "." + signature
+        return expires + "." + self._sign(job_id, part, expires)
 
-    def download_path(self, job_id, ticket):
-        if not self.valid_id(job_id):
+    def download_path(self, job_id, ticket, part="html"):
+        if not self.valid_id(job_id) or part not in PARTS:
             raise ValueError("无效下载")
         try:
             expires, signature = ticket.split(".", 1)
-            expected = hmac.new(self.key, (job_id + ":" + expires).encode(), hashlib.sha256).hexdigest()
+            expected = self._sign(job_id, part, expires)
             if int(expires) < time.time() or not hmac.compare_digest(signature, expected):
                 raise ValueError()
         except (ValueError, TypeError):
             raise ValueError("下载链接已失效，请重新点击下载。") from None
         job = self.get(job_id)
-        path = self.artifact(job_id)
+        path = self.artifact(job_id) if part == "html" else self.media_artifact(job_id)
         if not job or not job["available"] or not path:
             raise ValueError(self._unavailable(job))
         if job["status"] == "completed":

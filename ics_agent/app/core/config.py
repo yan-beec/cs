@@ -69,7 +69,7 @@ class AppSettings(BaseSettings):
     chatwoot_csat_message: str = Field(
         default="本次服务已结束，请评价本次服务。", min_length=1, max_length=1000,
     )
-    chatwoot_csat_display_type: str = Field(default="emoji", pattern="^(emoji|star)$")
+    chatwoot_csat_display_type: str = Field(default="star", pattern="^(emoji|star)$")
     chatwoot_csat_api_timeout: float = Field(default=5.0, gt=0, le=30)
     # 仅用户新消息刷新此窗口；resolved 会立即结束当前咨询。
     chatwoot_session_idle_timeout_seconds: int = Field(default=21600, gt=0)

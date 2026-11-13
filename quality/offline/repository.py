@@ -148,9 +148,10 @@ def limit_message(counts, settings):
 def assess(counts, settings):
     """把数量统计换算成提醒级别：empty / ok / warn / block。"""
     text = int(counts.get("text_bytes") or 0)
-    media = min(int(counts.get("attachment_bytes") or 0), settings.max_embedded_total_bytes)
-    # 粗估：正文及元数据约为正文字节的 2 倍再加每条约 600 字节结构；内嵌附件 base64 约 ×1.34。
-    estimated = int(text * 2 + counts["messages"] * 600 + media * 1.34)
+    attachments = int(counts.get("attachment_bytes") or 0)
+    media = min(attachments, settings.max_embedded_total_bytes)
+    # 粗估：HTML 只含文字，约为正文字节的 2 倍再加每条约 600 字节结构；附件原样进附件包。
+    estimated = int(text * 2 + counts["messages"] * 600)
     warnings = []
     blocked = limit_message(counts, settings)
     if counts["messages"] > settings.warn_messages:
@@ -159,10 +160,15 @@ def assess(counts, settings):
         warnings.append(f"对话 {counts['rounds']:,} 轮，超过提醒线 {settings.warn_rounds:,} 轮")
     if estimated > 500 * 1024**2:
         warnings.append(f"预计页面约 {estimated / 1024**2:,.0f} MB，打开时浏览器会占用较多内存")
-    if int(counts.get("attachment_bytes") or 0) > settings.max_embedded_total_bytes:
-        warnings.append("附件总量超过页面内嵌上限，超出部分只保留原始链接")
+    if attachments > settings.max_embedded_total_bytes:
+        warnings.append("附件总量超过附件包上限（ARCHIVE_OFFLINE_MAX_EMBEDDED_TOTAL_BYTES），超出部分只保留原始链接")
+    # 生成时附件包、临时文件和页面同时在磁盘上；超出留档目录预算的附件会改为链接。
+    if estimated * 2 + media > settings.disk_budget_bytes:
+        warnings.append(f"附件包约 {media / 1024**2:,.0f} MB，超过留档目录磁盘预算 {settings.disk_budget_bytes / 1024**2:,.0f} MB"
+                        "（ARCHIVE_OFFLINE_DISK_BUDGET_BYTES），放不下的附件只保留原始链接")
     level = "block" if blocked else "empty" if not counts["messages"] else "warn" if warnings else "ok"
     return {"level": level, "reason": blocked, "warnings": warnings, "estimated_bytes": estimated,
+            "estimated_media_bytes": media,
             "limits": {"warn_messages": settings.warn_messages, "max_messages": settings.max_messages,
                        "warn_rounds": settings.warn_rounds, "max_rounds": settings.max_rounds}}
 

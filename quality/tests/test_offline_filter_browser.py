@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import time
 import wave
+import zipfile
 from urllib.request import urlopen
 
 import pytest
@@ -172,6 +173,9 @@ def archive_browser(tmp_path):
                             "source_key": "browser-source", "account_id": "9007199254740993",
                             "channel_key": "web", "as_of": "2020-11-01T00:00:00Z"}})
     shutil.copyfile(path, EVIDENCE / "C2-browser-archive.html")
+    # 双包：附件 ZIP 解压到 HTML 所在文件夹（“解压到当前文件夹”）。
+    with zipfile.ZipFile(path.parent / "media.zip") as media:
+        media.extractall(path.parent)
     browser = Chrome(tmp_path)
     try:
         browser.open(path)
@@ -253,12 +257,13 @@ def test_real_media_and_csp_remain_offline_and_inert(archive_browser):
     browser = archive_browser
     browser.evaluate("document.querySelector('#toc .entry').click()")
     browser.until("document.querySelector('#chat img.thumb')?.complete && document.querySelector('#chat img.thumb')?.naturalWidth === 1")
-    assert browser.evaluate("document.querySelector('#chat img.thumb').src.startsWith('data:image/png;base64,')")
+    assert browser.evaluate("document.querySelector('#chat img.thumb').src.startsWith('file:')")
+    assert browser.evaluate("document.querySelector('#chat img.thumb').src.endsWith('/ics-attachments-2020-10/000000.png')")
     assert browser.evaluate("Array.from(document.querySelectorAll('#chat a')).every(a=>!a.href.includes('blocked.pdf'))")
     assert browser.evaluate("document.querySelectorAll('#chat audio').length") == 0
-    browser.evaluate("document.querySelector('#chat [data-play]').click()")
+    browser.evaluate("document.querySelector('#chat [data-play-file]').click()")
     browser.until("document.querySelector('#chat audio')?.readyState >= 2")
-    assert browser.evaluate("document.querySelector('#chat audio').src.startsWith('blob:')")
+    assert browser.evaluate("document.querySelector('#chat audio').src.endsWith('/ics-attachments-2020-10/000001.wav')")
     browser.evaluate("window.previousAudio=document.querySelector('#chat audio')")
     browser.evaluate("""(() => {
       window.cspViolations=[];
@@ -276,12 +281,21 @@ def test_real_media_and_csp_remain_offline_and_inert(archive_browser):
     assert not [url for url in requests if url.startswith(("http://", "https://"))]
     browser.evaluate("document.querySelectorAll('#toc .entry')[1].click()")
     assert browser.evaluate("document.querySelectorAll('#chat img.thumb').length") == 0
-    assert browser.evaluate("""new Promise(resolve => {
-      const audio = new Audio(window.previousAudio.src);
-      audio.onloadeddata = () => resolve(false);
-      audio.onerror = () => resolve(true);
-      audio.load();
-    })""")
+    assert browser.evaluate("document.querySelectorAll('#chat audio').length") == 0
+
+
+def test_real_missing_media_folder_explains_how_to_extract(archive_browser):
+    """没解压附件 ZIP 时不报错卡死，提示把 ZIP 解压到本页所在文件夹。"""
+    browser = archive_browser
+    browser.evaluate("document.querySelector('#toc .entry').click()")
+    browser.until("document.querySelector('#chat img.thumb')?.naturalWidth === 1")
+    folder = Path(browser.evaluate("decodeURIComponent(new URL(document.querySelector('#chat img.thumb').src).pathname)")).parent
+    shutil.rmtree(folder)
+    browser.call("Network.setCacheDisabled", cacheDisabled=True)
+    browser.open(Path(browser.evaluate("decodeURIComponent(location.pathname)")))
+    browser.evaluate("document.querySelector('#toc .entry').click()")
+    text = browser.until("document.querySelector('#chat .missing')?.textContent")
+    assert "聊天记录2020年10月-附件.zip" in text and "ics-attachments-2020-10" in text
 
 
 @pytest.fixture

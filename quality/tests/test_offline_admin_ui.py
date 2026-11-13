@@ -18,6 +18,10 @@ const node=id=>{
         if(selector==='[data-offline-download]' && match){
           this.download={dataset:{offlineDownload:match[1]}};return [this.download];
         }
+        const both=this.innerHTML.match(/data-offline-both="([a-f0-9]+)"/);
+        if(selector==='[data-offline-both]' && both){
+          this.both={dataset:{offlineBoth:both[1]},disabled:false};return [this.both];
+        }
         const del=this.innerHTML.match(/data-offline-delete="([a-f0-9]+)" data-offline-name="([^"]*)" data-offline-files="([^"]*)"/);
         if(selector==='[data-offline-delete]' && del){
           this.remove={dataset:{offlineDelete:del[1],offlineName:del[2],offlineFiles:del[3]},disabled:false};return [this.remove];
@@ -29,13 +33,13 @@ const node=id=>{
 };
 let token='admin',items=[],pending=null,estimate={level:'ok',messages:120,rounds:8,customers:3,attachments:2,attachment_bytes:2048,estimated_bytes:90000,warnings:[]};const confirms=[],toasts=[];
 const context={window:{location:{origin:'https://admin.example'},confirm:t=>{confirms.push(t);return true;}},document:{getElementById:node,
- createElement:()=>({click(){anchors.push(this.href)},remove(){}}),body:{appendChild(){}}},URL,Date,
+ createElement:()=>({click(){anchors.push(this.href)},remove(){}}),body:{appendChild(){}}},URL,Date,setTimeout:fn=>setImmediate(fn),
  setInterval:fn=>{timers.add(fn);return fn},clearInterval:fn=>timers.delete(fn)};
 vm.createContext(context);vm.runInContext(fs.readFileSync(process.argv[1],'utf8'),context);
 const ui=context.window.ICSOfflineArchives.create({getToken:()=>token,getFilters:()=>({mode:'customers',summary:'关键词：hello',query:new URLSearchParams('keyword=hello&start=2026-10-01')}),toast:(t,e)=>toasts.push([t,!!e]),
  api:async(url,options={})=>{
   requests.push({url,...options});
-  if(url.endsWith('/ticket'))return {url:'/admin/api/quality/offline/'+ 'a'.repeat(32)+'/download?ticket=signed'};
+  if(url.includes('/ticket'))return {url:'/admin/api/quality/offline/'+ 'a'.repeat(32)+'/download?ticket=signed'+(url.endsWith('?part=media')?'&part=media':'')};
   if(url.includes('/estimate')){if(!estimate)throw new Error('归档库繁忙');return estimate;}
   if(options.method==='POST')return {id:'a'.repeat(32)};
   if(pending)return await pending;
@@ -51,7 +55,7 @@ const tick=()=>new Promise(r=>setImmediate(r));
  node('offlineToggle').onclick();await tick();
  node('offlineMonth').value='2026-10';
  await node('offlineCreate').onclick();
- const creates=()=>requests.filter(r=>r.method==='POST'&&!r.url.includes('/estimate')&&!r.url.endsWith('/ticket'));
+ const creates=()=>requests.filter(r=>r.method==='POST'&&!r.url.includes('/estimate')&&!r.url.includes('/ticket'));
  let post=creates().at(-1);
  // 先预估再生成：预估请求与生成请求使用同一范围，确认框写明数量和失败提醒。
  assert(requests.some(r=>r.url==='/admin/api/quality/offline/estimate'));
@@ -95,6 +99,17 @@ const tick=()=>new Promise(r=>setImmediate(r));
  assert(node('offlineJobs').innerHTML.includes('对话 2 轮 · 未归轮消息 3 条'));
  await node('offlineJobs').download.onclick();
  assert.equal(anchors.length,1);assert(anchors[0].includes('/download?ticket=signed'));
+ // 没有附件 ZIP 时不显示“同时下载”。
+ assert(!node('offlineJobs').innerHTML.includes('data-offline-both'));
+ // 有附件 ZIP：显示“同时下载”，依次下载 HTML 和附件 ZIP。
+ items=[{id:'a'.repeat(32),status:'completed',request:{mode:'all'},created:1,progress:{},size:4096,media_size:2048,media_filename:'x-附件.zip',media_folder:'ics-attachments-all'}];
+ await [...timers][0]();await tick();
+ assert(node('offlineJobs').innerHTML.includes('>同时下载</button>'));
+ await node('offlineJobs').both.onclick();
+ assert.equal(anchors.length,3);
+ assert(!anchors[1].includes('part=media'));assert(anchors[2].includes('part=media'));
+ assert(requests.at(-1).url.endsWith('/ticket?part=media')&&requests.at(-2).url.endsWith('/ticket'));
+ assert(toasts.at(-1)[0].includes('下载多个文件')&&!toasts.at(-1)[1]);
  items=[{id:'a'.repeat(32),status:'downloaded',available:true,delete_at:7201,request:{mode:'all'},created:1,progress:{},size:1024}];
  await [...timers][0]();await tick();
  assert(node('offlineJobs').innerHTML.includes('重新下载'));assert(node('offlineJobs').innerHTML.includes('后删除'));

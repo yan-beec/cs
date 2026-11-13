@@ -19,5 +19,22 @@ def archive_title(scope, at):
     return f"聊天记录筛选导出-{moment:%Y%m%d-%H%M}"
 
 
+def media_folder(scope, at):
+    """附件包内的顶层文件夹，也是 HTML 引用附件的相对目录。
+
+    用纯 ASCII：Windows 自带解压对 ZIP 内中文文件名支持不一，乱码会让页面找不到附件。
+    与标题一一对应，多个月的留档放在同一文件夹里也不会互相覆盖。
+    """
+    scope = scope or {}
+    moment = at.astimezone(BEIJING) if isinstance(at, datetime) else datetime.fromtimestamp(at, BEIJING)
+    mode = scope.get("mode")
+    if mode == "month" and scope.get("month"):
+        year, month = scope["month"].split("-")
+        return f"ics-attachments-{int(year)}-{int(month):02d}"
+    if mode == "all":
+        return f"ics-attachments-all-{moment:%Y%m%d}"
+    return f"ics-attachments-filter-{moment:%Y%m%d-%H%M}"
+
+
 def download_name(scope, at, suffix=".html"):
     return archive_title(scope, at) + suffix

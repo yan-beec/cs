@@ -17,7 +17,7 @@ from starlette.background import BackgroundTask
 from ics_agent.app.core.auth import require_admin
 from quality.query.repository import ArchiveFilters
 from quality.query.routes import archive_filters
-from .jobs import get_offline_jobs
+from .jobs import MEDIA_SUFFIX, get_offline_jobs
 from .naming import download_name
 
 router = APIRouter(prefix="/admin/api/quality/offline")
@@ -138,12 +138,13 @@ async def delete_record(job_id: str):
 
 
 @router.post("/{job_id}/ticket", dependencies=[Depends(require_admin)])
-async def ticket(job_id: str):
+async def ticket(job_id: str, part: str = Query("html", pattern="^(html|media)$")):
     try:
-        signed = await storage_call(lambda store: store.ticket(job_id))
+        signed = await storage_call(lambda store: store.ticket(job_id, part))
     except ValueError as error:
         raise HTTPException(409, str(error)) from None
-    return {"url": f"/admin/api/quality/offline/{job_id}/download?ticket={signed}"}
+    suffix = "&part=media" if part == "media" else ""
+    return {"url": f"/admin/api/quality/offline/{job_id}/download?ticket={signed}{suffix}"}
 
 
 CHUNK_BYTES = 256 * 1024
@@ -179,20 +180,23 @@ def attachment_header(filename):
 
 
 @router.get("/{job_id}/download")
-async def download(job_id: str, ticket: str = Query(..., max_length=200)):
+async def download(job_id: str, ticket: str = Query(..., max_length=200),
+                   part: str = Query("html", pattern="^(html|media)$")):
     def locate(store):
-        path = store.download_path(job_id, ticket)
+        path = store.download_path(job_id, ticket, part)
         return path, store.get(job_id), path.stat().st_size
     try:
         path, job, size = await storage_call(locate)
     except ValueError as error:
         raise HTTPException(403, str(error)) from None
     html_file = path.suffix == ".html"
+    # 附件包下载名与 HTML 引用的文件夹名一致（“<标题>-附件”），解压到同一目录即可查看。
+    suffix = ".html" if html_file else MEDIA_SUFFIX if part == "media" else ".zip"
     headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
                # 以附件下载；即使被浏览器直接打开也处于沙箱，不能访问后台页面的登录状态。
                "Content-Security-Policy": "sandbox", "Content-Length": str(size),
                "Content-Disposition": attachment_header(
-                   download_name(job["request"], job["created"], ".html" if html_file else ".zip"))}
+                   download_name(job["request"], job["created"], suffix))}
     # 完整发送后标记为已下载，服务器端再保留 DOWNLOADED_HOURS 供重新下载，之后由定时清理删除。
     sent = {}
     return StreamingResponse(one_time_file(path, sent),
@@ -202,4 +206,6 @@ async def download(job_id: str, ticket: str = Query(..., max_length=200)):
 
 @router.get("/assets/admin.js", include_in_schema=False)
 def admin_script():
-    return FileResponse(Path(__file__).parent / "web/admin.js", media_type="text/javascript")
+    # no-cache：每次按 ETag 回源校验，改版后刷新即生效，不会被浏览器启发式缓存卡在旧脚本。
+    return FileResponse(Path(__file__).parent / "web/admin.js", media_type="text/javascript",
+                        headers={"Cache-Control": "no-cache"})

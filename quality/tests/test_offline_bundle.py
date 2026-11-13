@@ -1,10 +1,11 @@
-"""离线留档生成单个 HTML：完整消息按轮次分块，图片内嵌，视频只留链接，正文不作为活动内容执行。"""
+"""离线留档双包：HTML 按轮次分块只含文字，图片/视频原文件进附件 ZIP，正文不作为活动内容执行。"""
 import base64
 import hashlib
 import json
 from pathlib import Path
 import re
 import subprocess
+import zipfile
 
 import pytest
 
@@ -29,12 +30,21 @@ def message(number, **changes):
 
 
 def parse(path):
-    """按浏览器同样的方式取出数据块：目录、每轮消息及内嵌图片。"""
+    """按浏览器同样的方式取出数据块：目录、每轮消息；附件从同目录的附件包按“文件夹/文件名”读取。"""
     page = Path(path).read_text(encoding="utf-8")
     blocks = dict(re.findall(r'<script type="application/json" id="([^"]+)">(.*?)</script>', page, re.S))
     catalog = json.loads(blocks.pop("catalog"))
-    media = {int(k): (t, base64.b64decode(v)) for k, t, v in
-             re.findall(r'<script type="text/plain" id="m(\d+)" data-type="([^"]+)">(.*?)</script>', page, re.S)}
+    assert '<script type="text/plain"' not in page  # 附件不再以 base64 进页面
+    media = {}
+    archive = Path(path).parent / "media.zip"
+    if archive.exists():
+        folder = catalog["meta"]["media_folder"]
+        with zipfile.ZipFile(archive) as bundle:
+            for info in bundle.infolist():
+                assert info.compress_type == zipfile.ZIP_STORED and info.filename.startswith(folder + "/")
+                media[info.filename[len(folder) + 1:]] = bundle.read(info)
+    else:
+        assert catalog["meta"].get("media_folder") is None
     rounds = []
     for entry in catalog["entries"]:
         rows = []
@@ -108,19 +118,21 @@ def test_images_and_videos_embedded_once_other_files_linked(tmp_path):
     _, catalog, rounds, media = parse(result)
     first, second = rounds[0][0]["attachments"], rounds[0][1]["attachments"]
     # 文件不下载；图片、视频按 URL 去重，且分别使用图片 / 视频的单个上限。
-    assert source.calls == [("https://chat.test/pic", 5 * 1024**2), ("https://chat.test/movie", 100 * 1024**2),
-                            ("https://chat.test/gone", 5 * 1024**2)]
-    assert first[0]["status"] == "embedded" and second[0]["media"] == first[0]["media"]
-    assert media[first[0]["media"]] == ("image/png", PNG)
+    assert source.calls == [("https://chat.test/pic", 50 * 1024**2), ("https://chat.test/movie", 500 * 1024**2),
+                            ("https://chat.test/gone", 50 * 1024**2)]
+    assert first[0]["status"] == "embedded" and second[0]["file"] == first[0]["file"] == "000000.png"
+    assert media[first[0]["file"]] == PNG and "media" not in first[0]
     assert first[0]["checksum_sha256"] == hashlib.sha256(PNG).hexdigest()
     assert first[1]["status"] == "embedded" and first[1]["kind"] == "video" and first[1]["byte_count"] == len(MP4)
-    assert media[first[1]["media"]] == ("video/mp4", MP4) and second[1]["media"] == first[1]["media"]
+    assert media[first[1]["file"]] == MP4 and second[1]["file"] == first[1]["file"] == "000001.mp4"
     assert first[1]["source_url"] == "https://chat.test/movie"
     assert first[2]["status"] == "unavailable"
     # 非图片/音视频：不下载、不打包，也不保留任何可点击地址。
     assert first[3]["status"] == "blocked" and first[3]["source_url"] is None and "防范病毒" in first[3]["reason"]
     assert catalog["meta"]["blocked_attachments"] == 2 and catalog["meta"]["linked_attachments"] == 0
     assert len(media) == 2 and not (tmp_path / "work" / "media").exists()
+    assert catalog["meta"]["media_folder"] == "ics-attachments-2026-10" and catalog["meta"]["media_files"] == 2
+    assert catalog["meta"]["media_archive"] == "聊天记录2026年10月-附件.zip"
     entry = catalog["entries"][0]
     assert entry["images"] == 2 and entry["videos"] == 2 and entry["unavailable"] == 2
     assert catalog["meta"]["images"] == 2 and catalog["meta"]["videos"] == 2
@@ -145,7 +157,7 @@ def test_oversized_or_unplayable_downloads_fall_back_to_links(tmp_path):
     saved = rounds[0][0]["attachments"]
     # 无扩展名又无类型声明的附件无法确认是图片/视频，按安全口径直接拦截。
     assert [a["status"] for a in saved] == ["linked", "blocked", "linked", "blocked", "embedded"]
-    assert "图片超过 1 KB 内嵌上限" in saved[0]["reason"]
+    assert "图片超过 1 KB 单个附件上限" in saved[0]["reason"]
     assert saved[1]["source_url"] is None and saved[3]["source_url"] is None
     assert "图片超过 1 KB" in saved[2]["reason"]
     assert saved[4]["kind"] == "video" and len(media) == 1
@@ -190,6 +202,34 @@ def test_embedded_total_limit_keeps_the_rest_as_links(tmp_path):
     _, _, rounds, media = parse(build(tmp_path, rows, source, max_embedded_total_bytes=len(PNG) * 2))
     assert [r["attachments"][0]["status"] for r in rounds[0]] == ["embedded", "embedded", "linked"]
     assert len(media) == 2 and source.calls == 2  # 达到总量后不再下载
+
+
+def test_disk_budget_shortage_links_media_instead_of_failing(tmp_path):
+    class Source:
+        calls = 0
+        def download(self, item, destination, check, limit=None):
+            self.calls += 1
+            destination.write_bytes(PNG)
+            return "image/png"
+    source = Source()
+    rows = [message(i, attachments=[{"source_url": f"https://chat.test/{i}.png", "media_type": "image",
+                                     "expected_byte_count": 300 * 1024}]) for i in range(3)]
+    _, catalog, rounds, media = parse(build(tmp_path, rows, source, disk_budget_bytes=512 * 1024))
+    saved = [r["attachments"][0] for r in rounds[0]]
+    assert [a["status"] for a in saved] == ["linked"] * 3 and "DISK_BUDGET" in saved[0]["reason"]
+    assert source.calls == 0 and media == {} and not (tmp_path / "work" / "media.zip").exists()
+
+
+def test_media_does_not_count_toward_max_bytes(tmp_path):
+    big = PNG + b"\x00" * 4096
+    class Source:
+        def download(self, item, destination, check, limit=None):
+            destination.write_bytes(big)
+            check()
+            return "image/png"
+    rows = [message(i, attachments=[{"source_url": f"https://chat.test/{i}.png", "media_type": "image"}]) for i in range(4)]
+    _, _, rounds, media = parse(build(tmp_path, rows, Source(), max_bytes=8 * 1024))
+    assert [r["attachments"][0]["status"] for r in rounds[0]] == ["embedded"] * 4 and len(media) == 4
 
 
 def test_budget_failure_never_leaves_a_successful_page(tmp_path):
@@ -257,7 +297,7 @@ assert(!messageMatches(row,{keyword:'missing'}) && !messageMatches(row,{sender:'
 
 
 def test_viewer_renders_toc_and_chat_from_a_generated_page(tmp_path):
-    """用生成的真实页面驱动查看脚本：目录按用户分组、点击后以气泡展示、关键词筛选读取正文、图片和视频从内嵌数据加载。"""
+    """用生成的真实页面驱动查看脚本：目录按用户分组、点击后以气泡展示、关键词筛选读取正文、图片和视频按附件包相对路径加载。"""
     class Source:
         def download(self, item, destination, check, limit=None):
             video = item["source_url"].endswith(".mp4")
@@ -284,35 +324,37 @@ const script = page.match(/<script>([\s\S]*)<\/script><\/body>/)[1];
 const els = {};
 const el = id => blocks[id] || (els[id] ||= {id, innerHTML:'', textContent:'', disabled:false, hidden:true, handlers:{},
   addEventListener(t, fn){ this.handlers[t] = fn; }, querySelector(){ return null; },
-  querySelectorAll(sel){ if (sel !== 'img[data-media]') return []; return [...this.innerHTML.matchAll(/data-media="(\d+)"/g)].map(m => ({dataset:{media:m[1]}, set src(v){ els.__src = v; }})); },
+  querySelectorAll(sel){ if (sel !== 'img[data-file]') return []; return [...this.innerHTML.matchAll(/data-file="([^"]+)"/g)].map(m => ({dataset:{file:m[1]}, handlers:{}, addEventListener(t, fn){ this.handlers[t] = fn; }, replaceWith(n){ els.__missing = n; }, set src(v){ (els.__srcs ||= []).push(v); if (els.__srcs.length < 3) els.__img = this; }})); },
   removeAttribute(){} });
 const bodyClasses = new Set();
 global.document = {readyState:'loading', getElementById: el, body:{classList:{add:c=>bodyClasses.add(c), remove:c=>bodyClasses.delete(c)}},
-  createElement: tag => ({tag, addEventListener(){}, play(){ return Promise.resolve(); }}), addEventListener(t, fn){ this['on' + t] = fn; }};
+  createElement: tag => ({tag, dataset:{}, handlers:{}, addEventListener(t, fn){ this.handlers[t] = fn; }, play(){ return Promise.resolve(); }}), addEventListener(t, fn){ this['on' + t] = fn; }};
 global.window = global; global.module = undefined;
 global.FormData = function(form){ return Object.entries(form.values || {}); };
 vm.runInThisContext(script);
 const settle = () => new Promise(r => setTimeout(r, 10));
 (async () => {
   document.onDOMContentLoaded(); await settle();
-  assert.match(els.summary.textContent, /^2 位用户 · 3 轮对话 · 未归轮消息 0 条 · 5 条消息 · 内嵌图片 1 · 内嵌视频\/音频 1/);
+  assert.match(els.summary.textContent, /^2 位用户 · 3 轮对话 · 未归轮消息 0 条 · 5 条消息 · 附件包图片 1 · 附件包视频\/音频 1/);
   const toc = els.toc.innerHTML;
   assert.equal((toc.match(/class="who"/g) || []).length, 2);
   assert.ok(toc.includes('第 2 次咨询 · 会话 10 第 2 轮') && toc.includes('退款问题') && toc.includes('视频/音频 1'));
-  // 宽屏默认打开第一轮：客户在左、客服在右，图片由内嵌数据生成 data URL。
+  // 宽屏默认打开第一轮：客户在左、客服在右，图片按附件包相对路径加载，找不到时再试 Windows 多套一层的位置。
   let chat = els.chat.innerHTML;
   assert.ok(chat.includes('msg left contact') && chat.includes('msg right agent') && chat.includes('请提供订单号'));
-  assert.ok(els.__src.startsWith('data:image/png;base64,'));
-  // 视频先显示播放按钮，点击后才解码为本地 Blob 并替换为播放器，内容与原文件一致。
-  assert.ok(chat.includes('data-play="1"') && chat.includes('▶ 播放视频') && chat.includes('录屏.mp4'));
+  const dir = 'ics-attachments-2026-10', zip = encodeURIComponent('聊天记录2026年10月-附件');
+  assert.deepEqual(els.__srcs, [`${dir}/000000.png`]);
+  els.__img.handlers.error(); els.__img.handlers.error();
+  assert.deepEqual(els.__srcs, [`${dir}/000000.png`, `${zip}/${dir}/000000.png`]);
+  assert.ok(els.__missing.textContent.includes('聊天记录2026年10月-附件.zip'));
+  // 视频先显示播放按钮，点击后才按相对路径加载。
+  assert.ok(chat.includes('data-play-file="000001.mp4"') && chat.includes('▶ 播放视频') && chat.includes('录屏.mp4'));
   let replaced = null;
   const box = {dataset:{name:'录屏.mp4'}, classList:{contains:c => c === 'video'}, querySelector:() => null, appendChild(){}};
-  const button = {dataset:{play:'1'}, closest:() => box, replaceWith(node){ replaced = node; }};
-  els.chat.handlers.click({target:{closest: sel => sel === 'button[data-play]' ? button : null}});
+  const button = {dataset:{playFile:'000001.mp4'}, closest:() => box, replaceWith(node){ replaced = node; }};
+  els.chat.handlers.click({target:{closest: sel => sel.includes('button[data-play-file]') ? button : null}});
   assert.equal(replaced.tag, 'video'); assert.equal(replaced.controls, true);
-  const blob = require('buffer').resolveObjectURL(replaced.src);
-  assert.equal(blob.type, 'video/mp4');
-  assert.equal(Buffer.from(await blob.arrayBuffer()).toString('hex'), 'MP4_HEX');
+  assert.equal(replaced.src, `${dir}/000001.mp4`);
   els.toc.handlers.click({target:{closest: () => ({dataset:{at:'2'}})}});
   chat = els.chat.innerHTML;
   assert.ok(chat.includes('&lt;b&gt;你好&lt;/b&gt;') && !chat.includes('<b>你好'));
@@ -322,6 +364,7 @@ const settle = () => new Promise(r => setTimeout(r, 10));
   assert.ok(els.chat.innerHTML.includes('<mark>发票</mark>'));
 })().catch(e => { console.error(e); process.exit(1); });
 ''' .replace("process.argv[2]", json.dumps(str(page_path))).replace("MP4_HEX", MP4.hex()))
+    assert '<script type="text/plain"' not in Path(page_path).read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("status,score,feedback,want", [

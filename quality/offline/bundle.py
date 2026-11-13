@@ -1,9 +1,12 @@
-"""在容量预算内流式提取消息，生成单个可离线打开的 HTML 留档。
+"""在容量预算内流式提取消息，生成“HTML + 附件 ZIP”双包离线留档。
 
-页面结构：样式与查看脚本内联；每轮对话一个（或多个分段）非执行的 JSON 数据块；
-图片、视频和音频按 URL 去重后以 base64 内嵌一次（视频点击播放时才在浏览器本地解码）；
-PDF 等其他文件不下载，只保留文件信息与原始链接。单个附件或全页累计超过上限的也改为链接，
-避免页面过大导致浏览器无法打开。全部内容顺序写入同一个文件，没有附件的二次拷贝。
+archive.html：样式与查看脚本内联；每轮对话一个（或多个分段）非执行的 JSON 数据块，只含文字与目录，
+体积与消息量成正比，浏览器打开快。
+media.zip（下载名“<标题>-附件.zip”）：图片、视频和音频按 URL 去重后以原文件存入 ASCII 命名的文件夹
+（如 ics-attachments-2026-10/）
+（不压缩、不做 base64）。把 ZIP 解压到 HTML 所在目录后，页面按相对路径加载附件。
+PDF 等其他文件不下载，只保留文件信息与原始链接。单个附件超限、附件包累计超限或磁盘预算不足的也改为链接。
+附件边下载边写入 ZIP，临时目录里同一时刻最多只有一个附件。
 """
 import base64
 from contextlib import closing
@@ -17,6 +20,7 @@ import shutil
 import sqlite3
 import time
 from urllib.parse import urlsplit
+import zipfile
 
 from quality.attachment_safety import BLOCKED_REASON, attachment_kind
 from quality.query.repository import statistics_metrics
@@ -26,7 +30,7 @@ from quality.processing.service_facts import FACT_VERSION
 from .filter_snapshot import CUSTOMER_FIELDS, ROUND_FIELDS as FILTER_ROUND_FIELDS, MESSAGE_FIELDS as FILTER_MESSAGE_FIELDS, VERSION_FIELDS, safe_rating_review
 
 from .media import MediaTooLarge, MediaUnavailable
-from .naming import BEIJING, archive_title
+from .naming import BEIJING, archive_title, media_folder
 
 WEB = Path(__file__).parent / "web"
 
@@ -65,7 +69,10 @@ EMBEDDED_KINDS = {"image", "video", "audio", "unknown"}
 LINK_REASONS = {"pdf": "文件不内嵌到页面，可通过原始链接查看",
                 "file": "文件不内嵌到页面，可通过原始链接查看"}
 KIND_NAMES = {"image": "图片", "video": "视频", "audio": "音频"}
-FULL_REASON = "本页内嵌附件已达总量上限（ARCHIVE_OFFLINE_MAX_EMBEDDED_TOTAL_BYTES），可通过原始链接查看"
+FULL_REASON = "附件包已达总量上限（ARCHIVE_OFFLINE_MAX_EMBEDDED_TOTAL_BYTES），可通过原始链接查看"
+DISK_REASON = "留档目录磁盘预算或剩余空间不足（ARCHIVE_OFFLINE_DISK_BUDGET_BYTES），未放入附件包，可通过原始链接查看"
+MEDIA_ARCHIVE = "media.zip"
+MEDIA_SUFFIX = "-附件.zip"
 MEDIA_TYPE = re.compile(r"^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*$")
 
 
@@ -236,8 +243,9 @@ def page_shell(title):
     template = (WEB / "index.html").read_text(encoding="utf-8")
     if "</style" in css.lower() or "</script" in script.lower():
         raise RuntimeError("查看页资源包含非法结束标签")
+    # 附件以原文件放在旁边的文件夹里，按相对路径（file:）加载；页面本身仍不能联网。
     csp = ("default-src 'none'; script-src " + _csp_hash(script) + "; style-src " + _csp_hash(css)
-           + "; img-src data: blob:; media-src blob:; connect-src 'none'; font-src 'none'; object-src 'none';"
+           + "; img-src data: blob: 'self' file:; media-src blob: 'self' file:; connect-src 'none'; font-src 'none'; object-src 'none';"
            " frame-src 'none'; base-uri 'none'; form-action 'none'")
     head, tail = template.split("<!--ICS-DATA-->")
     head = head.replace("__CSP__", csp).replace("__TITLE__", html.escape(title)).replace("__STYLE__", css)
@@ -275,9 +283,12 @@ def build_bundle(work: Path, rows, settings, downloader, progress, check, *, sco
     customers_path = work / "customers.jsonl"
     media_dir = work / "media"
     archive_path = work / "archive.html"
+    media_path = work / MEDIA_ARCHIVE
     exported = datetime.now(BEIJING)
     # 标题日期与下载文件名一致，取任务创建时间（入队时写入 requested_at）。
-    title = archive_title(scope or {}, (scope or {}).get("requested_at") or exported)
+    requested = (scope or {}).get("requested_at") or exported
+    title = archive_title(scope or {}, requested)
+    folder = media_folder(scope or {}, requested)
     count = 0
     version_parts = 0
     extracted_versions = 0
@@ -285,6 +296,7 @@ def build_bundle(work: Path, rows, settings, downloader, progress, check, *, sco
     max_messages = getattr(settings, "max_messages", None)
     page = None
     opened = []
+    state = None
     try:
         # 开始下载附件前，先读完并关闭一致性快照，释放数据库事务。
         progress(stage="extracting", messages=0)
@@ -330,7 +342,9 @@ def build_bundle(work: Path, rows, settings, downloader, progress, check, *, sco
         embedded_bytes = 0
         unique_media = 0
         processed = 0
-        state = {"customer": None, "group": None, "reported": 0.0}
+        state = {"customer": None, "group": None, "reported": 0.0, "zip": None}
+        # 文字页面最终约与临时消息文件同量级：下载附件前为它预留磁盘预算，附件放不下时改为链接而不是整单失败。
+        text_reserve = spool.stat().st_size
 
         def report():
             # 进度写入任务库，最多每秒一次，避免每张图片都产生一次 SQLite 事务。
@@ -343,19 +357,23 @@ def build_bundle(work: Path, rows, settings, downloader, progress, check, *, sco
                      unavailable_attachments=stats["unavailable"], linked_attachments=stats["linked"], blocked_attachments=stats["blocked"])
 
         def embed(path, media_type):
-            """把附件以 base64 写入独立的非执行数据块，按 3 字节整数倍分段编码，不整块读入内存。"""
+            """把附件原样（不压缩）写入附件包的“<标题>-附件/”文件夹，返回编号、包内文件名和校验值。"""
             nonlocal unique_media
             media_id = unique_media
             unique_media += 1
+            name = f"{media_id:06d}{EXTENSIONS.get(media_type, '')}"
             digest = hashlib.sha256()
-            page.write(f'<script type="text/plain" id="m{media_id}" data-type="{media_type}">')
             with path.open("rb") as media:
-                while block := media.read(3 * 64 * 1024):
+                while block := media.read(1024 * 1024):
                     budget.check()
                     digest.update(block)
-                    page.write(base64.b64encode(block))
-            page.write("</script>\n")
-            return media_id, digest.hexdigest()
+            archive = state["zip"]
+            if archive is None:
+                archive = state["zip"] = zipfile.ZipFile(media_path, "w", zipfile.ZIP_STORED, allowZip64=True)
+                budget.watch(media_path)
+            archive.write(path, f"{folder}/{name}")
+            budget.check(force=True)
+            return media_id, name, digest.hexdigest()
 
         def blocked(item, **extra):
             # 非图片/音视频不下载、不打包，也不保留可点击的原始链接。
@@ -406,22 +424,27 @@ def build_bundle(work: Path, rows, settings, downloader, progress, check, *, sco
             def media_check():
                 nonlocal before
                 size = destination.stat().st_size if destination.exists() else 0
-                budget.add(max(0, size - before))
+                # 附件只占磁盘预算，不计入 MAX_BYTES（该上限只管提取的消息数据）。
+                budget.reserve(max(0, size - before))
                 before = size
 
             def release():
-                # 未内嵌的下载不计入输入预算，避免大量被丢弃的附件误触发 MAX_BYTES。
                 destination.unlink(missing_ok=True)
                 budget.disk_bytes -= before
-                budget.input_bytes -= before
 
             def too_large(found):
                 name = KIND_NAMES.get(found, "附件")
-                return {"status": "linked", "reason": f"{name}超过 {limit_text(kind_limit(found))} 内嵌上限，可通过原始链接查看"}
+                return {"status": "linked", "reason": f"{name}超过 {limit_text(kind_limit(found))} 单个附件上限，可通过原始链接查看"}
 
             # 类型未知时先按较大的上限下载，识别出真实类型后再按该类型上限判断。
             limit = (max(settings.max_embed_bytes, settings.max_embed_video_bytes) if kind == "unknown"
                      else kind_limit(kind))
+            expected = item.get("expected_byte_count")
+            # 附件在临时文件和附件包里各占一份，再给文字页面留出余量；放不下就保留链接，不让整单失败。
+            need = 2 * (expected if isinstance(expected, int) and 0 < expected <= limit else limit) + text_reserve
+            if (budget.disk_bytes + need > settings.disk_budget_bytes
+                    or shutil.disk_usage(budget.root).free - need < settings.min_free_bytes):
+                return {"status": "linked", "reason": DISK_REASON}
             try:
                 served = downloader.download(item, destination, media_check, limit=limit)
                 media_check()
@@ -449,12 +472,12 @@ def build_bundle(work: Path, rows, settings, downloader, progress, check, *, sco
                 release()
                 return {"status": "linked", "kind": found, "media_type": media_type, "byte_count": size,
                         "reason": FULL_REASON}
-            media_id, checksum = embed(destination, media_type)
+            media_id, file_name, checksum = embed(destination, media_type)
             embedded_bytes += size
-            # 已写入页面的附件计入页面体积预算，仅删除临时文件。
+            # 已写入附件包（其大小由预算按文件跟踪），仅删除临时文件。
             destination.unlink(missing_ok=True)
             budget.disk_bytes -= before
-            return {"status": "embedded", "kind": found, "media": media_id, "media_type": media_type,
+            return {"status": "embedded", "kind": found, "file": file_name, "media_type": media_type,
                     "byte_count": size, "checksum_sha256": checksum}
 
         def write_rows(group):
@@ -581,6 +604,9 @@ def build_bundle(work: Path, rows, settings, downloader, progress, check, *, sco
             page.write("}</script>\n")
         toc.close()
         customers.close()
+        if state["zip"] is not None:
+            state["zip"].close()
+            budget.check(force=True)
         report()
         budget.check(force=True)
         budget.discard(spool)
@@ -601,6 +627,10 @@ def build_bundle(work: Path, rows, settings, downloader, progress, check, *, sco
                 "as_of": ((scope or {}).get("filters") or {}).get("as_of") or (scope or {}).get("as_of"),
                 "snapshot_at": snapshot_at,
                 "images": stats["images"], "videos": stats["videos"], "linked_attachments": stats["linked"],
+                # 附件包：解压到 HTML 同一目录后按“<media_folder>/<文件名>”加载。
+                "media_folder": folder if unique_media else None, "media_files": unique_media,
+                "media_archive": title + MEDIA_SUFFIX if unique_media else None,
+                "media_bytes": embedded_bytes,
                 "unavailable_attachments": stats["unavailable"], "blocked_attachments": stats["blocked"],
                 "scope": scope or {}}
         page.write('<script type="application/json" id="catalog">{"meta":' + script_json(meta))
@@ -624,5 +654,8 @@ def build_bundle(work: Path, rows, settings, downloader, progress, check, *, sco
         # 先关闭句柄再删除；Windows 下未关闭的文件会导致任务目录无法清理。
         for output in opened:
             output.close()
+        if state is not None and state.get("zip") is not None:
+            state["zip"].close()
         archive_path.unlink(missing_ok=True)
+        media_path.unlink(missing_ok=True)
         raise

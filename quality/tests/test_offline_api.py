@@ -75,6 +75,48 @@ def test_download_is_a_single_html_named_by_month(client, request_scope, expecte
     assert jobs.get(job["id"])["updated"] == first  # 重新下载不顺延保留期
 
 
+def test_html_and_media_zip_are_two_downloads(client):
+    from urllib.parse import quote
+    browser, jobs, _ = client
+    job = jobs.enqueue({"mode": "month", "month": "2026-10"})
+    def builder(request, work, progress, check):
+        work.mkdir(parents=True)
+        (work / "media.zip").write_bytes(b"PK\x05\x06" + b"\x00" * 18)
+        path = work / "archive.html"
+        path.write_text("<!doctype html>", encoding="utf-8")
+        return path
+    jobs.run_once(builder)
+    state = jobs.list()[0]
+    assert state["media_size"] == 22 and state["media_filename"] == "聊天记录2026年10月-附件.zip"
+    assert state["media_folder"] == "ics-attachments-2026-10"
+    assert state["size"] == 22 + len("<!doctype html>")
+    base = f"/admin/api/quality/offline/{job['id']}"
+    assert browser.post(base + "/ticket?part=other").status_code == 422
+    html_url = browser.post(base + "/ticket").json()["url"]
+    media_url = browser.post(base + "/ticket?part=media").json()["url"]
+    assert media_url.endswith("&part=media")
+    # 签名区分 HTML 与附件包，不能拿 HTML 的签名下载附件包。
+    assert browser.get(html_url + "&part=media").status_code == 403
+    response = browser.get(media_url)
+    assert response.status_code == 200 and response.content.startswith(b"PK")
+    assert response.headers["content-type"] == "application/zip"
+    assert quote("聊天记录2026年10月-附件.zip") in response.headers["content-disposition"]
+    assert browser.get(html_url).text == "<!doctype html>"
+
+
+def test_job_without_media_has_no_media_download(client):
+    browser, jobs, _ = client
+    job = jobs.enqueue({"mode": "all"})
+    def builder(request, work, progress, check):
+        work.mkdir(parents=True)
+        path = work / "archive.html"
+        path.write_text("x", encoding="utf-8")
+        return path
+    jobs.run_once(builder)
+    assert jobs.list()[0]["media_size"] == 0 and jobs.list()[0]["media_filename"] is None
+    assert browser.post(f"/admin/api/quality/offline/{job['id']}/ticket?part=media").status_code == 409
+
+
 def test_redownload_refused_after_downloaded_hours(client, monkeypatch):
     import time
     browser, jobs, _ = client

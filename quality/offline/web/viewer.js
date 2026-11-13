@@ -187,6 +187,27 @@
     blobs.set(id, url);
     return url;
   }
+  // 附件包：把“<标题>-附件.zip”解压到本页所在文件夹后得到 ASCII 命名的“<media_folder>/”；
+  // Windows“全部解压缩”默认会再套一层以 ZIP 命名的文件夹，两种位置都尝试。
+  const archiveMeta = () => (archive.catalog && archive.catalog.meta) || {};
+  function fileUrls(name) {
+    const folder = String(archiveMeta().media_folder || '');
+    if (!/^[A-Za-z0-9._-]+$/.test(folder) || !/^[0-9]{6}(\.[a-z0-9]{1,5})?$/.test(String(name || ''))) return [];
+    const urls = [`${folder}/${name}`];
+    const zip = String(archiveMeta().media_archive || '').replace(/\.zip$/i, '');
+    if (zip) urls.push(`${encodeURIComponent(zip)}/${folder}/${name}`);
+    return urls;
+  }
+  const missingMedia = () => `未找到附件文件：请把“${archiveMeta().media_archive || '附件 ZIP'}”解压到本页面所在的文件夹（解压到当前文件夹，得到“${archiveMeta().media_folder || ''}”文件夹）后刷新本页。`;
+  function loadFile(node, urls, onFail) {
+    let at = 0;
+    const next = () => {
+      if (at >= urls.length) {onFail(); return;}
+      node.src = urls[at++];
+    };
+    node.addEventListener('error', next);
+    next();
+  }
   function releaseMedia() {
     for (const url of blobs.values()) URL.revokeObjectURL(url);
     blobs.clear();
@@ -197,6 +218,17 @@
   }
   function play(button) {
     const box = button.closest('[data-player]');
+    if (button.dataset.playFile !== undefined) {
+      const player = document.createElement(box.classList.contains('video') ? 'video' : 'audio');
+      player.controls = true;
+      player.preload = 'metadata';
+      player.addEventListener('loadedmetadata', () => {box.dataset.resolved = player.src;});
+      button.replaceWith(player);
+      loadFile(player, fileUrls(button.dataset.playFile), () => warn(box, missingMedia() + '若已解压，可能是浏览器不支持该编码，可点“打开原文件”用本地播放器打开。'));
+      const started = player.play && player.play();
+      if (started && started.catch) started.catch(() => {});
+      return;
+    }
     let url;
     try {url = mediaUrl(button.dataset.play);} catch (error) {warn(box, error.message); return;}
     const player = document.createElement(box.classList.contains('video') ? 'video' : 'audio');
@@ -210,6 +242,15 @@
   }
   function save(button) {
     const box = button.closest('[data-player]');
+    if (button.dataset.saveFile !== undefined) {
+      const urls = fileUrls(button.dataset.saveFile);
+      if (!urls.length) {warn(box, missingMedia()); return;}
+      const link = Object.assign(document.createElement('a'), {href: box.dataset.resolved || urls[0], target: '_blank', rel: 'noopener'});
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      return;
+    }
     let url;
     try {url = mediaUrl(button.dataset.save);} catch (error) {warn(box, error.message); return;}
     const link = Object.assign(document.createElement('a'), {href: url, download: box.dataset.name || '附件'});
@@ -278,6 +319,17 @@
   function attachment(a) {
     const kind = kinds[a.kind] || '附件', name = escape(a.filename || kind);
     const size = a.byte_count ? ' · ' + formatBytes(a.byte_count) : '';
+    if (a.status === 'embedded' && typeof a.file === 'string') {
+      const file = escape(a.file);
+      if (a.kind === 'video' || a.kind === 'audio') {
+        // 点击播放时才从附件文件夹加载，避免一轮多个视频时同时读盘。
+        return `<div class="player ${a.kind}" data-player="file" data-name="${name}">`
+          + `<button type="button" class="play" data-play-file="${file}">▶ 播放${kind}</button>`
+          + `<div class="info"><strong>${name}</strong><small>${escape(kind + size)} · 在附件 ZIP 中</small>`
+          + `<button type="button" class="save" data-save-file="${file}">打开原文件</button></div></div>`;
+      }
+      return `<figure class="image"><img class="thumb" data-file="${file}" alt="${name}"><figcaption>${name}</figcaption></figure>`;
+    }
     if (a.status === 'embedded' && Number.isInteger(a.media)) {
       if (a.kind === 'video' || a.kind === 'audio') {
         // 视频不在打开本轮时解码，点击播放才转成本地 Blob，避免一轮多个视频时占满内存。
@@ -340,6 +392,9 @@
       + `</div><div class="steps"><button type="button" id="prevRound"${current <= 0 ? ' disabled' : ''}>上一轮</button>`
       + `<button type="button" id="nextRound"${current >= view.length - 1 ? ' disabled' : ''}>下一轮</button></div></div>`
       + `<div class="thread" id="thread"><div class="thread-content">${thread || '<div class="placeholder">本轮没有消息</div>'}</div></div>`;
+    chat.querySelectorAll('img[data-file]').forEach(img => {
+      loadFile(img, fileUrls(img.dataset.file), () => img.replaceWith(Object.assign(document.createElement('span'), {className: 'missing', textContent: missingMedia()})));
+    });
     chat.querySelectorAll('img[data-media]').forEach(img => {
       const node = document.getElementById('m' + img.dataset.media);
       if (node && IMAGE_TYPES.includes(node.dataset.type)) img.src = `data:${node.dataset.type};base64,${node.textContent.trim()}`;
@@ -507,7 +562,7 @@
     entries = catalog.entries || []; customers = catalog.customers || [];
     const m = catalog.meta || {};
     $('summary').textContent = `${(m.customers || 0).toLocaleString()} 位用户 · ${(m.rounds || 0).toLocaleString()} 轮对话 · 未归轮消息 ${(m.unrounded_messages || 0).toLocaleString()} 条 · ${(m.messages || 0).toLocaleString()} 条消息`
-      + ` · 内嵌图片 ${m.images || 0} · 内嵌视频/音频 ${m.videos || 0} · 仅链接附件 ${m.linked_attachments || 0} · 安全拦截 ${m.blocked_attachments || 0} · 失效附件 ${m.unavailable_attachments || 0} · 导出于 ${formatTime(m.exported_at)}`;
+      + ` · ${m.media_folder ? '附件包' : '内嵌'}图片 ${m.images || 0} · ${m.media_folder ? '附件包' : '内嵌'}视频/音频 ${m.videos || 0} · 仅链接附件 ${m.linked_attachments || 0} · 安全拦截 ${m.blocked_attachments || 0} · 失效附件 ${m.unavailable_attachments || 0} · 导出于 ${formatTime(m.exported_at)}`;
     $('exportScope').textContent = exportSummary(m);
     if (['rounds', 'customers'].includes(m.scope?.mode)) $('exportScope').title = (has(exportLockTime(m)) ? '按锁定时刻限定消息时间范围' : '未锁定消息时间') + '，使用生成时的当前记录；不回溯消息编辑前的版本，补录或修订可能改变结果。';
     const form = $('filters');
@@ -524,9 +579,9 @@
     const box = $('lightbox'), big = $('lightboxImage');
     $('chat').addEventListener('click', e => {
       const target = e.target;
-      const playButton = target.closest && target.closest('button[data-play]');
+      const playButton = target.closest && target.closest('button[data-play],button[data-play-file]');
       if (playButton) {play(playButton); return;}
-      const saveButton = target.closest && target.closest('button[data-save]');
+      const saveButton = target.closest && target.closest('button[data-save],button[data-save-file]');
       if (saveButton) {save(saveButton); return;}
       if (target.classList && target.classList.contains('thumb') && target.src) {big.src = target.src; big.alt = target.alt; box.hidden = false;}
     });
