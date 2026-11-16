@@ -23,7 +23,7 @@ FEW_SHOT_EXAMPLES: tuple[FewShotExample, ...] = (
         ),
         assistant_answer=(
             "你可以进入「我的」-「设置」-「账号与安全」修改绑定手机号，"
-            "操作时需要完成安全验证。"
+            "操作时需要完成安全验证。（内容由AI生成）"
         ),
     ),
     FewShotExample(
@@ -31,7 +31,7 @@ FEW_SHOT_EXAMPLES: tuple[FewShotExample, ...] = (
         retrieved_context="当前资料只说明了提现到账时间，没有说明提现失败的具体原因。",
         assistant_answer=(
             "抱歉，您今天不能提现的具体原因，我暂时还不能确定。"
-            "您可以补充一下提现页面的提示；如果仍无法解决，请发送“转人工”获取进一步协助。"
+            "您可以补充一下提现页面的提示；如果仍无法解决，请发送“转人工”获取进一步协助。（内容由AI生成）"
         ),
     ),
     FewShotExample(
@@ -39,7 +39,7 @@ FEW_SHOT_EXAMPLES: tuple[FewShotExample, ...] = (
         retrieved_context="没有与该请求相关的合规帮助内容。",
         assistant_answer=(
             "抱歉，我不能协助获取或泄露他人的账号密码。"
-            "如果你是在处理自己的账号问题，可以咨询账号找回或安全验证相关流程。"
+            "如果你是在处理自己的账号问题，可以咨询账号找回或安全验证相关流程。（内容由AI生成）"
         ),
     ),
     FewShotExample(
@@ -50,7 +50,7 @@ FEW_SHOT_EXAMPLES: tuple[FewShotExample, ...] = (
         ),
         assistant_answer=(
             "账号限制解除可能需要人工核验，我无法直接替你解除限制。"
-            "请发送“转人工”，由人工客服继续为你处理。"
+            "请发送“转人工”，由人工客服继续为你处理。（内容由AI生成）"
         ),
     ),
 )
