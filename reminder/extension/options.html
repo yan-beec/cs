@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ICS 浏览器连接设置</title>
+<link rel="stylesheet" href="options.css">
+<main>
+  <img src="icons/48.png" alt="ICS">
+  <h1>连接 Chatwoot 页面</h1>
+  <p>在客服实际登录 Chatwoot 的浏览器中完成设置。桌面程序收到提醒后，会通过这个插件打开客户会话。</p>
+  <label for="site">Chatwoot 地址</label>
+  <input id="site" type="url" placeholder="https://chat.example.com" autocomplete="off">
+  <p class="hint">填写浏览器访问的 Chatwoot 地址，与 ICS 配置的公开地址一致。</p>
+  <button id="save">保存地址并授权此站点</button>
+  <div class="status" id="message" role="status"></div>
+  <h2>桌面程序连接</h2>
+  <div class="status" id="connection" role="status">正在检查连接…</div>
+  <button class="secondary" id="connect">重新连接</button>
+  <p class="hint">先安装客户端安装包，再启动 ICS 客服提醒。未连接时也会每分钟自动尝试重连。</p>
+</main>
+<script type="module" src="options.js"></script>
+</html>

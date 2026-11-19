@@ -111,6 +111,8 @@ celerybeat.pid
 
 # Django
 *.log
+log/*
+!log/.gitkeep
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
@@ -143,3 +145,14 @@ Thumbs.db
 # Local scratch files
 tmp/
 temp/
+knowledge_base_in/vector_store/
+
+# Model files and training artifacts
+models/
+artifacts/
+database/archive-exports/
+checkpoints/
+runs/
+
+# Sandbox/test scratch output (tracked files here stay tracked)
+outputs/

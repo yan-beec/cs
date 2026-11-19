@@ -1,0 +1,18 @@
+{
+  "input_dir": "/app/database/knowledge_base",
+  "output_path": "/app/knowledge_base_in/output/chunks.jsonl",
+  "source_file_count": 8,
+  "parsed_file_count": 8,
+  "skipped_file_count": 0,
+  "failed_file_count": 0,
+  "chunk_count": 215,
+  "chunk_size_tokens": 512,
+  "chunk_overlap_tokens": 64,
+  "include_heading_context": true,
+  "drop_heading_only_chunks": true,
+  "preserve_markdown_tables": true,
+  "ocr_cpu_threads": 2,
+  "ocr_cpu_interop_threads": 1,
+  "tokenizer_dir": "/app/models/google-bert--bert-base-chinese/snapshots/master",
+  "errors": []
+}

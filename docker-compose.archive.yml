@@ -1,0 +1,107 @@
+# Use together with docker-compose.yml and --env-file .env.
+services:
+  archive-postgres:
+    image: postgres:16.15-alpine3.23
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${ARCHIVE_POSTGRES_DB:-ics_quality}
+      POSTGRES_USER: archive_admin
+      POSTGRES_PASSWORD: ${ARCHIVE_POSTGRES_ADMIN_PASSWORD:?Set ARCHIVE_POSTGRES_ADMIN_PASSWORD in .env}
+      ARCHIVE_INGEST_PASSWORD: ${ARCHIVE_INGEST_PASSWORD:?Set ARCHIVE_INGEST_PASSWORD in .env}
+      ARCHIVE_READER_PASSWORD: ${ARCHIVE_READER_PASSWORD:?Set ARCHIVE_READER_PASSWORD in .env}
+      ARCHIVE_QUALITY_PASSWORD: ${ARCHIVE_QUALITY_PASSWORD:?Set ARCHIVE_QUALITY_PASSWORD in .env}
+      ARCHIVE_ASSIGNMENT_PASSWORD: ${ARCHIVE_ASSIGNMENT_PASSWORD:-}
+      ARCHIVE_PRESENCE_PASSWORD: ${ARCHIVE_PRESENCE_PASSWORD:-}
+      TZ: Asia/Shanghai
+    volumes:
+      - archive_postgres_data:/var/lib/postgresql/data
+      - ./deploy/archive/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U archive_admin -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional receiver shares the ICS image and common modules, with ingest-only credentials.
+  quality-receiver:
+    profiles: [quality-capture]
+    image: ics-agent:py310
+    pull_policy: never
+    restart: unless-stopped
+    command: ["python", "-m", "uvicorn", "quality.capture.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "3010", "--no-access-log"]
+    environment:
+      ARCHIVE_POSTGRES_HOST: archive-postgres
+      ARCHIVE_POSTGRES_PORT: 5432
+      ARCHIVE_POSTGRES_DB: ${ARCHIVE_POSTGRES_DB:-ics_quality}
+      ARCHIVE_POSTGRES_SSLMODE: ${ARCHIVE_POSTGRES_SSLMODE:-prefer}
+      ARCHIVE_POSTGRES_POOL_SIZE: ${ARCHIVE_POSTGRES_POOL_SIZE:-5}
+      ARCHIVE_INGEST_USER: ${ARCHIVE_INGEST_USER:-archive_ingest}
+      ARCHIVE_INGEST_PASSWORD: ${ARCHIVE_INGEST_PASSWORD:?Set ARCHIVE_INGEST_PASSWORD in .env}
+      ARCHIVE_SOURCE_KEY: ${ARCHIVE_SOURCE_KEY:-chatwoot-main}
+      ARCHIVE_ALLOWED_ACCOUNT_IDS: ${ARCHIVE_ALLOWED_ACCOUNT_IDS:-}
+      ARCHIVE_WEBHOOK_SECRET: ${ARCHIVE_WEBHOOK_SECRET:-}
+      ARCHIVE_WEBHOOK_TOLERANCE_SECONDS: ${ARCHIVE_WEBHOOK_TOLERANCE_SECONDS:-300}
+      ARCHIVE_RECEIVER_MAX_BODY_BYTES: ${ARCHIVE_RECEIVER_MAX_BODY_BYTES:-2097152}
+      TZ: Asia/Shanghai
+    ports:
+      - "${ARCHIVE_RECEIVER_HOST:-127.0.0.1}:${ARCHIVE_RECEIVER_PORT:-3010}:3010"
+    depends_on:
+      archive-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3010/health', timeout=3).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional post-capture processing. Does not receive bot/admin/model credentials.
+  quality-worker:
+    profiles: [quality-query]
+    image: ics-agent:py310
+    pull_policy: never
+    restart: unless-stopped
+    command: ["python", "-m", "quality.processing.worker"]
+    environment:
+      ARCHIVE_POSTGRES_HOST: archive-postgres
+      ARCHIVE_POSTGRES_PORT: 5432
+      ARCHIVE_POSTGRES_DB: ${ARCHIVE_POSTGRES_DB:-ics_quality}
+      ARCHIVE_POSTGRES_SSLMODE: ${ARCHIVE_POSTGRES_SSLMODE:-prefer}
+      ARCHIVE_INGEST_USER: ${ARCHIVE_INGEST_USER:-archive_ingest}
+      ARCHIVE_INGEST_PASSWORD: ${ARCHIVE_INGEST_PASSWORD:?Set ARCHIVE_INGEST_PASSWORD in .env}
+      ARCHIVE_PROCESSOR_POOL_SIZE: ${ARCHIVE_PROCESSOR_POOL_SIZE:-2}
+      ARCHIVE_PROCESSOR_LEASE_SECONDS: ${ARCHIVE_PROCESSOR_LEASE_SECONDS:-120}
+      ARCHIVE_PROCESSOR_POLL_SECONDS: ${ARCHIVE_PROCESSOR_POLL_SECONDS:-2}
+      ARCHIVE_PROCESSOR_MAX_ATTEMPTS: ${ARCHIVE_PROCESSOR_MAX_ATTEMPTS:-8}
+      ARCHIVE_PROCESSOR_RECENT_ROUNDS: ${ARCHIVE_PROCESSOR_RECENT_ROUNDS:-50}
+      ARCHIVE_PROCESSOR_INDEX_BATCH_SIZE: ${ARCHIVE_PROCESSOR_INDEX_BATCH_SIZE:-500}
+      ARCHIVE_PROCESSOR_INDEX_BATCH_BYTES: ${ARCHIVE_PROCESSOR_INDEX_BATCH_BYTES:-8388608}
+      ARCHIVE_PROCESSOR_MAX_CONVERSATION_EVENTS: ${ARCHIVE_PROCESSOR_MAX_CONVERSATION_EVENTS:-20000}
+      ARCHIVE_PROCESSOR_MAX_CONVERSATION_BYTES: ${ARCHIVE_PROCESSOR_MAX_CONVERSATION_BYTES:-67108864}
+      CHATWOOT_SESSION_IDLE_TIMEOUT_SECONDS: ${CHATWOOT_SESSION_IDLE_TIMEOUT_SECONDS:-21600}
+    volumes:
+      - ./database/channels.json:/app/database/channels.json:ro
+    depends_on:
+      archive-postgres:
+        condition: service_healthy
+    mem_limit: 512m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  archive_postgres_data:

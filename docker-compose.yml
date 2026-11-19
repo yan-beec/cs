@@ -1,23 +1,20 @@
+name: cs
+
 services:
-  mysql:
-    image: mysql:8.0
-    container_name: cs-mysql
+  postgres:
+    image: postgres:16.15-alpine3.23
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-cs}
-      MYSQL_USER: ${MYSQL_USER:-cs}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-cs_password}
+      POSTGRES_DB: ${POSTGRES_DB:-cs}
+      POSTGRES_USER: ${POSTGRES_USER:-cs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cs_password}
       TZ: Asia/Shanghai
     ports:
-      - "127.0.0.1:3306:3306"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
-      - mysql_data:/var/lib/mysql
-    command:
-      - --character-set-server=utf8mb4
-      - --collation-server=utf8mb4_unicode_ci
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-root}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cs} -d ${POSTGRES_DB:-cs}"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -28,45 +25,61 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  redis:
-    image: redis:alpine
-    container_name: cs-redis
+  ics-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PIP_INDEX_URL: ${BUILD_PIP_INDEX_URL:-https://pypi.org/simple}
+        TORCH_INDEX_URL: ${BUILD_TORCH_INDEX_URL:-https://mirrors.nju.edu.cn/pytorch/whl/cpu}
+        PIP_DEFAULT_TIMEOUT: ${BUILD_PIP_TIMEOUT:-120}
+        PIP_RETRIES: ${BUILD_PIP_RETRIES:-8}
+    image: ics-agent:py310
     restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: ${ADMIN_WEB_PORT:-3001}
+      TZ: ${TZ:-Asia/Shanghai}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      # Shared .env: the bot must not receive archive maintenance/write credentials.
+      ARCHIVE_POSTGRES_ADMIN_PASSWORD: ""
+      ARCHIVE_INGEST_PASSWORD: ""
+      ARCHIVE_QUALITY_PASSWORD: ""
+      ARCHIVE_WEBHOOK_SECRET: ""
+      # Optional ICS assignment delivery has a separate append-only role.
+      ARCHIVE_ASSIGNMENT_SYNC_ENABLED: ${ARCHIVE_ASSIGNMENT_SYNC_ENABLED:-false}
+      ARCHIVE_ASSIGNMENT_USER: ${ARCHIVE_ASSIGNMENT_USER:-archive_assignment}
+      ARCHIVE_ASSIGNMENT_PASSWORD: ${ARCHIVE_ASSIGNMENT_PASSWORD:-}
+      # Optional minute presence observations use their own restricted writer.
+      ARCHIVE_PRESENCE_ENABLED: ${ARCHIVE_PRESENCE_ENABLED:-false}
+      ARCHIVE_PRESENCE_USER: ${ARCHIVE_PRESENCE_USER:-archive_presence}
+      ARCHIVE_PRESENCE_PASSWORD: ${ARCHIVE_PRESENCE_PASSWORD:-}
+      ARCHIVE_PRESENCE_MAX_AGENTS: ${ARCHIVE_PRESENCE_MAX_AGENTS:-100}
+      ARCHIVE_QUERY_ENABLED: ${ARCHIVE_QUERY_ENABLED:-false}
+      ARCHIVE_QUERY_POOL_SIZE: ${ARCHIVE_QUERY_POOL_SIZE:-2}
+      ARCHIVE_EXPORT_MAX_ENTITIES: ${ARCHIVE_EXPORT_MAX_ENTITIES:-20000}
+      ARCHIVE_EXPORT_MAX_MESSAGES: ${ARCHIVE_EXPORT_MAX_MESSAGES:-100000}
+      ARCHIVE_EXPORT_MAX_BYTES: ${ARCHIVE_EXPORT_MAX_BYTES:-134217728}
+      ARCHIVE_EXPORT_TIMEOUT_SECONDS: ${ARCHIVE_EXPORT_TIMEOUT_SECONDS:-120}
     ports:
-      - "127.0.0.1:6380:6379"
+      - "${ADMIN_WEB_HOST:-127.0.0.1}:${ADMIN_WEB_PORT:-3001}:${ADMIN_WEB_PORT:-3001}"
     volumes:
-      - redis_data:/data
-    command: ["redis-server", "--appendonly", "yes"]
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 5s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  redisinsight:
-    image: redis/redisinsight:latest
-    container_name: cs-redisinsight
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:5540:5540"
-    volumes:
-      - redisinsight_data:/data
+      - ./models:/app/models:ro
+      - ./database:/app/database
+      - ./knowledge_base_in/output:/app/knowledge_base_in/output
+      - ./knowledge_base_in/vector_store:/app/knowledge_base_in/vector_store
+      - ./log:/app/log
     depends_on:
-      redis:
+      postgres:
         condition: service_healthy
     logging:
       driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
+        max-size: "30m"
+        max-file: "5"
 
 volumes:
-  mysql_data:
-  redis_data:
-  redisinsight_data:
+  postgres_data:
